@@ -8,10 +8,10 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-from pyDes import des, CBC, PAD_PKCS5
+from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine (Saavn Edition)", version="6.1.0")
+app = FastAPI(title="MELO Audio Engine (Saavn Edition)", version="6.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,8 +30,9 @@ image_cache = TTLCache(maxsize=3000, ttl=86400)       # 24 Hours
 
 http_client: Optional[httpx.AsyncClient] = None
 
+# JioSaavn Media Decryption uses DES ECB Mode
 DES_KEY = b"38346591"
-DES_CIPHER = des(DES_KEY, CBC, b"00000000", pad=None, padmode=PAD_PKCS5)
+DES_CIPHER = des(DES_KEY, ECB, padmode=PAD_PKCS5)
 
 CDN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -55,15 +56,26 @@ async def shutdown_event():
     if http_client:
         await http_client.aclose()
 
-def decrypt_saavn_url(encrypted_url: str) -> str:
-    """Decrypts JioSaavn encrypted media URLs into direct MP4/AAC stream links."""
-    if not encrypted_url:
+def decrypt_saavn_url(enc_str: str) -> str:
+    """Accurately decrypts JioSaavn encrypted media URLs using DES in ECB mode."""
+    if not enc_str:
         return ""
     try:
-        raw_b64 = base64.b64decode(encrypted_url.strip())
-        decrypted = DES_CIPHER.decrypt(raw_b64)
-        url = decrypted.decode("utf-8").strip()
-        return url
+        clean_enc = enc_str.strip()
+        # Add required Base64 padding if missing
+        missing_padding = len(clean_enc) % 4
+        if missing_padding:
+            clean_enc += "=" * (4 - missing_padding)
+
+        raw_bytes = base64.b64decode(clean_enc)
+        decrypted_bytes = DES_CIPHER.decrypt(raw_bytes)
+        decrypted_str = decrypted_bytes.decode("utf-8", errors="ignore").strip()
+
+        # Sanitize any residual null/control characters
+        url = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', decrypted_str)
+        if url.startswith("http"):
+            return url
+        return ""
     except Exception as e:
         print(f"[MELO:DECRYPT_ERROR] {e}")
         return ""
@@ -134,7 +146,7 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
                         if decrypted:
                             stream_cache[track["id"]] = decrypted
                             if item.get("id"):
-                                stream_cache[item["id"]] = decrypted
+                                stream_cache[str(item["id"])] = decrypted
                     formatted.append(track)
 
             payload = {"results": formatted}
@@ -173,6 +185,8 @@ async def get_recommendations(video_id: str):
                             decrypted = decrypt_saavn_url(enc_url)
                             if decrypted:
                                 stream_cache[track["id"]] = decrypted
+                                if item.get("id"):
+                                    stream_cache[str(item["id"])] = decrypted
                         tracks.append(track)
 
             payload = {"tracks": tracks}
@@ -224,7 +238,7 @@ async def resolve_saavn_url(track_id: str) -> str:
     except Exception as e:
         print(f"[MELO:RESOLVE_DETAIL_ERR] {e}")
 
-    # Secondary lookup via song token search if pids misses
+    # Fallback to general search if pids misses
     try:
         search_params = {
             "__call": "search.getResults",
@@ -253,7 +267,7 @@ async def resolve_saavn_url(track_id: str) -> str:
 async def stream_audio(video_id: str, request: Request):
     raw_stream_url = await resolve_saavn_url(video_id)
 
-    # Test high quality 320kbps first, fallback to original 160/96
+    # Prefer 320kbps, fallback to 160/96
     target_url = raw_stream_url.replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
 
     headers = dict(CDN_HEADERS)
@@ -266,13 +280,11 @@ async def stream_audio(video_id: str, request: Request):
         upstream = await http_client.send(req, stream=True)
 
         if upstream.status_code in (403, 404):
-            # Fall back to base decrypted stream URL directly
             target_url = raw_stream_url
             req = http_client.build_request("GET", target_url, headers=headers)
             upstream = await http_client.send(req, stream=True)
 
         if upstream.status_code not in (200, 206):
-            # Direct redirect fallback: lets client browser stream directly from CDN
             return Response(status_code=302, headers={"Location": target_url})
 
     except Exception:
