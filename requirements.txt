@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+yt-dlp>=2024.08.06
+requests
+ytmusicapi
+httpx
+cachetools
+aiofiles
