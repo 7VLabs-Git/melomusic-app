@@ -1,851 +1,1402 @@
-document.addEventListener('DOMContentLoaded', () => {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+// ==========================================
+// 1. GLOBAL SCOPE SAFE GUARDS & PWA CONTROLLER
+// (Defined immediately on window so onclick NEVER fails)
+// ==========================================
+
+let deferredPwaPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPwaPrompt = e;
+  setTimeout(() => {
+    const pwaBanner = document.getElementById('pwaBanner');
+    if (pwaBanner) pwaBanner.classList.add('visible');
+  }, 2500);
+});
+
+window.triggerPwaInstall = function () {
+  if (!deferredPwaPrompt) return;
+  deferredPwaPrompt.prompt();
+  deferredPwaPrompt.userChoice.then(() => {
+    window.dismissPwaBanner();
+    deferredPwaPrompt = null;
+  });
+};
+
+window.dismissPwaBanner = function () {
+  const pwaBanner = document.getElementById('pwaBanner');
+  if (pwaBanner) pwaBanner.classList.remove('visible');
+};
+
+// Global App State
+let playlist = [];
+let heroTracks = [];
+let categoryData = {};
+let currentIndex = -1;
+let favorites = JSON.parse(localStorage.getItem('melo_favorites') || '{}');
+let playlists = JSON.parse(localStorage.getItem('melo_playlists') || '{"pl-favorites":{"id":"pl-favorites","name":"Favorites","tracks":[]}}');
+let parsedLyrics = [];
+let isSynced = false;
+let activeView = 'home';
+let navigationHistory = ['home'];
+let isShuffle = false;
+let repeatMode = 'none';
+let sleepTimerId = null;
+let currentPrimaryHex = '#fa2d48';
+let activePlayToken = 0;
+let selectedQuality = localStorage.getItem('melo_quality') || '320';
+
+// Global Player & Navigation Stubs
+window.switchView = function (view, pushState = true) {
+  if (pushState && activeView !== view) {
+    navigationHistory.push(view);
   }
+  activeView = view;
 
-  const mainView = document.getElementById('mainView');
-  const searchInput = document.getElementById('searchInput');
-  const suggestionsBox = document.getElementById('suggestionsBox');
-  const lyricsOverlay = document.getElementById('lyricsOverlay');
-  const queueDrawer = document.getElementById('queueDrawer');
-  const contextMenu = document.getElementById('contextMenu');
-  const genericModal = document.getElementById('genericModal');
+  document.querySelectorAll('.capsule-btn, .pill-nav-item').forEach(btn => btn.classList.remove('active'));
 
-  let currentAbortController = null;
-  let activeContextTrack = null;
-  let lyricsCache = {};
-
-  // ==========================================
-  // ROUTING SYSTEM
-  // ==========================================
-  function navigate(hash) {
-    window.location.hash = hash;
+  if (view === 'home') {
+    document.getElementById('navHome')?.classList.add('active');
+    document.getElementById('mNavHome')?.classList.add('active');
+    renderHomeView();
+  } else if (view === 'search') {
+    document.getElementById('navSearch')?.classList.add('active');
+    document.getElementById('mNavSearch')?.classList.add('active');
+    renderSearchView();
+  } else if (view === 'favorites') {
+    document.getElementById('navFavs')?.classList.add('active');
+    document.getElementById('mNavFavs')?.classList.add('active');
+    renderFavoritesView();
   }
+  const vp = document.getElementById('mainViewport');
+  if (vp) vp.scrollTop = 0;
+};
 
-  window.addEventListener('hashchange', handleRoute);
-
-  function handleRoute() {
-    const raw = window.location.hash.slice(1) || 'home';
-    const [route, param] = raw.split('/');
-
-    document.querySelectorAll('[data-route]').forEach(el => {
-      el.classList.toggle('active', el.getAttribute('data-route') === route);
-    });
-
-    if (route === 'home') renderHomeView();
-    else if (route === 'explore') renderExploreView();
-    else if (route === 'library') renderLibraryView();
-    else if (route === 'album' && param) renderAlbumView(param);
-    else if (route === 'artist' && param) renderArtistView(param);
-    else if (route === 'playlist' && param) renderPlaylistView(param);
-    else if (route === 'stats') renderStatsView();
-    else renderHomeView();
-
-    mainView.scrollTop = 0;
+window.goBack = function () {
+  if (navigationHistory.length > 1) {
+    navigationHistory.pop();
+    const prev = navigationHistory[navigationHistory.length - 1];
+    window.switchView(prev, false);
+  } else {
+    window.switchView('home', false);
   }
+};
 
-  // ==========================================
-  // VIEW: HOME DASHBOARD
-  // ==========================================
-  function renderHomeView() {
-    const greeting = getGreeting();
-    const history = window.meloStore.state.history.slice(0, 6);
-    const favorites = Object.values(window.meloStore.state.favorites).slice(0, 6);
-    const onRepeat = window.meloStore.state.playlists['pl-repeat'].tracks.slice(0, 6);
+window.scrollToCategory = function (id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: 'smooth' });
+};
 
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="filter-shelf">
-          <div class="filter-chip active" onclick="loadCatalogGenre('Trending Worldwide')">All</div>
-          <div class="filter-chip" onclick="loadCatalogGenre('Top Pop Hits')">Pop</div>
-          <div class="filter-chip" onclick="loadCatalogGenre('Lo-Fi Chill Sessions')">Chill & Lo-Fi</div>
-          <div class="filter-chip" onclick="loadCatalogGenre('Electronic Dance Euphoria')">Electronic</div>
-          <div class="filter-chip" onclick="loadCatalogGenre('Acoustic Intimate Sessions')">Acoustic</div>
-          <div class="filter-chip" onclick="loadCatalogGenre('Deep Focus Ambient')">Focus</div>
-        </div>
+window.changeQuality = function (val) {
+  selectedQuality = val;
+  localStorage.setItem('melo_quality', val);
+  const qLabel = document.getElementById('currentQualityLabel');
+  if (qLabel) qLabel.innerText = `Audio Quality: ${val} kbps`;
+  const deskSelect = document.getElementById('desktopQualitySelect');
+  if (deskSelect) deskSelect.value = val;
 
-        <section class="editorial-hero">
-          <div class="hero-ambient-glow"></div>
-          <div class="hero-meta">
-            <div class="hero-tag">Curated Soundstage</div>
-            <h1 class="hero-title">${greeting}</h1>
-            <p class="hero-desc">Experience lossless acoustics, editorial discographies, and smooth playback engineered for uninterrupted listening.</p>
-            <button class="pill-action-btn" id="heroPlayBtn">
-              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              <span>Play Quick Mix</span>
-            </button>
-          </div>
-        </section>
+  const audio = document.getElementById('audio');
+  if (audio && currentIndex !== -1 && playlist[currentIndex] && !audio.paused) {
+    const curTime = audio.currentTime;
+    audio.src = `/api/stream/${playlist[currentIndex].id}?quality=${val}`;
+    audio.currentTime = curTime;
+    audio.play().catch(console.warn);
+  }
+};
 
-        ${history.length > 0 ? `
-          <div class="section-heading">
-            <h2>Recently Played</h2>
-            <a onclick="window.location.hash='library'">View Library</a>
-          </div>
-          <div class="capsule-grid" id="recentGrid"></div>
-        ` : ''}
+window.promptQualitySelection = function () {
+  const q = prompt("Select Audio Bitrate (320, 160, 96):", selectedQuality);
+  if (['320', '160', '96'].includes(q)) window.changeQuality(q);
+};
 
-        ${onRepeat.length > 0 ? `
-          <div class="section-heading">
-            <h2>Heavy Rotation</h2>
-          </div>
-          <div class="capsule-grid" id="onRepeatGrid"></div>
-        ` : ''}
+window.openFullscreenPlayer = function () {
+  document.getElementById('fullscreenPlayerOverlay')?.classList.add('open');
+  syncSheetTrackInfo();
+};
 
-        <div class="section-heading">
-          <h2>Trending Worldwide</h2>
-          <a onclick="loadCatalogGenre('Top Billboard & Global Hits')">Refresh</a>
-        </div>
-        <div class="capsule-grid" id="trendingGrid"></div>
+window.closeFullscreenPlayer = function () {
+  document.getElementById('fullscreenPlayerOverlay')?.classList.remove('open');
+};
 
-        <div class="section-heading">
-          <h2>Top Songs</h2>
-        </div>
-        <div id="songsList"></div>
-      </div>
-    `;
+window.openSettingsModal = function () {
+  document.getElementById('settingsModal')?.classList.add('open');
+};
 
-    if (history.length > 0) renderCards('recentGrid', history);
-    if (onRepeat.length > 0) renderCards('onRepeatGrid', onRepeat);
+window.closeSettingsModal = function () {
+  document.getElementById('settingsModal')?.classList.remove('open');
+};
 
-    loadCatalogGenre('Top Billboard & Global Hits', 'trendingGrid', 'songsList');
+window.openContextMenu = function () {
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  const titleEl = document.getElementById('ctxModalSongTitle');
+  if (titleEl) titleEl.innerText = track.title;
+  const favTextEl = document.getElementById('ctxFavText');
+  if (favTextEl) favTextEl.innerText = favorites[track.id] ? "Remove from Favorites" : "Save to Favorites";
+  document.getElementById('contextModal')?.classList.add('open');
+};
 
-    const heroBtn = document.getElementById('heroPlayBtn');
-    if (heroBtn) {
-      heroBtn.onclick = () => {
-        const pool = onRepeat.length > 0 ? onRepeat : (favorites.length > 0 ? favorites : history);
-        if (pool.length > 0) window.meloPlayer.loadQueue(pool, 0);
-        else loadCatalogGenre('Top Global Hits');
-      };
+window.closeContextMenu = function () {
+  document.getElementById('contextModal')?.classList.remove('open');
+};
+
+window.actionOpenCinematicMode = function () {
+  window.closeContextMenu();
+  window.closeFullscreenPlayer();
+  const cin = document.getElementById('cinematicOverlay');
+  cin?.classList.add('open');
+
+  if (currentIndex !== -1 && playlist[currentIndex]) {
+    const t = playlist[currentIndex];
+    const cinImg = document.getElementById('cinematicArtImg');
+    if (cinImg) cinImg.src = t.thumbnail || '';
+    const cinTitle = document.getElementById('cinematicTitle');
+    if (cinTitle) cinTitle.innerText = t.title;
+    const cinArtist = document.getElementById('cinematicArtist');
+    if (cinArtist) cinArtist.innerText = t.artist;
+  }
+  populateCinematicLyrics();
+};
+
+window.closeCinematicMode = function () {
+  document.getElementById('cinematicOverlay')?.classList.remove('open');
+};
+
+window.toggleRepeatMode = function () {
+  const rBtn = document.getElementById('sheetRepeatBtn');
+  const badge = document.getElementById('loopBadge');
+
+  if (repeatMode === 'none') {
+    repeatMode = 'all';
+    rBtn?.classList.add('active');
+    if (badge) {
+      badge.style.display = 'block';
+      badge.innerText = 'ALL';
+      badge.style.background = 'var(--accent)';
+    }
+  } else if (repeatMode === 'all') {
+    repeatMode = 'one';
+    rBtn?.classList.add('active');
+    if (badge) {
+      badge.style.display = 'block';
+      badge.innerText = '1';
+      badge.style.background = 'var(--accent-purple)';
+    }
+  } else {
+    repeatMode = 'none';
+    rBtn?.classList.remove('active');
+    if (badge) badge.style.display = 'none';
+  }
+};
+
+window.toggleShuffle = function () {
+  isShuffle = !isShuffle;
+  document.getElementById('sheetShuffleBtn')?.classList.toggle('active', isShuffle);
+};
+
+window.togglePlay = function () {
+  const audio = document.getElementById('audio');
+  if (!audio) return;
+  if (!audio.src && playlist.length) {
+    window.playIndex(0);
+    return;
+  }
+  if (audio.paused) {
+    audio.play().then(() => setPlayState(true)).catch(console.warn);
+  } else {
+    audio.pause();
+    setPlayState(false);
+  }
+};
+
+window.nextTrack = function () {
+  const audio = document.getElementById('audio');
+  if (repeatMode === 'one' && audio) {
+    audio.currentTime = 0;
+    audio.play().catch(console.warn);
+    return;
+  }
+  if (isShuffle && playlist.length > 1) {
+    const nextIdx = Math.floor(Math.random() * playlist.length);
+    window.playIndex(nextIdx);
+    return;
+  }
+  if (currentIndex + 1 < playlist.length) {
+    window.playIndex(currentIndex + 1);
+  } else if (repeatMode === 'all' && playlist.length > 0) {
+    window.playIndex(0);
+  }
+};
+
+window.prevTrack = function () {
+  const audio = document.getElementById('audio');
+  if (audio && audio.currentTime > 3) {
+    audio.currentTime = 0;
+    return;
+  }
+  if (currentIndex > 0) window.playIndex(currentIndex - 1);
+};
+
+window.switchPlayerSheetTab = function (tab) {
+  document.querySelectorAll('.sheet-tab-btn').forEach(b => b.classList.remove('active'));
+  const playView = document.getElementById('sheetViewPlaying');
+  const lyricsView = document.getElementById('sheetViewLyrics');
+  const queueView = document.getElementById('sheetViewQueue');
+
+  if (playView) playView.style.display = 'none';
+  if (lyricsView) lyricsView.style.display = 'none';
+  if (queueView) queueView.style.display = 'none';
+
+  if (tab === 'playing') {
+    document.getElementById('tabNowPlaying')?.classList.add('active');
+    if (playView) playView.style.display = 'flex';
+  } else if (tab === 'lyrics') {
+    document.getElementById('tabLyrics')?.classList.add('active');
+    if (lyricsView) lyricsView.style.display = 'flex';
+  } else if (tab === 'queue') {
+    document.getElementById('tabQueue')?.classList.add('active');
+    if (queueView) queueView.style.display = 'flex';
+    renderSheetQueueList();
+  }
+};
+
+window.toggleCurrentTrackFavorite = function () {
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  if (favorites[track.id]) delete favorites[track.id];
+  else favorites[track.id] = track;
+  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+  syncSheetTrackInfo();
+};
+
+window.actionAddToFavorites = function () {
+  window.toggleCurrentTrackFavorite();
+  window.closeContextMenu();
+};
+
+window.actionAddToPlaylistPrompt = function () {
+  window.closeContextMenu();
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  const plNames = Object.values(playlists).map(p => p.name).join(', ');
+  const target = prompt(`Enter playlist name to add to (${plNames}):`);
+  if (target) {
+    const found = Object.values(playlists).find(p => p.name.toLowerCase() === target.trim().toLowerCase());
+    if (found) {
+      found.tracks.push(track);
+      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      alert(`Added to "${found.name}"!`);
+    } else {
+      alert("Playlist not found.");
+    }
+  }
+};
+
+window.actionShareSong = function () {
+  window.closeContextMenu();
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  const shareData = {
+    title: track.title,
+    text: `Listen to "${track.title}" by ${track.artist} on MELO!`,
+    url: window.location.origin
+  };
+  if (navigator.share) {
+    navigator.share(shareData).catch(() => {});
+  } else {
+    navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
+    alert("Song link copied to clipboard!");
+  }
+};
+
+window.actionSleepTimerPrompt = function () {
+  window.closeContextMenu();
+  const minutes = prompt("Enter sleep timer in minutes (15, 30, 45, 60 or 0 to turn off):", "30");
+  if (minutes !== null) {
+    const min = parseInt(minutes);
+    if (sleepTimerId) clearTimeout(sleepTimerId);
+    if (!isNaN(min) && min > 0) {
+      sleepTimerId = setTimeout(() => {
+        const audio = document.getElementById('audio');
+        if (audio) audio.pause();
+        setPlayState(false);
+        alert("Sleep timer reached. Good night!");
+      }, min * 60 * 1000);
+      alert(`Sleep timer set for ${min} minutes.`);
+    } else {
+      sleepTimerId = null;
+      alert("Sleep timer turned off.");
+    }
+  }
+};
+
+window.actionViewCredits = function () {
+  window.closeContextMenu();
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  alert(`Title: ${track.title}\nArtist: ${track.artist}\nAlbum: ${track.album || 'Single'}\nDuration: ${track.duration}\nTrack ID: ${track.id}`);
+};
+
+// ==========================================
+// 2. PLAYBACK ENGINE & DESYNC SHIELD
+// ==========================================
+
+window.playIndex = function (idx) {
+  if (idx < 0 || idx >= playlist.length) return;
+
+  const thisToken = ++activePlayToken;
+  currentIndex = idx;
+  const track = playlist[currentIndex];
+  const audio = document.getElementById('audio');
+
+  const dockTitle = document.getElementById('dockTitle');
+  const dockArtist = document.getElementById('dockArtist');
+  const dockThumb = document.getElementById('dockThumb');
+
+  if (dockTitle) dockTitle.innerText = track.title;
+  if (dockArtist) dockArtist.innerText = track.artist;
+  if (dockThumb) dockThumb.src = track.thumbnail || '';
+
+  syncSheetTrackInfo();
+
+  if (audio) {
+    audio.src = `/api/stream/${track.id}?quality=${selectedQuality}`;
+    audio.load();
+
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          if (thisToken !== activePlayToken) {
+            audio.pause();
+            return;
+          }
+          setPlayState(true);
+        })
+        .catch((err) => {
+          if (thisToken === activePlayToken) {
+            console.warn("Playback interrupted:", err);
+            setPlayState(false);
+          }
+        });
     }
   }
 
-  function getGreeting() {
-    const h = new Date().getHours();
-    if (h < 12) return 'Good morning';
-    if (h < 17) return 'Good afternoon';
-    if (h < 21) return 'Good evening';
-    return 'Late night vibes';
+  fetchLyrics(track, thisToken);
+  fetchRecommendations(track.id);
+
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist,
+      album: 'MELO Music',
+      artwork: [{ src: track.thumbnail || '', sizes: '512x512', type: 'image/jpeg' }]
+    });
+    navigator.mediaSession.setActionHandler('play', () => window.togglePlay());
+    navigator.mediaSession.setActionHandler('pause', () => window.togglePlay());
+    navigator.mediaSession.setActionHandler('previoustrack', () => window.prevTrack());
+    navigator.mediaSession.setActionHandler('nexttrack', () => window.nextTrack());
+  }
+};
+
+function setPlayState(playing) {
+  const icon = playing
+    ? `<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`
+    : `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+
+  const dockPlayBtn = document.getElementById('dockPlayBtn');
+  const mDockPlayBtn = document.getElementById('mDockPlayBtn');
+  const sheetPlayBtn = document.getElementById('sheetPlayBtn');
+  const dockPlayerBar = document.getElementById('dockPlayerBar');
+  const coverBox = document.getElementById('sheetCoverBox');
+
+  if (dockPlayBtn) dockPlayBtn.innerHTML = icon;
+  if (mDockPlayBtn) mDockPlayBtn.innerHTML = icon;
+  if (sheetPlayBtn) sheetPlayBtn.innerHTML = icon;
+
+  if (dockPlayerBar) dockPlayerBar.classList.toggle('is-playing', playing);
+  if (coverBox) coverBox.classList.toggle('is-playing', playing);
+}
+
+function syncSheetTrackInfo() {
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+
+  const sheetCover = document.getElementById('sheetCover');
+  if (sheetCover) sheetCover.src = track.thumbnail || '';
+
+  const titleEl = document.getElementById('sheetTitle');
+  if (titleEl) {
+    titleEl.innerText = track.title;
+    setTimeout(() => {
+      const wrapper = titleEl.parentElement;
+      if (wrapper && titleEl.scrollWidth > wrapper.clientWidth) {
+        titleEl.classList.add('is-overflowing');
+      } else {
+        titleEl.classList.remove('is-overflowing');
+      }
+    }, 50);
   }
 
-  // Helper: Card Renderer
-  function renderCards(containerId, items) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-    el.innerHTML = '';
+  const artistEl = document.getElementById('sheetArtist');
+  if (artistEl) artistEl.innerText = track.artist;
 
-    items.forEach((item, idx) => {
-      const card = document.createElement('div');
-      card.className = 'media-card';
-      const isArtist = item.type === 'artist';
+  const isFav = !!favorites[track.id];
+  const favIcon = document.getElementById('playerSheetFavIcon');
+  if (favIcon) {
+    favIcon.innerText = isFav ? '♥' : '♡';
+    favIcon.style.color = isFav ? 'var(--accent)' : '#fff';
+  }
 
-      card.innerHTML = `
-        <div class="card-thumb-wrap">
-          <img class="card-thumb ${isArtist ? 'circle' : ''}" src="${item.thumbnail || ''}" loading="lazy" />
-          <div class="play-bubble"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
-        </div>
-        <div class="card-title" title="${item.title || item.name}">${item.title || item.name}</div>
-        <div class="card-subtitle">${item.artist || (isArtist ? 'Artist' : 'Single')}</div>
-      `;
+  updateArtworkPalette(track.thumbnail);
 
-      card.onclick = () => {
-        if (isArtist) navigate(`artist/${item.browseId || item.id}`);
-        else if (item.type === 'album') navigate(`album/${item.browseId || item.id}`);
-        else window.meloPlayer.loadQueue(items, idx);
+  const cinImg = document.getElementById('cinematicArtImg');
+  if (cinImg) cinImg.src = track.thumbnail || '';
+  const cinTitle = document.getElementById('cinematicTitle');
+  if (cinTitle) cinTitle.innerText = track.title;
+  const cinArtist = document.getElementById('cinematicArtist');
+  if (cinArtist) cinArtist.innerText = track.artist;
+}
+
+function renderSheetQueueList() {
+  const qView = document.getElementById('sheetViewQueue');
+  if (!qView) return;
+  qView.innerHTML = '<div style="font-size:0.9rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;padding-left:4px;">Upcoming Tracks</div>';
+
+  const upcoming = playlist.slice(currentIndex + 1, currentIndex + 25);
+  if (upcoming.length === 0) {
+    qView.innerHTML += '<p style="color:var(--text-dim);font-size:0.85rem;padding:8px;">No more tracks in queue. Autoplay will buffer next songs.</p>';
+    return;
+  }
+
+  upcoming.forEach((t, idx) => {
+    const item = document.createElement('div');
+    item.className = 'queue-row';
+    const isFav = !!favorites[t.id];
+
+    item.innerHTML = `
+      <img class="queue-thumb" src="${t.thumbnail || ''}" />
+      <div class="queue-info">
+        <div class="queue-title">${t.title}</div>
+        <div class="queue-artist">${t.artist}</div>
+      </div>
+      <div class="queue-actions-cluster">
+        <button class="queue-action-btn" title="Add to Favorites" onclick="event.stopPropagation(); toggleFavTrackDirect('${t.id}', this)">
+          ${isFav ? '♥' : '♡'}
+        </button>
+        <button class="queue-action-btn" title="Add to Playlist" onclick="event.stopPropagation(); addQueueTrackToPlaylist('${t.id}')">
+          +
+        </button>
+      </div>
+    `;
+    item.onclick = () => window.playIndex(currentIndex + 1 + idx);
+    qView.appendChild(item);
+  });
+}
+
+window.toggleFavTrackDirect = function (trackId, btn) {
+  const track = playlist.find(t => t.id === trackId);
+  if (!track) return;
+  if (favorites[trackId]) {
+    delete favorites[trackId];
+    btn.innerText = '♡';
+    btn.style.color = 'var(--text-muted)';
+  } else {
+    favorites[trackId] = track;
+    btn.innerText = '♥';
+    btn.style.color = 'var(--accent)';
+  }
+  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+};
+
+window.addQueueTrackToPlaylist = function (trackId) {
+  const track = playlist.find(t => t.id === trackId);
+  if (!track) return;
+  const plNames = Object.values(playlists).map(p => p.name).join(', ');
+  const target = prompt(`Enter playlist name to add "${track.title}" (${plNames}):`);
+  if (target) {
+    const found = Object.values(playlists).find(p => p.name.toLowerCase() === target.trim().toLowerCase());
+    if (found) {
+      found.tracks.push(track);
+      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      alert(`Added to "${found.name}"!`);
+    } else {
+      alert("Playlist not found.");
+    }
+  }
+};
+
+async function fetchRecommendations(videoId) {
+  try {
+    const res = await fetch(`/api/recommendations/${videoId}`);
+    const data = await res.json();
+    if (data.tracks && data.tracks.length > 0) {
+      const existingIds = new Set(playlist.map(t => t.id));
+      const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
+      playlist.push(...newTracks);
+    }
+  } catch (e) {
+    console.warn("Recommendations buffer error", e);
+  }
+}
+
+async function fetchLyrics(track, token) {
+  const container = document.getElementById('sheetViewLyrics');
+  if (container) container.innerHTML = `<div class="lyrics-line active">Syncing lyrics...</div>`;
+  parsedLyrics = [];
+  isSynced = false;
+
+  try {
+    const res = await fetch(`/api/lyrics?video_id=${track.id}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`);
+    const data = await res.json();
+
+    if (token !== activePlayToken) return;
+
+    isSynced = data.synced || false;
+    parsedLyrics = data.lines || [];
+
+    if (container) {
+      container.innerHTML = '';
+      parsedLyrics.forEach((l) => {
+        const div = document.createElement('div');
+        div.className = `lyrics-line`;
+        div.innerText = l.text;
+        if (isSynced) {
+          div.onclick = () => {
+            const audio = document.getElementById('audio');
+            if (audio) audio.currentTime = l.time;
+          };
+        }
+        container.appendChild(div);
+      });
+    }
+
+    populateCinematicLyrics();
+  } catch (err) {
+    if (token === activePlayToken && container) {
+      container.innerHTML = `<div class="lyrics-line">Lyrics unavailable.</div>`;
+    }
+  }
+}
+
+function populateCinematicLyrics() {
+  const box = document.getElementById('cinematicLyricsScroll');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!parsedLyrics || parsedLyrics.length === 0) {
+    box.innerHTML = '<div class="lyrics-line active">No synced lyrics available for this track.</div>';
+    return;
+  }
+  parsedLyrics.forEach(l => {
+    const div = document.createElement('div');
+    div.className = 'lyrics-line';
+    div.innerText = l.text;
+    if (isSynced) {
+      div.onclick = () => {
+        const audio = document.getElementById('audio');
+        if (audio) audio.currentTime = l.time;
       };
+    }
+    box.appendChild(div);
+  });
+}
 
-      card.oncontextmenu = (e) => showContextMenu(e, item);
-      el.appendChild(card);
+function updateArtworkPalette(imgUrl) {
+  if (!imgUrl) return;
+  const img = new Image();
+  img.crossOrigin = "Anonymous";
+  img.src = imgUrl;
+  img.onload = () => {
+    try {
+      const cvs = document.createElement("canvas");
+      const c = cvs.getContext("2d");
+      cvs.width = 16;
+      cvs.height = 16;
+      c.drawImage(img, 0, 0, 16, 16);
+      const p1 = c.getImageData(3, 3, 1, 1).data;
+      const p2 = c.getImageData(12, 12, 1, 1).data;
+
+      const palR1 = p1[0]; const palG1 = p1[1]; const palB1 = p1[2];
+      const palR2 = p2[0]; const palG2 = p2[1]; const palB2 = p2[2];
+
+      currentPrimaryHex = `#${((1 << 24) + (palR1 << 16) + (palG1 << 8) + palB1).toString(16).slice(1)}`;
+      const primaryCol = `rgb(${palR1}, ${palG1}, ${palB1})`;
+
+      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${palR1}, ${palG1}, ${palB1}, 0.85)`);
+      document.documentElement.style.setProperty('--mesh-color-2', `rgba(${palR2}, ${palG2}, ${palB2}, 0.75)`);
+      document.documentElement.style.setProperty('--play-accent-color', primaryCol);
+
+      const luminance = (0.299 * palR1 + 0.587 * palG1 + 0.114 * palB1) / 255;
+      const playSvg = document.getElementById('sheetPlayBtnSvg');
+      if (playSvg) {
+        playSvg.style.fill = luminance > 0.65 ? '#000000' : '#ffffff';
+      }
+    } catch (e) {
+      currentPrimaryHex = '#fa2d48';
+      document.documentElement.style.setProperty('--play-accent-color', '#ffffff');
+      const playSvg = document.getElementById('sheetPlayBtnSvg');
+      if (playSvg) playSvg.style.fill = '#000000';
+    }
+  };
+}
+
+function fmtTime(s) {
+  if (isNaN(s)) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+// ==========================================
+// 3. VIEW RENDERERS (Home, Search, Favorites)
+// ==========================================
+
+function renderHomeView() {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="home-brand-header">
+        <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center;">
+          <img src="/static/images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
+        </div>
+        <button class="sheet-icon-btn" onclick="openSettingsModal()" title="Settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+      </div>
+
+      <div class="hero-slider-section">
+        <div class="hero-slider-wrap" id="heroSlider"></div>
+        <div class="slider-dots" id="sliderDots"></div>
+      </div>
+
+      <div class="section-heading"><h2>Modes & Sonic Spaces</h2></div>
+      <div class="search-mood-cards" style="margin-bottom:32px;">
+        <div class="mood-card" onclick="loadShelfCategory('Deep Focus Lo-Fi Beats', 'trendingGrid')"><span>Deep Focus</span><span class="mood-icon">🧠</span></div>
+        <div class="mood-card" onclick="loadShelfCategory('Late Night Acoustic Melodies', 'bollywoodGrid')"><span>Late Night</span><span class="mood-icon">🌙</span></div>
+        <div class="mood-card" onclick="loadShelfCategory('Workout Gym Energy Bangers', 'punjabiGrid')"><span>Workout BPM</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="loadShelfCategory('Cinematic Ambient Soundscapes', 'indieGrid')"><span>Cinematic</span><span class="mood-icon">🌌</span></div>
+        <div class="mood-card" onclick="loadShelfCategory('Retro Bollywood Classics', 'retroGrid')"><span>Retro Gold</span><span class="mood-icon">📻</span></div>
+        <div class="mood-card" onclick="loadShelfCategory('Sufi Ghazals & Acoustic', 'sufiGrid')"><span>Sufi Chill</span><span class="mood-icon">🕊️</span></div>
+      </div>
+
+      <div class="section-heading" id="trendingShelf">
+        <h2>Trending Across India</h2>
+        <a onclick="loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid')">Refresh</a>
+      </div>
+      <div class="capsule-grid" id="trendingGrid"></div>
+
+      <div class="section-heading" id="bollywoodShelf">
+        <h2>Bollywood Chartbusters</h2>
+      </div>
+      <div class="capsule-grid" id="bollywoodGrid"></div>
+
+      <div class="section-heading" id="punjabiShelf">
+        <h2>Punjabi Banger Wave</h2>
+      </div>
+      <div class="capsule-grid" id="punjabiGrid"></div>
+
+      <div class="section-heading" id="indieShelf">
+        <h2>Desi Indie & Acoustic Chill</h2>
+      </div>
+      <div class="capsule-grid" id="indieGrid"></div>
+
+      <div class="section-heading" id="retroShelf">
+        <h2>Golden Era Classics</h2>
+      </div>
+      <div class="capsule-grid" id="retroGrid"></div>
+
+      <div class="section-heading" id="sufiShelf">
+        <h2>Sufi & Soulful Evenings</h2>
+      </div>
+      <div class="capsule-grid" id="sufiGrid"></div>
+    </div>
+  `;
+
+  loadHeroCatalog();
+  window.loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
+  window.loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
+  window.loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
+  window.loadShelfCategory('Indian Indie Songs', 'indieGrid');
+  window.loadShelfCategory('Retro Bollywood Classics', 'retroGrid');
+  window.loadShelfCategory('Sufi Ghazals & Acoustic', 'sufiGrid');
+}
+
+async function loadHeroCatalog() {
+  try {
+    const res = await fetch('/api/search?query=Top%20Hindi%20Trending%20Songs%202026');
+    const data = await res.json();
+    heroTracks = (data.results || []).slice(0, 6);
+    renderHeroSlider();
+  } catch (err) {
+    console.warn("Hero fetch failed:", err);
+  }
+}
+
+function renderHeroSlider() {
+  const slider = document.getElementById('heroSlider');
+  const dots = document.getElementById('sliderDots');
+  if (!slider || !dots) return;
+
+  slider.innerHTML = '';
+  dots.innerHTML = '';
+
+  heroTracks.forEach((track, i) => {
+    const slide = document.createElement('div');
+    slide.className = 'hero-slide-card';
+    slide.onclick = () => {
+      playlist = [...heroTracks];
+      window.playIndex(i);
+    };
+    slide.innerHTML = `
+      <img class="hero-slide-img" src="${track.thumbnail || ''}" loading="lazy" />
+      <div class="hero-slide-overlay">
+        <div class="hero-slide-tag">Curated Soundstage</div>
+        <div class="hero-slide-title">${track.title}</div>
+        <div class="hero-slide-artist">${track.artist}</div>
+      </div>
+    `;
+    slider.appendChild(slide);
+
+    const dot = document.createElement('div');
+    dot.className = `dot ${i === 0 ? 'active' : ''}`;
+    dots.appendChild(dot);
+  });
+
+  if (heroTracks.length > 0) {
+    updateArtworkPalette(heroTracks[0].thumbnail);
+  }
+
+  slider.addEventListener('scroll', () => {
+    const index = Math.round(slider.scrollLeft / (slider.offsetWidth * 0.90));
+    dots.querySelectorAll('.dot').forEach((d, idx) => {
+      d.classList.toggle('active', idx === index);
+    });
+    if (heroTracks[index] && heroTracks[index].thumbnail) {
+      updateArtworkPalette(heroTracks[index].thumbnail);
+    }
+  }, { passive: true });
+}
+
+window.loadShelfCategory = async function (query, containerId) {
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const items = data.results || [];
+    categoryData[containerId] = items;
+    renderGridContainer(containerId, items.slice(0, 6));
+
+    if (containerId === 'trendingGrid' && playlist.length === 0) {
+      playlist = [...items];
+    }
+  } catch (err) {
+    console.error("Shelf load error", err);
+  }
+};
+
+function renderGridContainer(containerId, items) {
+  const c = document.getElementById(containerId);
+  if (!c) return;
+  c.innerHTML = '';
+
+  items.forEach((track, i) => {
+    const item = document.createElement('div');
+    item.className = 'poster-item';
+    item.onclick = () => {
+      playlist = categoryData[containerId] || items;
+      window.playIndex(i);
+    };
+    item.innerHTML = `
+      <div class="poster-wrap">
+        <img class="poster-img" src="${track.thumbnail || ''}" loading="lazy" />
+        <div class="play-bubble"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+      </div>
+      <div class="poster-title">${track.title}</div>
+      <div class="poster-subtitle">${track.artist}</div>
+    `;
+    c.appendChild(item);
+  });
+}
+
+function renderSearchView() {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Search</h1>
+      </div>
+
+      <div class="search-hero-zone">
+        <div class="search-glass-capsule">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input type="text" id="dedicatedSearchInput" class="search-glass-input" placeholder="Songs, Bollywood artists, lyrics, albums..." autofocus autocomplete="off" />
+          <button class="search-clear-btn" id="searchClearBtn" onclick="clearSearchInput()">✕</button>
+        </div>
+      </div>
+
+      <div class="section-heading">
+        <h2>Explore by Mood & Genre</h2>
+      </div>
+      <div class="search-mood-cards">
+        <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
+        <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
+        <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
+        <div class="mood-card" onclick="quickSearch('Bollywood Dance Hits Party')"><span>Party Hits</span><span class="mood-icon">🎉</span></div>
+        <div class="mood-card" onclick="quickSearch('South Indian Cinema Bangers')"><span>South Cinema</span><span class="mood-icon">🚀</span></div>
+      </div>
+
+      <div class="section-heading">
+        <h2 id="searchResultsTitle">Trending Recommendations</h2>
+      </div>
+      <div class="capsule-grid" id="searchGrid"></div>
+
+      <div class="section-heading"><h2>Bollywood Chartbusters</h2></div>
+      <div class="capsule-grid" id="searchBollywoodGrid"></div>
+
+      <div class="section-heading"><h2>Punjabi Banger Wave</h2></div>
+      <div class="capsule-grid" id="searchPunjabiGrid"></div>
+
+      <div class="section-heading"><h2>Desi Indie & Acoustic Chill</h2></div>
+      <div class="capsule-grid" id="searchIndieGrid"></div>
+    </div>
+  `;
+
+  const input = document.getElementById('dedicatedSearchInput');
+  const clearBtn = document.getElementById('searchClearBtn');
+  let searchTimer = null;
+
+  if (input) {
+    input.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = input.value.trim();
+      if (clearBtn) clearBtn.style.display = q ? 'flex' : 'none';
+      if (!q) return;
+      searchTimer = setTimeout(() => {
+        const title = document.getElementById('searchResultsTitle');
+        if (title) title.innerText = `Results for "${q}"`;
+        loadSearchShelf(q, 'searchGrid', 12);
+      }, 300);
     });
   }
 
-  // Helper: Tracklist Renderer
-  function renderTrackRows(containerId, tracks) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-    el.innerHTML = '';
+  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 6);
+  loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
+  loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
+  loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
+}
 
-    const currentTrack = window.meloPlayer.queue[window.meloPlayer.currentIndex];
+window.clearSearchInput = function () {
+  const input = document.getElementById('dedicatedSearchInput');
+  const clearBtn = document.getElementById('searchClearBtn');
+  if (input) { input.value = ''; input.focus(); }
+  if (clearBtn) clearBtn.style.display = 'none';
+  const title = document.getElementById('searchResultsTitle');
+  if (title) title.innerText = "Trending Recommendations";
+  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 6);
+  loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
+  loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
+  loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
+};
 
-    tracks.forEach((track, idx) => {
+window.quickSearch = function (query) {
+  const input = document.getElementById('dedicatedSearchInput');
+  const clearBtn = document.getElementById('searchClearBtn');
+  if (input) {
+    input.value = query;
+    if (clearBtn) clearBtn.style.display = 'flex';
+  }
+  const title = document.getElementById('searchResultsTitle');
+  if (title) title.innerText = `Results for "${query}"`;
+  loadSearchShelf(query, 'searchGrid', 12);
+};
+
+async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const items = data.results || [];
+    categoryData[containerId] = items;
+    renderGridContainer(containerId, items.slice(0, limit));
+    if (containerId === 'searchGrid') playlist = items;
+  } catch (err) {
+    console.error("Search shelf load failed", err);
+  }
+}
+
+function renderFavoritesView() {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  const favList = Object.values(favorites);
+  const playlistList = Object.values(playlists);
+
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Music Hub</h1>
+      </div>
+
+      <div class="playlist-editorial-hero">
+        <div class="pl-hero-glow"></div>
+        <div class="pl-hero-cover">🤍</div>
+        <div class="pl-hero-meta">
+          <div class="pl-badge-chip">Curated Collection</div>
+          <h1 class="pl-title-text">Loved Songs</h1>
+          <p class="pl-sub-text">${favList.length} tracks saved directly from your sessions</p>
+          <div class="pl-actions-row">
+            <button class="pill-action-btn" onclick="playFavoritesAll()">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              <span>Play All</span>
+            </button>
+            <button class="filter-chip" onclick="createCustomPlaylistDialog()">+ New Playlist</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-heading"><h2>Your Playlists (${playlistList.length})</h2></div>
+      <div class="capsule-grid" id="customPlaylistsGrid"></div>
+
+      <div class="section-heading"><h2>Saved Tracks</h2></div>
+      <div id="favsTracklist"></div>
+    </div>
+  `;
+
+  const plGrid = document.getElementById('customPlaylistsGrid');
+  if (plGrid) {
+    plGrid.innerHTML = '';
+    playlistList.forEach(pl => {
+      const item = document.createElement('div');
+      item.className = 'poster-item';
+      item.onclick = () => openPlaylistDetails(pl.id);
+      item.innerHTML = `
+        <div class="poster-wrap" style="display:flex;align-items:center;justify-content:center;font-size:2.4rem;background:linear-gradient(135deg, #1f1f2a, #121216);">🎧</div>
+        <div class="poster-title">${pl.name}</div>
+        <div class="poster-subtitle">${pl.tracks.length} tracks</div>
+      `;
+      plGrid.appendChild(item);
+    });
+  }
+
+  const fList = document.getElementById('favsTracklist');
+  if (fList) {
+    fList.innerHTML = '';
+    if (favList.length === 0) {
+      fList.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:12px;">No loved tracks yet. Click the heart icon on any song to save it here.</p>`;
+    } else {
+      favList.forEach((track, i) => {
+        const row = document.createElement('div');
+        row.className = `track-row`;
+        row.onclick = () => { playlist = favList; window.playIndex(i); };
+        row.innerHTML = `
+          <div class="tr-num">${i + 1}</div>
+          <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+          <div class="tr-info">
+            <div class="tr-title">${track.title}</div>
+            <div class="tr-artist">${track.artist}</div>
+          </div>
+          <div class="tr-album">${track.album || 'Single'}</div>
+          <div class="tr-time">${track.duration}</div>
+          <button class="tr-fav active" onclick="removeFavoriteItem(event, '${track.id}')">♥</button>
+        `;
+        fList.appendChild(row);
+      });
+    }
+  }
+}
+
+window.playFavoritesAll = function () {
+  const favList = Object.values(favorites);
+  if (favList.length > 0) { playlist = favList; window.playIndex(0); }
+};
+
+window.removeFavoriteItem = function (e, trackId) {
+  e.stopPropagation();
+  delete favorites[trackId];
+  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+  renderFavoritesView();
+};
+
+window.createCustomPlaylistDialog = function () {
+  const name = prompt("Enter a title for your new playlist:");
+  if (name && name.trim()) {
+    const id = 'pl-' + Date.now();
+    playlists[id] = { id, name: name.trim(), tracks: [] };
+    localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+    renderFavoritesView();
+  }
+};
+
+function openPlaylistDetails(plId) {
+  const pl = playlists[plId];
+  const viewContainer = document.getElementById('viewContainer');
+  if (!pl || !viewContainer) return;
+
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Playlist</h1>
+      </div>
+
+      <div class="playlist-editorial-hero">
+        <div class="pl-hero-glow"></div>
+        <div class="pl-hero-cover">🎧</div>
+        <div class="pl-hero-meta">
+          <div class="pl-badge-chip">Custom Mix</div>
+          <h1 class="pl-title-text">${pl.name}</h1>
+          <p class="pl-sub-text">${pl.tracks.length} tracks</p>
+          <div class="pl-actions-row">
+            ${pl.tracks.length > 0 ? `
+              <button class="pill-action-btn" onclick="playlist = playlists['${plId}'].tracks; window.playIndex(0);">
+                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                <span>Play</span>
+              </button>
+            ` : ''}
+            <button class="filter-chip" onclick="deleteCustomPlaylist('${plId}')">Delete</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-heading"><h2>Songs</h2></div>
+      <div id="playlistTracksBox"></div>
+    </div>
+  `;
+
+  const box = document.getElementById('playlistTracksBox');
+  if (!box) return;
+  if (pl.tracks.length === 0) {
+    box.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:12px;">This playlist is empty. Play songs and add them from the player options.</p>`;
+  } else {
+    pl.tracks.forEach((track, i) => {
       const row = document.createElement('div');
-      const isCurrent = currentTrack && currentTrack.id === track.id;
-      row.className = `track-row ${isCurrent ? 'playing' : ''}`;
-
-      const isFav = window.meloStore.isFavorite(track.id);
-
+      row.className = 'track-row';
+      row.onclick = () => { playlist = pl.tracks; window.playIndex(i); };
       row.innerHTML = `
-        <div class="tr-num">${isCurrent ? '<div class="sound-bars"><div class="sound-bar"></div><div class="sound-bar"></div><div class="sound-bar"></div></div>' : idx + 1}</div>
+        <div class="tr-num">${i + 1}</div>
         <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
         <div class="tr-info">
           <div class="tr-title">${track.title}</div>
           <div class="tr-artist">${track.artist}</div>
         </div>
         <div class="tr-album">${track.album || 'Single'}</div>
-        <div class="tr-time">${track.duration || '3:30'}</div>
-        <button class="tr-action ${isFav ? 'favorited' : ''}" onclick="event.stopPropagation(); toggleFavoriteTrack('${track.id}', this)">
-          ${isFav ? '♥' : '♡'}
-        </button>
+        <div class="tr-time">${track.duration}</div>
       `;
-
-      row.onclick = () => window.meloPlayer.loadQueue(tracks, idx);
-      row.oncontextmenu = (e) => showContextMenu(e, track);
-      el.appendChild(row);
+      box.appendChild(row);
     });
   }
+}
 
-  async function loadCatalogGenre(query, gridId = 'trendingGrid', listId = 'songsList') {
-    try {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      if (data.results) {
-        if (gridId) renderCards(gridId, data.results.slice(0, 6));
-        if (listId) renderTrackRows(listId, data.results);
-      }
-    } catch (e) {
-      console.warn("Catalog fetch error", e);
-    }
+window.deleteCustomPlaylist = function (plId) {
+  if (confirm("Are you sure you want to delete this playlist?")) {
+    delete playlists[plId];
+    localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+    renderFavoritesView();
   }
+};
 
-  // ==========================================
-  // VIEW: EXPLORE
-  // ==========================================
-  function renderExploreView() {
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="section-heading"><h2>Explore & New Releases</h2></div>
-        <div class="capsule-grid" id="exploreGrid"></div>
-        <div class="section-heading"><h2>Global Discovery Tracklist</h2></div>
-        <div id="exploreSongs"></div>
-      </div>
-    `;
-    loadCatalogGenre('New International Releases & Viral', 'exploreGrid', 'exploreSongs');
+// ==========================================
+// 4. DOM READY INITIALIZATION & EVENTS
+// ==========================================
+
+document.addEventListener('DOMContentLoaded', () => {
+  const audio = document.getElementById('audio');
+  const dockScrubber = document.getElementById('dockScrubber');
+  const scrubberPlayedZone = document.getElementById('scrubberPlayedZone');
+  const scrubberThumbIndicator = document.getElementById('scrubberThumbIndicator');
+  const scrubberTrackBase = document.getElementById('scrubberTrackBase');
+  const timeCurrent = document.getElementById('timeCurrent');
+  const timeDuration = document.getElementById('timeDuration');
+  const sheetTimeCur = document.getElementById('sheetTimeCur');
+  const sheetTimeDur = document.getElementById('sheetTimeDur');
+  const miniWaveCanvas = document.getElementById('miniWaveCanvas');
+  const scrubberWaveCanvas = document.getElementById('scrubberWaveCanvas');
+
+  // Miniplayer Canvas Wave
+  const miniWaveCtx = miniWaveCanvas ? miniWaveCanvas.getContext('2d') : null;
+  let wavePhase = 0;
+  let colorShift = 0;
+  let currentAmplitude = 0;
+
+  function resizeMiniWaveCanvas() {
+    if (!miniWaveCanvas || !miniWaveCtx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = miniWaveCanvas.offsetWidth;
+    const h = miniWaveCanvas.offsetHeight;
+    miniWaveCanvas.width = w * dpr;
+    miniWaveCanvas.height = h * dpr;
+    miniWaveCtx.setTransform(1, 0, 0, 1, 0, 0);
+    miniWaveCtx.scale(dpr, dpr);
   }
+  window.addEventListener('resize', resizeMiniWaveCanvas);
 
-  // ==========================================
-  // VIEW: LIBRARY
-  // ==========================================
-  function renderLibraryView() {
-    const favs = Object.values(window.meloStore.state.favorites);
-    const playlists = Object.values(window.meloStore.state.playlists);
+  function renderTidalLightWave() {
+    if (!miniWaveCanvas || !miniWaveCtx || !audio) return;
+    const w = miniWaveCanvas.offsetWidth;
+    const h = miniWaveCanvas.offsetHeight;
+    miniWaveCtx.clearRect(0, 0, w, h);
 
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="section-heading">
-          <h2>Playlists (${playlists.length})</h2>
-          <a id="createNewPlaylistBtn">+ New Playlist</a>
-        </div>
-        <div class="capsule-grid" id="playlistShelf"></div>
+    const isPlaying = !audio.paused && audio.currentTime > 0 && !audio.ended;
+    const midY = 5;
+    const targetAmp = isPlaying ? 4.5 : 0;
+    currentAmplitude += (targetAmp - currentAmplitude) * 0.07;
 
-        <div class="section-heading">
-          <h2>Loved Tracks (${favs.length})</h2>
-          ${favs.length > 0 ? '<a id="playFavsBtn">Play All</a>' : ''}
-        </div>
-        <div id="favsList"></div>
-      </div>
-    `;
+    if (currentAmplitude > 0.05) {
+      colorShift = (colorShift + 0.15) % 360;
+      wavePhase += 0.012;
 
-    const shelf = document.getElementById('playlistShelf');
-    playlists.forEach(pl => {
-      const card = document.createElement('div');
-      card.className = 'media-card';
-      card.innerHTML = `
-        <div class="card-thumb-wrap" style="display:flex;align-items:center;justify-content:center;font-size:2rem;background:#18181f;">
-          🎵
-        </div>
-        <div class="card-title">${pl.name}</div>
-        <div class="card-subtitle">${pl.tracks.length} tracks</div>
-      `;
-      card.onclick = () => navigate(`playlist/${pl.id}`);
-      shelf.appendChild(card);
-    });
+      const threads = [
+        { freq: 0.014, speed: 0.8, phase: 0, alpha: 0.55, shift: 0 },
+        { freq: 0.021, speed: 1.0, phase: 1.6, alpha: 0.42, shift: 60 },
+        { freq: 0.010, speed: 0.6, phase: 3.2, alpha: 0.35, shift: 140 }
+      ];
 
-    if (favs.length > 0) {
-      renderTrackRows('favsList', favs);
-      document.getElementById('playFavsBtn').onclick = () => window.meloPlayer.loadQueue(favs, 0);
-    } else {
-      document.getElementById('favsList').innerHTML = `<p style="color:var(--text-muted);font-size:0.9rem;">No favorite songs added yet.</p>`;
-    }
-
-    document.getElementById('createNewPlaylistBtn').onclick = () => {
-      openModal("Create Playlist", "Give your playlist an evocative title.", (name) => {
-        if (name && name.trim()) {
-          const id = window.meloStore.createPlaylist(name.trim());
-          navigate(`playlist/${id}`);
+      threads.forEach(t => {
+        miniWaveCtx.save();
+        miniWaveCtx.beginPath();
+        miniWaveCtx.moveTo(0, h);
+        for (let x = 0; x <= w; x += 3) {
+          const y = midY + Math.sin(x * t.freq + (wavePhase * t.speed) + t.phase) * currentAmplitude;
+          miniWaveCtx.lineTo(x, y);
         }
+        miniWaveCtx.lineTo(w, h);
+        miniWaveCtx.closePath();
+
+        const lightCastGrad = miniWaveCtx.createLinearGradient(0, midY - currentAmplitude, 0, h);
+        lightCastGrad.addColorStop(0, `hsla(${(colorShift + t.shift) % 360}, 90%, 65%, 0.18)`);
+        lightCastGrad.addColorStop(0.7, `hsla(${(colorShift + t.shift + 40) % 360}, 85%, 55%, 0.05)`);
+        lightCastGrad.addColorStop(1, `transparent`);
+        miniWaveCtx.fillStyle = lightCastGrad;
+        miniWaveCtx.fill();
+        miniWaveCtx.restore();
+
+        miniWaveCtx.save();
+        miniWaveCtx.beginPath();
+        miniWaveCtx.lineWidth = 1.4;
+        const strokeGrad = miniWaveCtx.createLinearGradient(0, 0, w, 0);
+        strokeGrad.addColorStop(0, `hsla(${(colorShift + t.shift) % 360}, 90%, 70%, ${t.alpha})`);
+        strokeGrad.addColorStop(0.5, `hsla(${(colorShift + t.shift + 80) % 360}, 90%, 65%, ${t.alpha})`);
+        strokeGrad.addColorStop(1, `hsla(${(colorShift + t.shift + 160) % 360}, 90%, 70%, ${t.alpha})`);
+        miniWaveCtx.strokeStyle = strokeGrad;
+        for (let x = 0; x <= w; x += 2) {
+          const y = midY + Math.sin(x * t.freq + (wavePhase * t.speed) + t.phase) * currentAmplitude;
+          if (x === 0) miniWaveCtx.moveTo(x, y);
+          else miniWaveCtx.lineTo(x, y);
+        }
+        miniWaveCtx.stroke();
+        miniWaveCtx.restore();
       });
-    };
+    }
+
+    requestAnimationFrame(renderTidalLightWave);
+  }
+  setTimeout(() => { resizeMiniWaveCanvas(); renderTidalLightWave(); }, 50);
+
+  // Scrubber Wave
+  const scrubberWaveCtx = scrubberWaveCanvas ? scrubberWaveCanvas.getContext('2d') : null;
+  let scrubberWavePhase = 0;
+
+  function renderScrubberLiveWave() {
+    if (!scrubberWaveCanvas || !scrubberWaveCtx) return;
+    const trackBase = document.getElementById('scrubberTrackBase');
+    const w = trackBase ? trackBase.offsetWidth : 300;
+    const h = scrubberWaveCanvas.offsetHeight || 10;
+    const dpr = window.devicePixelRatio || 1;
+
+    if (scrubberWaveCanvas.width !== w * dpr || scrubberWaveCanvas.height !== h * dpr) {
+      scrubberWaveCanvas.width = w * dpr;
+      scrubberWaveCanvas.height = h * dpr;
+      scrubberWaveCtx.scale(dpr, dpr);
+    }
+
+    scrubberWaveCtx.clearRect(0, 0, w, h);
+    const isPlaying = audio && !audio.paused && audio.currentTime > 0 && !audio.ended;
+
+    if (w > 0) {
+      scrubberWavePhase += isPlaying ? 0.045 : 0.008;
+      const midY = h / 2;
+      const amp = isPlaying ? 2.8 : 0.5;
+
+      scrubberWaveCtx.beginPath();
+      scrubberWaveCtx.lineWidth = 2.4;
+      const grad = scrubberWaveCtx.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, '#fa2d48');
+      grad.addColorStop(1, currentPrimaryHex);
+      scrubberWaveCtx.strokeStyle = grad;
+
+      for (let x = 0; x <= w; x += 2) {
+        const y = midY + Math.sin(x * 0.08 + scrubberWavePhase) * amp;
+        if (x === 0) scrubberWaveCtx.moveTo(x, y);
+        else scrubberWaveCtx.lineTo(x, y);
+      }
+      scrubberWaveCtx.stroke();
+    }
+
+    requestAnimationFrame(renderScrubberLiveWave);
+  }
+  setTimeout(renderScrubberLiveWave, 60);
+
+  if (scrubberTrackBase && audio) {
+    scrubberTrackBase.addEventListener('click', (e) => {
+      if (!audio.duration) return;
+      const rect = scrubberTrackBase.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      audio.currentTime = pct * audio.duration;
+    });
   }
 
-  // ==========================================
-  // VIEW: PLAYLIST DETAIL
-  // ==========================================
-  function renderPlaylistView(id) {
-    const pl = window.meloStore.state.playlists[id];
-    if (!pl) {
-      navigate('library');
+  // Fluid Mesh Animation
+  const fluidCanvases = [document.getElementById('fluidMeshCanvas'), document.getElementById('cinematicMeshCanvas')];
+  let fluidTime = 0;
+  let palR1 = 250, palG1 = 45, palB1 = 72;
+  let palR2 = 192, palG2 = 38, palB2 = 211;
+
+  function resizeFluidCanvases() {
+    fluidCanvases.forEach(canv => {
+      if (!canv) return;
+      canv.width = Math.floor(window.innerWidth / 4);
+      canv.height = Math.floor(window.innerHeight / 4);
+    });
+  }
+  window.addEventListener('resize', resizeFluidCanvases);
+  setTimeout(resizeFluidCanvases, 40);
+
+  function renderLiveFluidMesh() {
+    const isSheetOpen = document.getElementById('fullscreenPlayerOverlay')?.classList.contains('open');
+    const isCinemaOpen = document.getElementById('cinematicOverlay')?.classList.contains('open');
+
+    if (!isSheetOpen && !isCinemaOpen) {
+      requestAnimationFrame(renderLiveFluidMesh);
       return;
     }
 
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="editorial-hero" style="min-height:220px; align-items:center; gap:28px;">
-          <div class="hero-ambient-glow"></div>
-          <div style="width:140px;height:140px;border-radius:18px;background:var(--accent-gradient);display:flex;align-items:center;justify-content:center;font-size:3rem;flex-shrink:0;">
-            🎵
-          </div>
-          <div class="hero-meta">
-            <div class="hero-tag">Playlist</div>
-            <h1 class="hero-title" style="font-size:2.2rem;">${pl.name}</h1>
-            <p class="hero-desc">${pl.tracks.length} songs • ${pl.description || 'Personal Collection'}</p>
-            <div style="display:flex;gap:12px;">
-              ${pl.tracks.length > 0 ? `
-                <button class="pill-action-btn" id="plPlayBtn"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> <span>Play</span></button>
-              ` : ''}
-              ${id !== 'pl-favorites' && id !== 'pl-repeat' ? `
-                <button class="filter-chip" id="plDeleteBtn" style="border-color:rgba(255,255,255,0.2);">Delete</button>
-              ` : ''}
-            </div>
-          </div>
-        </div>
+    fluidTime += 0.007;
 
-        <div id="plTracklist"></div>
-      </div>
-    `;
+    fluidCanvases.forEach(canv => {
+      if (!canv) return;
+      const fCtx = canv.getContext('2d');
+      const w = canv.width;
+      const h = canv.height;
+      fCtx.clearRect(0, 0, w, h);
 
-    if (pl.tracks.length > 0) {
-      renderTrackRows('plTracklist', pl.tracks);
-      document.getElementById('plPlayBtn').onclick = () => window.meloPlayer.loadQueue(pl.tracks, 0);
-    } else {
-      document.getElementById('plTracklist').innerHTML = `<p style="color:var(--text-muted);font-size:0.9rem;">No tracks inside this playlist. Search songs and click "Add to Playlist" to populate.</p>`;
-    }
+      const cx1 = w * (0.35 + 0.25 * Math.sin(fluidTime));
+      const cy1 = h * (0.35 + 0.25 * Math.cos(fluidTime * 0.8));
+      const g1 = fCtx.createRadialGradient(cx1, cy1, 0, cx1, cy1, w * 0.95);
+      g1.addColorStop(0, `rgba(${palR1}, ${palG1}, ${palB1}, 0.95)`);
+      g1.addColorStop(1, 'transparent');
+      fCtx.fillStyle = g1;
+      fCtx.fillRect(0, 0, w, h);
 
-    const delBtn = document.getElementById('plDeleteBtn');
-    if (delBtn) {
-      delBtn.onclick = () => {
-        window.meloStore.deletePlaylist(id);
-        showToast("Playlist deleted", "info");
-        navigate('library');
-      };
-    }
+      const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
+      const cy2 = h * (0.65 + 0.25 * Math.sin(fluidTime * 0.7));
+      const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
+      g2.addColorStop(0, `rgba(${palR2}, ${palG2}, ${palB2}, 0.9)`);
+      g2.addColorStop(1, 'transparent');
+      fCtx.fillStyle = g2;
+      fCtx.fillRect(0, 0, w, h);
+    });
+
+    requestAnimationFrame(renderLiveFluidMesh);
   }
+  setTimeout(renderLiveFluidMesh, 100);
 
-  // ==========================================
-  // VIEW: ALBUM DETAIL
-  // ==========================================
-  async function renderAlbumView(browseId) {
-    mainView.innerHTML = `<div class="stage-content"><p style="color:var(--text-muted)">Loading album metadata...</p></div>`;
-    try {
-      const res = await fetch(`/api/album/${browseId}`);
-      const album = await res.json();
+  // Audio Event Listeners
+  if (audio) {
+    audio.ontimeupdate = () => {
+      if (audio.duration) {
+        const pct = (audio.currentTime / audio.duration) * 100;
+        if (dockScrubber) {
+          dockScrubber.value = pct;
+          dockScrubber.style.background = `linear-gradient(to right, #fa2d48 0%, #c026d3 ${pct}%, rgba(255,255,255,0.15) ${pct}%, rgba(255,255,255,0.15) 100%)`;
+        }
 
-      mainView.innerHTML = `
-        <div class="stage-content">
-          <div class="editorial-hero" style="min-height:240px; gap:32px;">
-            <div class="hero-ambient-glow"></div>
-            <img src="${album.thumbnail}" style="width:160px;height:160px;border-radius:16px;object-fit:cover;box-shadow:0 10px 30px rgba(0,0,0,0.8);" />
-            <div class="hero-meta">
-              <div class="hero-tag">Album • ${album.year || 'Latest'}</div>
-              <h1 class="hero-title" style="font-size:2.2rem;">${album.title}</h1>
-              <p class="hero-desc">By <a style="color:#fff;cursor:pointer;" onclick="window.location.hash='artist/${album.artistId}'">${album.artist}</a> • ${album.tracks.length} tracks</p>
-              <button class="pill-action-btn" id="albumPlayBtn">
-                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                <span>Play Album</span>
-              </button>
-            </div>
-          </div>
-          <div id="albumTracks"></div>
-        </div>
-      `;
+        if (scrubberPlayedZone) scrubberPlayedZone.style.setProperty('--scrubber-pct', `${pct}%`);
+        if (scrubberThumbIndicator) scrubberThumbIndicator.style.setProperty('--scrubber-pct', `${pct}%`);
 
-      renderTrackRows('albumTracks', album.tracks);
-      document.getElementById('albumPlayBtn').onclick = () => window.meloPlayer.loadQueue(album.tracks, 0);
-    } catch (e) {
-      mainView.innerHTML = `<div class="stage-content"><p style="color:var(--accent)">Failed to load album information.</p></div>`;
-    }
-  }
+        const cur = fmtTime(audio.currentTime);
+        const dur = fmtTime(audio.duration);
 
-  // ==========================================
-  // VIEW: ARTIST DETAIL
-  // ==========================================
-  async function renderArtistView(browseId) {
-    mainView.innerHTML = `<div class="stage-content"><p style="color:var(--text-muted)">Loading artist discography...</p></div>`;
-    try {
-      const res = await fetch(`/api/artist/${browseId}`);
-      const artist = await res.json();
-
-      mainView.innerHTML = `
-        <div class="stage-content">
-          <div class="editorial-hero" style="min-height:240px; gap:32px;">
-            <div class="hero-ambient-glow"></div>
-            <img src="${artist.thumbnail}" style="width:160px;height:160px;border-radius:50%;object-fit:cover;box-shadow:0 10px 30px rgba(0,0,0,0.8);" />
-            <div class="hero-meta">
-              <div class="hero-tag">Artist</div>
-              <h1 class="hero-title" style="font-size:2.4rem;">${artist.name}</h1>
-              <p class="hero-desc">${artist.description ? artist.description.slice(0, 180) + '...' : 'Verified Artist'}</p>
-              ${artist.topSongs.length > 0 ? `
-                <button class="pill-action-btn" id="artistPlayBtn"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> <span>Play Popular</span></button>
-              ` : ''}
-            </div>
-          </div>
-
-          <div class="section-heading"><h2>Popular Tracks</h2></div>
-          <div id="artistSongs"></div>
-
-          ${artist.albums.length > 0 ? `
-            <div class="section-heading" style="margin-top:40px;"><h2>Discography & Albums</h2></div>
-            <div class="capsule-grid" id="artistAlbums"></div>
-          ` : ''}
-        </div>
-      `;
-
-      renderTrackRows('artistSongs', artist.topSongs);
-      if (artist.topSongs.length > 0) {
-        document.getElementById('artistPlayBtn').onclick = () => window.meloPlayer.loadQueue(artist.topSongs, 0);
+        if (timeCurrent) timeCurrent.innerText = cur;
+        if (timeDuration) timeDuration.innerText = dur;
+        if (sheetTimeCur) sheetTimeCur.innerText = cur;
+        if (sheetTimeDur) sheetTimeDur.innerText = dur;
       }
 
-      if (artist.albums.length > 0) {
-        const grid = document.getElementById('artistAlbums');
-        artist.albums.forEach(alb => {
-          const card = document.createElement('div');
-          card.className = 'media-card';
-          card.innerHTML = `
-            <div class="card-thumb-wrap">
-              <img class="card-thumb" src="${alb.thumbnail || ''}" loading="lazy" />
-              <div class="play-bubble"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
-            </div>
-            <div class="card-title">${alb.title}</div>
-            <div class="card-subtitle">${alb.year || 'Album'}</div>
-          `;
-          card.onclick = () => navigate(`album/${alb.browseId}`);
-          grid.appendChild(card);
-        });
-      }
-    } catch (e) {
-      mainView.innerHTML = `<div class="stage-content"><p style="color:var(--accent)">Failed to load artist details.</p></div>`;
-    }
-  }
+      if (isSynced && parsedLyrics.length > 0) {
+        const curTime = audio.currentTime;
+        let activeIdx = -1;
 
-  // ==========================================
-  // VIEW: STATS
-  // ==========================================
-  function renderStatsView() {
-    const stats = window.meloStore.state.stats;
-    const minutes = Math.floor(stats.totalSecondsListened / 60);
-    const hours = (minutes / 60).toFixed(1);
+        for (let i = 0; i < parsedLyrics.length; i++) {
+          if (curTime >= parsedLyrics[i].time - 0.2) {
+            activeIdx = i;
+          } else {
+            break;
+          }
+        }
 
-    const sortedSongs = Object.entries(stats.playCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
+        if (activeIdx !== -1) {
+          const lines = document.querySelectorAll('#sheetViewLyrics .lyrics-line');
+          lines.forEach((el, idx) => {
+            if (idx === activeIdx) {
+              if (!el.classList.contains('active')) {
+                el.classList.add('active');
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } else {
+              el.classList.remove('active');
+            }
+          });
 
-    const sortedArtists = Object.entries(stats.artistCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="section-heading"><h2>Listening Analytics</h2></div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:20px;margin-bottom:40px;">
-          <div style="background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:16px;padding:24px;">
-            <div style="font-size:0.8rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;">Total Time Streamed</div>
-            <div style="font-size:2.2rem;font-weight:800;color:#fff;margin-top:6px;">${hours} <span style="font-size:1rem;color:var(--text-muted);">hours</span></div>
-          </div>
-          <div style="background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:16px;padding:24px;">
-            <div style="font-size:0.8rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;">Completed Streams</div>
-            <div style="font-size:2.2rem;font-weight:800;color:#fff;margin-top:6px;">${Object.values(stats.playCounts).reduce((a, b) => a + b, 0)}</div>
-          </div>
-          <div style="background:var(--surface-card);border:1px solid var(--border-subtle);border-radius:16px;padding:24px;">
-            <div style="font-size:0.8rem;color:var(--text-muted);text-transform:uppercase;font-weight:700;">Active Days</div>
-            <div style="font-size:2.2rem;font-weight:800;color:#fff;margin-top:6px;">${Object.keys(stats.activeDays).length}</div>
-          </div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;">
-          <div>
-            <div class="section-heading"><h2>Top Artists</h2></div>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-              ${sortedArtists.map(([art, count], i) => `
-                <div style="display:flex;justify-content:space-between;padding:12px;background:var(--surface-card);border-radius:10px;">
-                  <span>${i + 1}. <strong>${art}</strong></span>
-                  <span style="color:var(--text-muted)">${count} plays</span>
-                </div>
-              `).join('') || '<p style="color:var(--text-muted)">Listen to more tracks to generate insights.</p>'}
-            </div>
-          </div>
-          <div>
-            <div class="section-heading"><h2>Top Replayed Songs</h2></div>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-              ${sortedSongs.map(([id, count], i) => {
-                const track = window.meloStore.state.history.find(t => t.id === id);
-                return `
-                  <div style="display:flex;justify-content:space-between;padding:12px;background:var(--surface-card);border-radius:10px;">
-                    <span>${i + 1}. <strong>${track ? track.title : 'Track'}</strong></span>
-                    <span style="color:var(--text-muted)">${count} plays</span>
-                  </div>
-                `;
-              }).join('') || '<p style="color:var(--text-muted)">Play counts appear after 15s of active streaming.</p>'}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  // ==========================================
-  // LIVE SEARCH & SUGGESTIONS
-  // ==========================================
-  let debounceTimer = null;
-
-  searchInput.addEventListener('input', () => {
-    clearTimeout(debounceTimer);
-    const q = searchInput.value.trim();
-    if (!q) {
-      suggestionsBox.classList.remove('open');
-      return;
-    }
-
-    debounceTimer = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/suggestions?query=${encodeURIComponent(q)}`);
-        const data = await res.json();
-        if (data.suggestions && data.suggestions.length > 0) {
-          suggestionsBox.innerHTML = data.suggestions.map(s => `
-            <div class="sug-item"><span>🔍</span> <span>${s}</span></div>
-          `).join('');
-          suggestionsBox.classList.add('open');
-
-          suggestionsBox.querySelectorAll('.sug-item').forEach(item => {
-            item.onclick = () => {
-              searchInput.value = item.querySelector('span:last-child').innerText;
-              suggestionsBox.classList.remove('open');
-              performSearch(searchInput.value);
-            };
+          const cinLines = document.querySelectorAll('#cinematicLyricsScroll .lyrics-line');
+          cinLines.forEach((el, idx) => {
+            if (idx === activeIdx) {
+              if (!el.classList.contains('active')) {
+                el.classList.add('active');
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            } else {
+              el.classList.remove('active');
+            }
           });
         }
-      } catch (e) {}
-    }, 250);
-  });
-
-  searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      suggestionsBox.classList.remove('open');
-      performSearch(searchInput.value);
-    }
-  });
-
-  async function performSearch(query) {
-    const q = query.trim();
-    if (!q) return;
-
-    if (currentAbortController) currentAbortController.abort();
-    currentAbortController = new AbortController();
-
-    window.meloStore.addRecentSearch(q);
-
-    mainView.innerHTML = `
-      <div class="stage-content">
-        <div class="section-heading"><h2>Searching for "${q}"...</h2></div>
-        <div id="searchGrid" class="capsule-grid"></div>
-        <div id="searchList"></div>
-      </div>
-    `;
-
-    try {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`, {
-        signal: currentAbortController.signal
-      });
-      const data = await res.json();
-
-      if (data.results && data.results.length > 0) {
-        document.querySelector('.section-heading h2').innerText = `Results for "${q}"`;
-        renderCards('searchGrid', data.results.slice(0, 6));
-        renderTrackRows('searchList', data.results);
-      } else {
-        document.querySelector('.section-heading h2').innerText = `No results found for "${q}".`;
       }
-    } catch (e) {
-      if (e.name !== 'AbortError') {
-        document.querySelector('.section-heading h2').innerText = `Search error occurred. Please retry.`;
-      }
-    }
-  }
-
-  // ==========================================
-  // CONTEXT MENU (Right Click)
-  // ==========================================
-  function showContextMenu(e, track) {
-    e.preventDefault();
-    activeContextTrack = track;
-
-    contextMenu.style.top = `${Math.min(e.clientY, window.innerHeight - 240)}px`;
-    contextMenu.style.left = `${Math.min(e.clientX, window.innerWidth - 220)}px`;
-    contextMenu.classList.add('open');
-  }
-
-  window.addEventListener('click', () => contextMenu.classList.remove('open'));
-
-  document.getElementById('ctxPlayNext').onclick = () => {
-    if (activeContextTrack) {
-      window.meloPlayer.enqueue(activeContextTrack, true);
-      showToast("Playing next", "info");
-    }
-  };
-
-  document.getElementById('ctxAddToQueue').onclick = () => {
-    if (activeContextTrack) {
-      window.meloPlayer.enqueue(activeContextTrack, false);
-      showToast("Added to queue", "info");
-    }
-  };
-
-  document.getElementById('ctxAddToPlaylist').onclick = () => {
-    if (!activeContextTrack) return;
-    const playlists = Object.values(window.meloStore.state.playlists);
-    const options = playlists.map(p => p.name).join(', ');
-
-    openModal("Add to Playlist", `Type existing playlist name (${options}):`, (name) => {
-      const target = playlists.find(p => p.name.toLowerCase() === name.toLowerCase());
-      if (target) {
-        window.meloStore.addToPlaylist(target.id, activeContextTrack);
-        showToast(`Added to ${target.name}`, "info");
-      } else {
-        showToast("Playlist not found", "error");
-      }
-    });
-  };
-
-  // ==========================================
-  // FULLSCREEN LYRICS
-  // ==========================================
-  async function openLyrics() {
-    const track = window.meloPlayer.queue[window.meloPlayer.currentIndex];
-    if (!track) return;
-
-    lyricsOverlay.classList.add('open');
-    document.getElementById('lyricsCover').src = track.thumbnail || '';
-    document.getElementById('lyricsBackdrop').style.backgroundImage = `url(${track.thumbnail})`;
-    document.getElementById('lyricsTitle').innerText = track.title;
-    document.getElementById('lyricsArtist').innerText = track.artist;
-
-    const list = document.getElementById('lyricsLines');
-    list.innerHTML = `<div class="lyrics-line active">Fetching synced lyrics...</div>`;
-
-    if (lyricsCache[track.id]) {
-      renderLyricsLines(lyricsCache[track.id]);
-      return;
-    }
-
-    try {
-      const res = await fetch(`/api/lyrics/${track.id}`);
-      const data = await res.json();
-      lyricsCache[track.id] = data.lines;
-      renderLyricsLines(data.lines);
-    } catch (e) {
-      list.innerHTML = `<div class="lyrics-line">Unable to load lyrics.</div>`;
-    }
-  }
-
-  function renderLyricsLines(lines) {
-    const list = document.getElementById('lyricsLines');
-    list.innerHTML = '';
-    lines.forEach((line, i) => {
-      const el = document.createElement('div');
-      el.className = `lyrics-line ${i === 0 ? 'active' : ''}`;
-      el.innerText = line;
-      el.onclick = () => {
-        list.querySelectorAll('.lyrics-line').forEach(l => l.classList.remove('active'));
-        el.classList.add('active');
-      };
-      list.appendChild(el);
-    });
-  }
-
-  document.getElementById('closeLyricsBtn').onclick = () => lyricsOverlay.classList.remove('open');
-
-  // ==========================================
-  // QUEUE DRAWER
-  // ==========================================
-  function toggleQueueDrawer() {
-    queueDrawer.classList.toggle('open');
-    if (queueDrawer.classList.contains('open')) {
-      renderQueueItems();
-    }
-  }
-
-  function renderQueueItems() {
-    const list = document.getElementById('queueList');
-    list.innerHTML = '';
-
-    window.meloPlayer.queue.forEach((track, i) => {
-      const isCurrent = i === window.meloPlayer.currentIndex;
-      const item = document.createElement('div');
-      item.className = `queue-item ${isCurrent ? 'active' : ''}`;
-      item.innerHTML = `
-        <img src="${track.thumbnail || ''}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;" />
-        <div class="queue-item-meta">
-          <div class="queue-item-title">${track.title}</div>
-          <div class="queue-item-artist">${track.artist}</div>
-        </div>
-        <div class="queue-actions">
-          <button style="background:none;border:none;color:var(--text-dim);cursor:pointer;" onclick="event.stopPropagation(); window.meloPlayer.queue.splice(${i}, 1); renderQueueItems();">✕</button>
-        </div>
-      `;
-      item.onclick = () => window.meloPlayer.playIndex(i);
-      list.appendChild(item);
-    });
-  }
-
-  document.getElementById('queueToggleBtn').onclick = toggleQueueDrawer;
-  document.getElementById('closeQueueBtn').onclick = () => queueDrawer.classList.remove('open');
-  document.getElementById('clearQueueBtn').onclick = () => {
-    window.meloPlayer.queue = [];
-    window.meloPlayer.currentIndex = -1;
-    renderQueueItems();
-    showToast("Queue cleared", "info");
-  };
-
-  // ==========================================
-  // MODALS & TOAST NOTIFICATIONS
-  // ==========================================
-  function openModal(title, desc, onConfirm) {
-    genericModal.classList.add('open');
-    document.getElementById('modalTitle').innerText = title;
-    document.getElementById('modalDesc').innerText = desc;
-    const inp = document.getElementById('modalInput');
-    inp.value = '';
-    inp.focus();
-
-    document.getElementById('modalConfirmBtn').onclick = () => {
-      genericModal.classList.remove('open');
-      onConfirm(inp.value);
     };
-    document.getElementById('modalCancelBtn').onclick = () => genericModal.classList.remove('open');
+
+    audio.onended = () => window.nextTrack();
+
+    if (dockScrubber) {
+      dockScrubber.oninput = (e) => {
+        if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration;
+      };
+    }
+
+    const dockVol = document.getElementById('dockVol');
+    if (dockVol) {
+      dockVol.oninput = (e) => { audio.volume = e.target.value; };
+    }
   }
 
-  function showToast(message, type = 'info') {
-    const container = document.getElementById('toastContainer');
-    const toast = document.createElement('div');
-    toast.className = 'toast';
-    toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '✓'}</span> <span>${message}</span>`;
-    container.appendChild(toast);
-    setTimeout(() => toast.remove(), 2800);
-  }
-  window.addEventListener('app:toast', (e) => showToast(e.detail.message, e.detail.type));
-
-  // ==========================================
-  // PLAYER SYNC & CONTROLS
-  // ==========================================
-  const dockTitle = document.getElementById('dockTitle');
-  const dockArtist = document.getElementById('dockArtist');
-  const dockThumb = document.getElementById('dockThumb');
-  const playBtn = document.getElementById('dockPlayBtn');
-  const scrubber = document.getElementById('dockScrubber');
-  const timeCur = document.getElementById('timeCurrent');
-  const timeDur = document.getElementById('timeDuration');
-  const shuffleBtn = document.getElementById('shuffleBtn');
-  const repeatBtn = document.getElementById('repeatBtn');
-
-  window.addEventListener('player:trackchanged', (e) => {
-    const t = e.detail;
-    dockTitle.innerText = t.title;
-    dockArtist.innerText = t.artist;
-    dockThumb.src = t.thumbnail || '';
-    handleRoute(); // re-render rows to update playing wave
-  });
-
-  window.addEventListener('player:playstate', (e) => {
-    playBtn.innerHTML = e.detail.playing
-      ? `<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`
-      : `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
-  });
-
-  window.addEventListener('player:timeupdate', (e) => {
-    const { currentTime, duration } = e.detail;
-    if (duration > 0) {
-      scrubber.value = (currentTime / duration) * 100;
-      timeCur.innerText = formatTime(currentTime);
-      timeDur.innerText = formatTime(duration);
-    }
-  });
-
-  playBtn.onclick = () => window.meloPlayer.togglePlay();
-  document.getElementById('dockNextBtn').onclick = () => window.meloPlayer.next();
-  document.getElementById('dockPrevBtn').onclick = () => window.meloPlayer.previous();
-
-  scrubber.oninput = (e) => {
-    if (window.meloPlayer.audio.duration) {
-      window.meloPlayer.seek((e.target.value / 100) * window.meloPlayer.audio.duration);
-    }
-  };
-
-  document.getElementById('dockVol').oninput = (e) => window.meloPlayer.setVolume(e.target.value);
-
-  shuffleBtn.onclick = () => {
-    const active = window.meloPlayer.toggleShuffle();
-    shuffleBtn.classList.toggle('active', active);
-    showToast(active ? "Shuffle on" : "Shuffle off", "info");
-  };
-
-  repeatBtn.onclick = () => {
-    const mode = window.meloPlayer.cycleRepeat();
-    repeatBtn.classList.toggle('active', mode !== 'none');
-    repeatBtn.title = `Repeat: ${mode}`;
-    showToast(`Repeat: ${mode}`, "info");
-  };
-
-  document.getElementById('lyricsBtn').onclick = openLyrics;
-  document.getElementById('playerMeta').onclick = openLyrics;
-
-  window.toggleFavoriteTrack = function(id, btn) {
-    const track = window.meloPlayer.queue.find(t => t.id === id) ||
-                  window.meloStore.state.history.find(t => t.id === id);
-    if (track) {
-      window.meloStore.toggleFavorite(track);
-      const isFav = window.meloStore.isFavorite(id);
-      btn.classList.toggle('favorited', isFav);
-      btn.innerText = isFav ? '♥' : '♡';
-      showToast(isFav ? "Saved to Favorites" : "Removed from Favorites", "info");
-    }
-  };
-
-  function formatTime(secs) {
-    if (isNaN(secs)) return "0:00";
-    const m = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
-  }
-
-  // ==========================================
-  // KEYBOARD ACCESSIBILITY
-  // ==========================================
+  // Keyboard Shortcuts
   window.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-
     if (e.code === 'Space') {
       e.preventDefault();
-      window.meloPlayer.togglePlay();
-    } else if (e.key === 'ArrowRight') {
-      window.meloPlayer.seek(window.meloPlayer.audio.currentTime + 5);
-    } else if (e.key === 'ArrowLeft') {
-      window.meloPlayer.seek(window.meloPlayer.audio.currentTime - 5);
-    } else if (e.key.toLowerCase() === 'n') {
-      window.meloPlayer.next();
-    } else if (e.key.toLowerCase() === 'p') {
-      window.meloPlayer.previous();
-    } else if (e.key.toLowerCase() === 'm') {
-      const muted = window.meloPlayer.toggleMute();
-      showToast(muted ? "Muted" : "Unmuted", "info");
-    } else if (e.key.toLowerCase() === 'l') {
-      openLyrics();
-    } else if (e.key.toLowerCase() === 'q') {
-      toggleQueueDrawer();
+      window.togglePlay();
     } else if (e.key === 'Escape') {
-      lyricsOverlay.classList.remove('open');
-      queueDrawer.classList.remove('open');
-      genericModal.classList.remove('open');
+      window.closeFullscreenPlayer();
+      window.closeContextMenu();
+      window.closeCinematicMode();
+      window.closeSettingsModal();
     }
   });
 
-  // Initial Route
-  handleRoute();
+  // Launch initial home stage
+  renderHomeView();
 });
