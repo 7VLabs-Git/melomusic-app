@@ -11,7 +11,7 @@ import httpx
 from pyDes import des, CBC, PAD_PKCS5
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine (Saavn Edition)", version="6.0.0")
+app = FastAPI(title="MELO Audio Engine (Saavn Edition)", version="6.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,10 +33,11 @@ http_client: Optional[httpx.AsyncClient] = None
 DES_KEY = b"38346591"
 DES_CIPHER = des(DES_KEY, CBC, b"00000000", pad=None, padmode=PAD_PKCS5)
 
-BROWSER_HEADERS = {
+CDN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Accept-Encoding": "identity",
+    "Referer": "https://www.jiosaavn.com/",
 }
 
 @app.on_event("startup")
@@ -56,18 +57,19 @@ async def shutdown_event():
 
 def decrypt_saavn_url(encrypted_url: str) -> str:
     """Decrypts JioSaavn encrypted media URLs into direct MP4/AAC stream links."""
+    if not encrypted_url:
+        return ""
     try:
         raw_b64 = base64.b64decode(encrypted_url.strip())
         decrypted = DES_CIPHER.decrypt(raw_b64)
         url = decrypted.decode("utf-8").strip()
-        # Upgrade to 320kbps stream if available, otherwise default to 160kbps
-        return url.replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
-    except Exception:
+        return url
+    except Exception as e:
+        print(f"[MELO:DECRYPT_ERROR] {e}")
         return ""
 
 def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Formats Saavn response item into MELO standard schema."""
-    track_id = item.get("id")
+    track_id = item.get("id") or item.get("perma_url", "").split("/")[-1]
     if not track_id:
         return None
 
@@ -78,7 +80,6 @@ def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     album = item.get("more_info", {}).get("album", item.get("album", ""))
     duration = item.get("more_info", {}).get("duration", item.get("duration", "210"))
     
-    # Clean duration to mm:ss format
     try:
         dur_secs = int(duration)
         mins = dur_secs // 60
@@ -119,7 +120,7 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
     }
 
     try:
-        resp = await http_client.get(api_url, params=params, headers=BROWSER_HEADERS)
+        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS)
         if resp.status_code == 200:
             data = resp.json()
             raw_results = data.get("results", [])
@@ -127,16 +128,13 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
             for item in raw_results:
                 track = format_saavn_track(item)
                 if track:
-                    # Pre-cache stream URL if present
                     enc_url = item.get("more_info", {}).get("encrypted_media_url")
                     if enc_url:
                         decrypted = decrypt_saavn_url(enc_url)
                         if decrypted:
-                            stream_cache[track["id"]] = {
-                                "url": decrypted,
-                                "content_type": "audio/mp4",
-                                "headers": BROWSER_HEADERS
-                            }
+                            stream_cache[track["id"]] = decrypted
+                            if item.get("id"):
+                                stream_cache[item["id"]] = decrypted
                     formatted.append(track)
 
             payload = {"results": formatted}
@@ -162,23 +160,20 @@ async def get_recommendations(video_id: str):
     }
 
     try:
-        resp = await http_client.get(api_url, params=params, headers=BROWSER_HEADERS)
+        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS)
         if resp.status_code == 200:
             data = resp.json()
             tracks = []
-            for item in data:
-                track = format_saavn_track(item)
-                if track and track["id"] != video_id:
-                    enc_url = item.get("more_info", {}).get("encrypted_media_url")
-                    if enc_url:
-                        decrypted = decrypt_saavn_url(enc_url)
-                        if decrypted:
-                            stream_cache[track["id"]] = {
-                                "url": decrypted,
-                                "content_type": "audio/mp4",
-                                "headers": BROWSER_HEADERS
-                            }
-                    tracks.append(track)
+            if isinstance(data, list):
+                for item in data:
+                    track = format_saavn_track(item)
+                    if track and track["id"] != video_id:
+                        enc_url = item.get("more_info", {}).get("encrypted_media_url")
+                        if enc_url:
+                            decrypted = decrypt_saavn_url(enc_url)
+                            if decrypted:
+                                stream_cache[track["id"]] = decrypted
+                        tracks.append(track)
 
             payload = {"tracks": tracks}
             rec_cache[video_id] = payload
@@ -190,8 +185,8 @@ async def get_recommendations(video_id: str):
 
 # --- DIRECT AUDIO STREAM ENGINE ---
 
-async def resolve_saavn_stream(track_id: str) -> Dict[str, Any]:
-    """Fetches track metadata directly by ID and decodes the stream URL."""
+async def resolve_saavn_url(track_id: str) -> str:
+    """Resolves track stream URL with multi-schema parsing and fallback."""
     if track_id in stream_cache:
         return stream_cache[track_id]
 
@@ -204,47 +199,84 @@ async def resolve_saavn_stream(track_id: str) -> Dict[str, Any]:
         "pids": track_id
     }
 
-    resp = await http_client.get(api_url, params=params, headers=BROWSER_HEADERS)
-    if resp.status_code == 200:
-        data = resp.json()
-        item = data.get(track_id, {})
-        enc_url = item.get("more_info", {}).get("encrypted_media_url")
-        if enc_url:
-            direct_url = decrypt_saavn_url(enc_url)
-            if direct_url:
-                payload = {
-                    "url": direct_url,
-                    "content_type": "audio/mp4",
-                    "headers": BROWSER_HEADERS
-                }
-                stream_cache[track_id] = payload
-                return payload
+    try:
+        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS)
+        if resp.status_code == 200:
+            data = resp.json()
+            item = None
+            if "songs" in data and isinstance(data["songs"], list) and len(data["songs"]) > 0:
+                item = data["songs"][0]
+            elif track_id in data:
+                item = data[track_id]
+            elif isinstance(data, dict):
+                for v in data.values():
+                    if isinstance(v, dict) and "more_info" in v:
+                        item = v
+                        break
 
-    raise HTTPException(status_code=500, detail="Unable to retrieve audio stream URL.")
+            if item:
+                enc_url = item.get("more_info", {}).get("encrypted_media_url")
+                if enc_url:
+                    dec = decrypt_saavn_url(enc_url)
+                    if dec:
+                        stream_cache[track_id] = dec
+                        return dec
+    except Exception as e:
+        print(f"[MELO:RESOLVE_DETAIL_ERR] {e}")
+
+    # Secondary lookup via song token search if pids misses
+    try:
+        search_params = {
+            "__call": "search.getResults",
+            "_format": "json",
+            "api_version": "4",
+            "q": track_id,
+            "n": "1"
+        }
+        resp = await http_client.get(api_url, params=search_params, headers=CDN_HEADERS)
+        if resp.status_code == 200:
+            data = resp.json()
+            res = data.get("results", [])
+            if res:
+                enc_url = res[0].get("more_info", {}).get("encrypted_media_url")
+                if enc_url:
+                    dec = decrypt_saavn_url(enc_url)
+                    if dec:
+                        stream_cache[track_id] = dec
+                        return dec
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Audio stream could not be resolved.")
 
 @app.get("/api/stream/{video_id}")
 async def stream_audio(video_id: str, request: Request):
-    stream_info = await resolve_saavn_stream(video_id)
+    raw_stream_url = await resolve_saavn_url(video_id)
 
-    headers = dict(stream_info.get("headers", BROWSER_HEADERS))
+    # Test high quality 320kbps first, fallback to original 160/96
+    target_url = raw_stream_url.replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
+
+    headers = dict(CDN_HEADERS)
     client_range = request.headers.get("range")
     if client_range:
         headers["Range"] = client_range
 
     try:
-        req = http_client.build_request("GET", stream_info["url"], headers=headers)
+        req = http_client.build_request("GET", target_url, headers=headers)
         upstream = await http_client.send(req, stream=True)
 
-        if upstream.status_code == 403:
-            # Refresh if expired
-            stream_cache.pop(video_id, None)
-            stream_info = await resolve_saavn_stream(video_id)
-            req = http_client.build_request("GET", stream_info["url"], headers=headers)
+        if upstream.status_code in (403, 404):
+            # Fall back to base decrypted stream URL directly
+            target_url = raw_stream_url
+            req = http_client.build_request("GET", target_url, headers=headers)
             upstream = await http_client.send(req, stream=True)
 
-    except Exception as e:
-        stream_cache.pop(video_id, None)
-        raise HTTPException(status_code=502, detail=f"Upstream stream connection error: {str(e)}")
+        if upstream.status_code not in (200, 206):
+            # Direct redirect fallback: lets client browser stream directly from CDN
+            return Response(status_code=302, headers={"Location": target_url})
+
+    except Exception:
+        return Response(status_code=302, headers={"Location": raw_stream_url})
 
     async def body_iterator():
         try:
@@ -280,7 +312,7 @@ async def proxy_image(url: str):
         return Response(content=cached_data, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
 
     try:
-        resp = await http_client.get(url, headers=BROWSER_HEADERS, timeout=8.0)
+        resp = await http_client.get(url, headers=CDN_HEADERS, timeout=8.0)
         if resp.status_code == 200:
             content_type = resp.headers.get("content-type", "image/jpeg")
             image_cache[url] = (resp.content, content_type)
@@ -324,7 +356,7 @@ async def get_lyrics(
             if primary_artist and primary_artist.lower() != "unknown artist":
                 params["artist_name"] = primary_artist
 
-            resp = await http_client.get("https://lrclib.net/api/get", params=params, headers=BROWSER_HEADERS, timeout=4.0)
+            resp = await http_client.get("https://lrclib.net/api/get", params=params, headers=CDN_HEADERS, timeout=4.0)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("syncedLyrics"):
@@ -337,7 +369,7 @@ async def get_lyrics(
             search_resp = await http_client.get(
                 "https://lrclib.net/api/search",
                 params={"q": f"{clean_t} {primary_artist}".strip()},
-                headers=BROWSER_HEADERS,
+                headers=CDN_HEADERS,
                 timeout=4.0
             )
             if search_resp.status_code == 200:
