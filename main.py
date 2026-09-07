@@ -11,7 +11,7 @@ import yt_dlp
 import httpx
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine", version="4.0.0")
+app = FastAPI(title="MELO Audio Engine", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,7 +23,7 @@ app.add_middleware(
 
 ytmusic = YTMusic()
 
-# Caches
+# Memory Caches
 stream_cache = TTLCache(maxsize=1500, ttl=14400)      # 4 Hours
 search_cache = TTLCache(maxsize=500, ttl=3600)        # 1 Hour
 lyrics_cache = TTLCache(maxsize=500, ttl=86400)       # 24 Hours
@@ -38,28 +38,14 @@ BROWSER_HEADERS = {
     "Accept-Encoding": "identity",
 }
 
-def resolve_cookie_path() -> Optional[str]:
-    search_paths = [
-        "/etc/secrets/cookies.txt",
-        "cookies.txt",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
-    ]
-    for path in search_paths:
-        if os.path.isfile(path) and os.path.getsize(path) > 10:
-            return path
-    return None
-
 @app.on_event("startup")
 async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(15.0, connect=5.0),
+        timeout=httpx.Timeout(20.0, connect=6.0),
         limits=httpx.Limits(max_keepalive_connections=100, max_connections=300),
         follow_redirects=True,
     )
-    ck = resolve_cookie_path()
-    if ck:
-        print(f"[MELO:STARTUP] Detected cookie file at: {ck}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -67,55 +53,61 @@ async def shutdown_event():
     if http_client:
         await http_client.aclose()
 
-# --- STREAM RESOLVERS ---
+# --- BULLETPROOF AUDIO RESOLUTION ENGINE ---
 
-async def resolve_piped(video_id: str) -> Optional[Dict[str, Any]]:
-    """Fetches streams via decentralized Piped API network."""
-    instances = [
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.privacydev.net",
-        "https://piped-api.lunar.icu",
-        "https://api.piped.projectsegfau.lt"
+async def resolve_cobalt_stream(video_id: str) -> Optional[Dict[str, Any]]:
+    """Resolves high-bitrate direct audio URL via Cobalt API nodes."""
+    api_nodes = [
+        "https://api.cobalt.tools",
+        "https://cobalt-api.kwiatekm.tokyo",
+        "https://api.wuk.sh"
     ]
-    for host in instances:
+    payload = {
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "downloadMode": "audio",
+        "audioFormat": "best"
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": BROWSER_HEADERS["User-Agent"]
+    }
+
+    for node in api_nodes:
         try:
-            url = f"{host}/streams/{video_id}"
-            resp = await http_client.get(url, headers=BROWSER_HEADERS, timeout=3.5)
+            resp = await http_client.post(f"{node}/", json=payload, headers=headers, timeout=5.0)
             if resp.status_code == 200:
                 data = resp.json()
-                audio_streams = data.get("audioStreams", [])
-                if audio_streams:
-                    audio_streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
-                    target = audio_streams[0]
-                    mime = target.get("mimeType", "audio/mp4").split(";")[0]
+                stream_url = data.get("url")
+                if stream_url:
                     return {
-                        "url": target.get("url"),
-                        "content_type": mime,
+                        "url": stream_url,
+                        "content_type": "audio/mp4",
                         "headers": BROWSER_HEADERS
                     }
         except Exception:
             continue
     return None
 
-async def resolve_invidious(video_id: str) -> Optional[Dict[str, Any]]:
-    """Fetches direct audio itags via Invidious instances."""
-    instances = [
-        "https://inv.tux.pizza",
-        "https://invidious.nerdvpn.de",
-        "https://invidious.jing.rocks",
-        "https://yt.artemislena.eu"
+async def resolve_piped_stream(video_id: str) -> Optional[Dict[str, Any]]:
+    """Resolves direct stream via active Piped nodes."""
+    nodes = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacydev.net",
+        "https://pipedapi.tokhmi.xyz"
     ]
-    for host in instances:
+    for host in nodes:
         try:
-            # 140 = m4a high, 251 = opus high
-            for itag in ["140", "251"]:
-                stream_url = f"{host}/latest_version?id={video_id}&itag={itag}"
-                resp = await http_client.head(stream_url, headers=BROWSER_HEADERS, timeout=3.0)
-                if resp.status_code in (200, 206, 302):
-                    final_url = resp.headers.get("location", stream_url) if resp.status_code == 302 else stream_url
-                    mime = "audio/mp4" if itag == "140" else "audio/webm"
+            resp = await http_client.get(f"{host}/streams/{video_id}", headers=BROWSER_HEADERS, timeout=4.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                streams = data.get("audioStreams", [])
+                if streams:
+                    streams.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                    best = streams[0]
+                    mime = best.get("mimeType", "audio/mp4").split(";")[0]
                     return {
-                        "url": final_url,
+                        "url": best["url"],
                         "content_type": mime,
                         "headers": BROWSER_HEADERS
                     }
@@ -123,11 +115,11 @@ async def resolve_invidious(video_id: str) -> Optional[Dict[str, Any]]:
             continue
     return None
 
-def resolve_ytdlp_sync(video_id: str, cookie_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Local fallback using creator/embedded player clients."""
+def resolve_ytdlp_raw(video_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback yt-dlp that extracts raw format dictionaries without crashing."""
     target_url = f"https://www.youtube.com/watch?v={video_id}"
-    opts: Dict[str, Any] = {
-        'format': 'ba/b',
+    opts = {
+        'format': None,  # NEVER specify a string format here to avoid 'Requested format is not available'
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
@@ -135,29 +127,37 @@ def resolve_ytdlp_sync(video_id: str, cookie_path: Optional[str]) -> Optional[Di
         'source_address': '0.0.0.0',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_creator', 'mweb'],
+                'player_client': ['android', 'ios'],
+                'formats': ['missing_pot']
             }
         }
     }
-    if cookie_path:
-        opts['cookiefile'] = cookie_path
+    
+    # Check for secret or local cookie file
+    for cp in ["/etc/secrets/cookies.txt", "cookies.txt"]:
+        if os.path.isfile(cp) and os.path.getsize(cp) > 10:
+            opts['cookiefile'] = cp
+            break
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
-            stream_url = info.get("url")
-            if not stream_url and "formats" in info:
-                audios = [f for f in info["formats"] if f.get("url") and f.get("acodec") not in (None, "none")]
-                if audios:
-                    stream_url = audios[-1].get("url")
+            formats = info.get("formats") or []
+            
+            # Filter any playable stream URL
+            candidates = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
+            if not candidates:
+                candidates = [f for f in formats if f.get("url")]
 
-            if stream_url:
-                ext = info.get("ext", "mp4")
+            if candidates:
+                candidates.sort(key=lambda x: (x.get("abr") or x.get("tbr") or 0), reverse=True)
+                chosen = candidates[0]
+                ext = chosen.get("ext", "mp4")
                 mime = "audio/webm" if "webm" in ext else "audio/mp4"
                 return {
-                    "url": stream_url,
+                    "url": chosen["url"],
                     "content_type": mime,
-                    "headers": info.get("http_headers", BROWSER_HEADERS)
+                    "headers": BROWSER_HEADERS
                 }
     except Exception:
         pass
@@ -167,32 +167,31 @@ async def get_stream_data(video_id: str) -> Dict[str, Any]:
     if video_id in stream_cache:
         return stream_cache[video_id]
 
-    # 1. First attempt: Decentralized Piped network (fastest, never datacenter-blocked)
-    res = await resolve_piped(video_id)
+    # Tier 1: Fast Cobalt Node
+    res = await resolve_cobalt_stream(video_id)
     if res:
         stream_cache[video_id] = res
-        print(f"[MELO:ENGINE] Resolved {video_id} via Piped network.")
+        print(f"[MELO:RESOLVER] {video_id} resolved via Cobalt API.")
         return res
 
-    # 2. Second attempt: Invidious network
-    res = await resolve_invidious(video_id)
+    # Tier 2: Piped API Node
+    res = await resolve_piped_stream(video_id)
     if res:
         stream_cache[video_id] = res
-        print(f"[MELO:ENGINE] Resolved {video_id} via Invidious network.")
+        print(f"[MELO:RESOLVER] {video_id} resolved via Piped Network.")
         return res
 
-    # 3. Third attempt: Local yt-dlp fallback
-    cookie_path = resolve_cookie_path()
+    # Tier 3: Direct local manifest extraction
     loop = asyncio.get_running_loop()
-    res = await loop.run_in_executor(None, resolve_ytdlp_sync, video_id, cookie_path)
+    res = await loop.run_in_executor(None, resolve_ytdlp_raw, video_id)
     if res:
         stream_cache[video_id] = res
-        print(f"[MELO:ENGINE] Resolved {video_id} via yt-dlp fallback.")
+        print(f"[MELO:RESOLVER] {video_id} resolved via Local yt-dlp.")
         return res
 
-    raise HTTPException(status_code=500, detail="All stream extraction tiers exhausted.")
+    raise HTTPException(status_code=500, detail="Audio resolution failed on all upstream tiers.")
 
-# --- UTILITIES & ROUTES ---
+# --- UTILITIES & ENDPOINTS ---
 
 def clean_thumbnail_to_hd(url: str) -> str:
     if not url:
@@ -384,38 +383,17 @@ async def get_lyrics(
         except Exception:
             pass
 
-    loop = asyncio.get_running_loop()
-    try:
-        def fetch_ytm_lyrics():
-            watch_data = ytmusic.get_watch_playlist(videoId=video_id)
-            lyrics_id = watch_data.get("lyrics")
-            if not lyrics_id:
-                return None
-            return ytmusic.get_lyrics(browseId=lyrics_id)
-
-        ytm_data = await loop.run_in_executor(None, fetch_ytm_lyrics)
-        if ytm_data and ytm_data.get("lyrics"):
-            clean = [{"time": 0, "text": l.strip()} for l in ytm_data["lyrics"].splitlines() if l.strip()]
-            payload = {"synced": False, "lines": clean}
-            lyrics_cache[cache_key] = payload
-            return payload
-    except Exception:
-        pass
-
     return {
         "synced": False,
         "lines": [
-            {"time": 0, "text": "Playing high-fidelity audio on MELO."},
+            {"time": 0, "text": "High-fidelity audio on MELO."},
             {"time": 0, "text": "Enjoy your music!"}
         ]
     }
 
 @app.get("/api/stream/{video_id}")
 async def stream_audio(video_id: str, request: Request):
-    try:
-        stream_info = await get_stream_data(video_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Audio resolution failed: {str(e)}")
+    stream_info = await get_stream_data(video_id)
 
     headers = dict(stream_info.get("headers", BROWSER_HEADERS))
     client_range = request.headers.get("range")
@@ -437,7 +415,7 @@ async def stream_audio(video_id: str, request: Request):
 
     except Exception as e:
         stream_cache.pop(video_id, None)
-        raise HTTPException(status_code=502, detail=f"Upstream connection error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Upstream stream connection error: {str(e)}")
 
     async def body_iterator():
         try:
