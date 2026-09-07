@@ -11,7 +11,7 @@ import yt_dlp
 import httpx
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine", version="3.4.0")
+app = FastAPI(title="MELO Audio Engine", version="3.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,12 +23,12 @@ app.add_middleware(
 
 ytmusic = YTMusic()
 
-# Caches
-stream_cache = TTLCache(maxsize=1000, ttl=14400)      # 4 Hours
-search_cache = TTLCache(maxsize=500, ttl=3600)        # 1 Hour
-lyrics_cache = TTLCache(maxsize=500, ttl=86400)       # 24 Hours
-rec_cache = TTLCache(maxsize=500, ttl=7200)           # 2 Hours
-image_cache = TTLCache(maxsize=2000, ttl=86400)       # 24 Hours
+# In-memory Caches
+stream_cache = TTLCache(maxsize=1000, ttl=14400)
+search_cache = TTLCache(maxsize=500, ttl=3600)
+lyrics_cache = TTLCache(maxsize=500, ttl=86400)
+rec_cache = TTLCache(maxsize=500, ttl=7200)
+image_cache = TTLCache(maxsize=2000, ttl=86400)
 
 http_client: Optional[httpx.AsyncClient] = None
 
@@ -38,25 +38,35 @@ BROWSER_HEADERS = {
     "Accept-Encoding": "identity",
 }
 
-def detect_cookie_file() -> Optional[str]:
-    """Detects cookie file from environment variables, secret mounts, or workspace."""
-    env_cookies = os.getenv("YOUTUBE_COOKIES")
-    if env_cookies:
-        try:
-            with open("cookies.txt", "w", encoding="utf-8") as f:
-                f.write(env_cookies.strip())
-            return "cookies.txt"
-        except Exception:
-            pass
-
-    candidates = [
-        "cookies.txt",
+def resolve_cookie_path() -> Optional[str]:
+    """Locates and validates the Netscape cookies file."""
+    # Check Render Secret Files and root locations
+    search_paths = [
         "/etc/secrets/cookies.txt",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
+        "cookies.txt",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
     ]
-    for path in candidates:
-        if os.path.exists(path) and os.path.getsize(path) > 10:
+    for path in search_paths:
+        if os.path.isfile(path) and os.path.getsize(path) > 10:
+            print(f"[MELO:AUTH] Loaded valid cookies file from: {path}")
             return path
+
+    # Fallback to env var if secret file was not added
+    env_content = os.getenv("YOUTUBE_COOKIES")
+    if env_content:
+        target_path = "/tmp/cookies.txt"
+        try:
+            # Reconstruct tab formatting if flattened
+            formatted = env_content.replace("\\n", "\n").replace("\\t", "\t")
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(formatted)
+            if os.path.getsize(target_path) > 10:
+                print(f"[MELO:AUTH] Reconstructed cookie file at {target_path}")
+                return target_path
+        except Exception as e:
+            print(f"[MELO:AUTH] Failed writing cookie env: {e}")
+
+    print("[MELO:AUTH] Warning: No active cookies.txt found.")
     return None
 
 @app.on_event("startup")
@@ -67,7 +77,7 @@ async def startup_event():
         limits=httpx.Limits(max_keepalive_connections=80, max_connections=300),
         follow_redirects=True,
     )
-    detect_cookie_file()
+    resolve_cookie_path()
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -76,11 +86,10 @@ async def shutdown_event():
         await http_client.aclose()
 
 def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Extracts raw metadata without strict format enforcement, then picks the best audio track."""
     target_url = f"https://www.youtube.com/watch?v={video_id}"
     
     opts: Dict[str, Any] = {
-        'format': None,          # Do not filter formats in yt-dlp to prevent 'Requested format is not available'
+        'format': None,
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
@@ -90,6 +99,7 @@ def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: O
         'extractor_args': {
             'youtube': {
                 'player_client': clients,
+                'player_skip': ['configs', 'webpage'],
                 'formats': ['missing_pot']
             }
         }
@@ -98,32 +108,24 @@ def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: O
     if cookie_path:
         opts['cookiefile'] = cookie_path
 
-    proxy = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTP_PROXY")
-    if proxy:
-        opts['proxy'] = proxy
-
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(target_url, download=False)
         formats = info.get("formats") or []
         
-        # 1. Filter for audio-only streams
         audio_streams = [
             f for f in formats 
             if f.get("url") and f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
         ]
         
-        # 2. Fallback to any format with an audio track
         if not audio_streams:
             audio_streams = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
             
-        # 3. Fallback to any playable stream URL
         if not audio_streams:
             audio_streams = [f for f in formats if f.get("url")]
 
         if not audio_streams:
             return None
 
-        # Sort by highest bitrate
         audio_streams.sort(key=lambda x: (x.get("abr") or x.get("tbr") or 0), reverse=True)
         chosen = audio_streams[0]
         stream_url = chosen.get("url")
@@ -147,12 +149,14 @@ def resolve_stream_sync(video_id: str) -> Dict[str, Any]:
     if video_id in stream_cache:
         return stream_cache[video_id]
 
-    cookie_path = detect_cookie_file()
+    cookie_path = resolve_cookie_path()
     
+    # Priority order designed to bypass datacenter IP barriers
     client_strategies = [
-        ['android_music'],
-        ['ios', 'android'],
-        ['web', 'mweb'],
+        ['tv_embedded'],
+        ['android_creator'],
+        ['ios'],
+        ['web']
     ]
 
     last_error = None
@@ -161,13 +165,13 @@ def resolve_stream_sync(video_id: str) -> Dict[str, Any]:
             result = extract_stream_with_client(video_id, clients, cookie_path)
             if result:
                 stream_cache[video_id] = result
-                print(f"[MELO:RESOLVER] Extracted audio for {video_id} with client: {clients}")
+                print(f"[MELO:RESOLVER] Extracted audio for {video_id} using client: {clients}")
                 return result
         except Exception as e:
             last_error = e
             continue
 
-    raise HTTPException(status_code=500, detail=f"Audio extraction failed: {str(last_error)}")
+    raise HTTPException(status_code=500, detail=f"Audio resolution failed: {str(last_error)}")
 
 async def get_stream_data(video_id: str) -> Dict[str, Any]:
     loop = asyncio.get_running_loop()
