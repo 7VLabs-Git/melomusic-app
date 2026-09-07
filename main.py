@@ -11,7 +11,7 @@ import yt_dlp
 import httpx
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine", version="3.5.0")
+app = FastAPI(title="MELO Audio Engine", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,24 +23,22 @@ app.add_middleware(
 
 ytmusic = YTMusic()
 
-# In-memory Caches
-stream_cache = TTLCache(maxsize=1000, ttl=14400)
-search_cache = TTLCache(maxsize=500, ttl=3600)
-lyrics_cache = TTLCache(maxsize=500, ttl=86400)
-rec_cache = TTLCache(maxsize=500, ttl=7200)
-image_cache = TTLCache(maxsize=2000, ttl=86400)
+# Caches
+stream_cache = TTLCache(maxsize=1500, ttl=14400)      # 4 Hours
+search_cache = TTLCache(maxsize=500, ttl=3600)        # 1 Hour
+lyrics_cache = TTLCache(maxsize=500, ttl=86400)       # 24 Hours
+rec_cache = TTLCache(maxsize=500, ttl=7200)           # 2 Hours
+image_cache = TTLCache(maxsize=2000, ttl=86400)       # 24 Hours
 
 http_client: Optional[httpx.AsyncClient] = None
 
 BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Accept-Encoding": "identity",
 }
 
 def resolve_cookie_path() -> Optional[str]:
-    """Locates and validates the Netscape cookies file."""
-    # Check Render Secret Files and root locations
     search_paths = [
         "/etc/secrets/cookies.txt",
         "cookies.txt",
@@ -48,36 +46,20 @@ def resolve_cookie_path() -> Optional[str]:
     ]
     for path in search_paths:
         if os.path.isfile(path) and os.path.getsize(path) > 10:
-            print(f"[MELO:AUTH] Loaded valid cookies file from: {path}")
             return path
-
-    # Fallback to env var if secret file was not added
-    env_content = os.getenv("YOUTUBE_COOKIES")
-    if env_content:
-        target_path = "/tmp/cookies.txt"
-        try:
-            # Reconstruct tab formatting if flattened
-            formatted = env_content.replace("\\n", "\n").replace("\\t", "\t")
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(formatted)
-            if os.path.getsize(target_path) > 10:
-                print(f"[MELO:AUTH] Reconstructed cookie file at {target_path}")
-                return target_path
-        except Exception as e:
-            print(f"[MELO:AUTH] Failed writing cookie env: {e}")
-
-    print("[MELO:AUTH] Warning: No active cookies.txt found.")
     return None
 
 @app.on_event("startup")
 async def startup_event():
     global http_client
     http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(20.0, connect=7.0),
-        limits=httpx.Limits(max_keepalive_connections=80, max_connections=300),
+        timeout=httpx.Timeout(15.0, connect=5.0),
+        limits=httpx.Limits(max_keepalive_connections=100, max_connections=300),
         follow_redirects=True,
     )
-    resolve_cookie_path()
+    ck = resolve_cookie_path()
+    if ck:
+        print(f"[MELO:STARTUP] Detected cookie file at: {ck}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -85,97 +67,132 @@ async def shutdown_event():
     if http_client:
         await http_client.aclose()
 
-def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: Optional[str]) -> Optional[Dict[str, Any]]:
+# --- STREAM RESOLVERS ---
+
+async def resolve_piped(video_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches streams via decentralized Piped API network."""
+    instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacydev.net",
+        "https://piped-api.lunar.icu",
+        "https://api.piped.projectsegfau.lt"
+    ]
+    for host in instances:
+        try:
+            url = f"{host}/streams/{video_id}"
+            resp = await http_client.get(url, headers=BROWSER_HEADERS, timeout=3.5)
+            if resp.status_code == 200:
+                data = resp.json()
+                audio_streams = data.get("audioStreams", [])
+                if audio_streams:
+                    audio_streams.sort(key=lambda s: s.get("bitrate", 0), reverse=True)
+                    target = audio_streams[0]
+                    mime = target.get("mimeType", "audio/mp4").split(";")[0]
+                    return {
+                        "url": target.get("url"),
+                        "content_type": mime,
+                        "headers": BROWSER_HEADERS
+                    }
+        except Exception:
+            continue
+    return None
+
+async def resolve_invidious(video_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches direct audio itags via Invidious instances."""
+    instances = [
+        "https://inv.tux.pizza",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.jing.rocks",
+        "https://yt.artemislena.eu"
+    ]
+    for host in instances:
+        try:
+            # 140 = m4a high, 251 = opus high
+            for itag in ["140", "251"]:
+                stream_url = f"{host}/latest_version?id={video_id}&itag={itag}"
+                resp = await http_client.head(stream_url, headers=BROWSER_HEADERS, timeout=3.0)
+                if resp.status_code in (200, 206, 302):
+                    final_url = resp.headers.get("location", stream_url) if resp.status_code == 302 else stream_url
+                    mime = "audio/mp4" if itag == "140" else "audio/webm"
+                    return {
+                        "url": final_url,
+                        "content_type": mime,
+                        "headers": BROWSER_HEADERS
+                    }
+        except Exception:
+            continue
+    return None
+
+def resolve_ytdlp_sync(video_id: str, cookie_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Local fallback using creator/embedded player clients."""
     target_url = f"https://www.youtube.com/watch?v={video_id}"
-    
     opts: Dict[str, Any] = {
-        'format': None,
+        'format': 'ba/b',
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False,
-        'noplaylist': True,
         'skip_download': True,
+        'extract_flat': False,
         'source_address': '0.0.0.0',
         'extractor_args': {
             'youtube': {
-                'player_client': clients,
-                'player_skip': ['configs', 'webpage'],
-                'formats': ['missing_pot']
+                'player_client': ['android_creator', 'mweb'],
             }
         }
     }
-    
     if cookie_path:
         opts['cookiefile'] = cookie_path
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(target_url, download=False)
-        formats = info.get("formats") or []
-        
-        audio_streams = [
-            f for f in formats 
-            if f.get("url") and f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
-        ]
-        
-        if not audio_streams:
-            audio_streams = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
-            
-        if not audio_streams:
-            audio_streams = [f for f in formats if f.get("url")]
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target_url, download=False)
+            stream_url = info.get("url")
+            if not stream_url and "formats" in info:
+                audios = [f for f in info["formats"] if f.get("url") and f.get("acodec") not in (None, "none")]
+                if audios:
+                    stream_url = audios[-1].get("url")
 
-        if not audio_streams:
-            return None
+            if stream_url:
+                ext = info.get("ext", "mp4")
+                mime = "audio/webm" if "webm" in ext else "audio/mp4"
+                return {
+                    "url": stream_url,
+                    "content_type": mime,
+                    "headers": info.get("http_headers", BROWSER_HEADERS)
+                }
+    except Exception:
+        pass
+    return None
 
-        audio_streams.sort(key=lambda x: (x.get("abr") or x.get("tbr") or 0), reverse=True)
-        chosen = audio_streams[0]
-        stream_url = chosen.get("url")
-
-        ext = chosen.get("ext", "mp4")
-        acodec = str(chosen.get("acodec", "")).lower()
-        content_type = "audio/webm" if ("webm" in ext or "opus" in acodec) else "audio/mp4"
-
-        headers = dict(info.get("http_headers", BROWSER_HEADERS))
-        headers.pop("host", None)
-        headers.pop("Host", None)
-
-        return {
-            "url": stream_url,
-            "ext": ext,
-            "content_type": content_type,
-            "headers": headers
-        }
-
-def resolve_stream_sync(video_id: str) -> Dict[str, Any]:
+async def get_stream_data(video_id: str) -> Dict[str, Any]:
     if video_id in stream_cache:
         return stream_cache[video_id]
 
+    # 1. First attempt: Decentralized Piped network (fastest, never datacenter-blocked)
+    res = await resolve_piped(video_id)
+    if res:
+        stream_cache[video_id] = res
+        print(f"[MELO:ENGINE] Resolved {video_id} via Piped network.")
+        return res
+
+    # 2. Second attempt: Invidious network
+    res = await resolve_invidious(video_id)
+    if res:
+        stream_cache[video_id] = res
+        print(f"[MELO:ENGINE] Resolved {video_id} via Invidious network.")
+        return res
+
+    # 3. Third attempt: Local yt-dlp fallback
     cookie_path = resolve_cookie_path()
-    
-    # Priority order designed to bypass datacenter IP barriers
-    client_strategies = [
-        ['tv_embedded'],
-        ['android_creator'],
-        ['ios'],
-        ['web']
-    ]
-
-    last_error = None
-    for clients in client_strategies:
-        try:
-            result = extract_stream_with_client(video_id, clients, cookie_path)
-            if result:
-                stream_cache[video_id] = result
-                print(f"[MELO:RESOLVER] Extracted audio for {video_id} using client: {clients}")
-                return result
-        except Exception as e:
-            last_error = e
-            continue
-
-    raise HTTPException(status_code=500, detail=f"Audio resolution failed: {str(last_error)}")
-
-async def get_stream_data(video_id: str) -> Dict[str, Any]:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, resolve_stream_sync, video_id)
+    res = await loop.run_in_executor(None, resolve_ytdlp_sync, video_id, cookie_path)
+    if res:
+        stream_cache[video_id] = res
+        print(f"[MELO:ENGINE] Resolved {video_id} via yt-dlp fallback.")
+        return res
+
+    raise HTTPException(status_code=500, detail="All stream extraction tiers exhausted.")
+
+# --- UTILITIES & ROUTES ---
 
 def clean_thumbnail_to_hd(url: str) -> str:
     if not url:
@@ -334,7 +351,7 @@ async def get_lyrics(
             if primary_artist and primary_artist.lower() != "unknown artist":
                 params["artist_name"] = primary_artist
 
-            resp = await http_client.get("https://lrclib.net/api/get", params=params, headers=BROWSER_HEADERS, timeout=5.0)
+            resp = await http_client.get("https://lrclib.net/api/get", params=params, headers=BROWSER_HEADERS, timeout=4.0)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("syncedLyrics"):
@@ -348,7 +365,7 @@ async def get_lyrics(
                 "https://lrclib.net/api/search",
                 params={"q": f"{clean_t} {primary_artist}".strip()},
                 headers=BROWSER_HEADERS,
-                timeout=5.0
+                timeout=4.0
             )
             if search_resp.status_code == 200:
                 results = search_resp.json()
@@ -409,7 +426,7 @@ async def stream_audio(video_id: str, request: Request):
         req = http_client.build_request("GET", stream_info["url"], headers=headers)
         upstream = await http_client.send(req, stream=True)
 
-        if upstream.status_code == 403:
+        if upstream.status_code in (403, 404, 410):
             stream_cache.pop(video_id, None)
             stream_info = await get_stream_data(video_id)
             headers = dict(stream_info.get("headers", BROWSER_HEADERS))
@@ -431,7 +448,7 @@ async def stream_audio(video_id: str, request: Request):
 
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": stream_info["content_type"]
+        "Content-Type": stream_info.get("content_type", "audio/mp4")
     }
     for key in ["Content-Range", "Content-Length"]:
         if key in upstream.headers:
@@ -441,7 +458,7 @@ async def stream_audio(video_id: str, request: Request):
         body_iterator(),
         status_code=upstream.status_code,
         headers=resp_headers,
-        media_type=stream_info["content_type"]
+        media_type=stream_info.get("content_type", "audio/mp4")
     )
 
 os.makedirs("static", exist_ok=True)
