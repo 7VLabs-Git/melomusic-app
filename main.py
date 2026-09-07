@@ -11,7 +11,7 @@ import yt_dlp
 import httpx
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine", version="3.3.0")
+app = FastAPI(title="MELO Audio Engine", version="3.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,7 +23,7 @@ app.add_middleware(
 
 ytmusic = YTMusic()
 
-# In-memory Caches
+# Caches
 stream_cache = TTLCache(maxsize=1000, ttl=14400)      # 4 Hours
 search_cache = TTLCache(maxsize=500, ttl=3600)        # 1 Hour
 lyrics_cache = TTLCache(maxsize=500, ttl=86400)       # 24 Hours
@@ -45,10 +45,9 @@ def detect_cookie_file() -> Optional[str]:
         try:
             with open("cookies.txt", "w", encoding="utf-8") as f:
                 f.write(env_cookies.strip())
-            print("[MELO:COOKIES] Generated cookies.txt from YOUTUBE_COOKIES environment variable.")
             return "cookies.txt"
-        except Exception as e:
-            print(f"[MELO:COOKIES] Could not write YOUTUBE_COOKIES to disk: {e}")
+        except Exception:
+            pass
 
     candidates = [
         "cookies.txt",
@@ -57,10 +56,7 @@ def detect_cookie_file() -> Optional[str]:
     ]
     for path in candidates:
         if os.path.exists(path) and os.path.getsize(path) > 10:
-            print(f"[MELO:COOKIES] Active cookie file found at: {path}")
             return path
-
-    print("[MELO:COOKIES] Notice: No cookies.txt found. Falling back to mobile clients.")
     return None
 
 @app.on_event("startup")
@@ -80,11 +76,11 @@ async def shutdown_event():
         await http_client.aclose()
 
 def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Attempts extraction using a specific client strategy."""
+    """Extracts raw metadata without strict format enforcement, then picks the best audio track."""
     target_url = f"https://www.youtube.com/watch?v={video_id}"
     
     opts: Dict[str, Any] = {
-        'format': 'bestaudio/best',
+        'format': None,          # Do not filter formats in yt-dlp to prevent 'Requested format is not available'
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
@@ -94,6 +90,7 @@ def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: O
         'extractor_args': {
             'youtube': {
                 'player_client': clients,
+                'formats': ['missing_pot']
             }
         }
     }
@@ -107,33 +104,34 @@ def extract_stream_with_client(video_id: str, clients: List[str], cookie_path: O
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(target_url, download=False)
-        stream_url = info.get("url")
+        formats = info.get("formats") or []
+        
+        # 1. Filter for audio-only streams
+        audio_streams = [
+            f for f in formats 
+            if f.get("url") and f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
+        ]
+        
+        # 2. Fallback to any format with an audio track
+        if not audio_streams:
+            audio_streams = [f for f in formats if f.get("url") and f.get("acodec") not in (None, "none")]
+            
+        # 3. Fallback to any playable stream URL
+        if not audio_streams:
+            audio_streams = [f for f in formats if f.get("url")]
 
-        # Programmatic format selection fallback
-        if not stream_url and "formats" in info:
-            audio_formats = [
-                f for f in info["formats"]
-                if f.get("url") and (
-                    f.get("acodec") not in (None, "none") or 
-                    f.get("vcodec") in (None, "none") or
-                    f.get("resolution") == "audio only"
-                )
-            ]
-            if audio_formats:
-                audio_formats.sort(key=lambda x: x.get("abr") or x.get("tbr") or 0)
-                stream_url = audio_formats[-1].get("url")
-            else:
-                valid = [f for f in info["formats"] if f.get("url")]
-                if valid:
-                    stream_url = valid[-1].get("url")
-
-        if not stream_url:
+        if not audio_streams:
             return None
 
-        ext = info.get("ext", "mp4")
-        acodec = str(info.get("acodec", "")).lower()
+        # Sort by highest bitrate
+        audio_streams.sort(key=lambda x: (x.get("abr") or x.get("tbr") or 0), reverse=True)
+        chosen = audio_streams[0]
+        stream_url = chosen.get("url")
+
+        ext = chosen.get("ext", "mp4")
+        acodec = str(chosen.get("acodec", "")).lower()
         content_type = "audio/webm" if ("webm" in ext or "opus" in acodec) else "audio/mp4"
-        
+
         headers = dict(info.get("http_headers", BROWSER_HEADERS))
         headers.pop("host", None)
         headers.pop("Host", None)
@@ -151,10 +149,9 @@ def resolve_stream_sync(video_id: str) -> Dict[str, Any]:
 
     cookie_path = detect_cookie_file()
     
-    # Cascade through client profiles
     client_strategies = [
-        ['ios', 'android'],
         ['android_music'],
+        ['ios', 'android'],
         ['web', 'mweb'],
     ]
 
@@ -164,11 +161,10 @@ def resolve_stream_sync(video_id: str) -> Dict[str, Any]:
             result = extract_stream_with_client(video_id, clients, cookie_path)
             if result:
                 stream_cache[video_id] = result
-                print(f"[MELO:RESOLVER] Extracted stream for {video_id} using client: {clients}")
+                print(f"[MELO:RESOLVER] Extracted audio for {video_id} with client: {clients}")
                 return result
         except Exception as e:
             last_error = e
-            print(f"[MELO:CLIENT_WARN] Client {clients} failed for {video_id}: {e}")
             continue
 
     raise HTTPException(status_code=500, detail=f"Audio extraction failed: {str(last_error)}")
@@ -296,8 +292,7 @@ async def get_recommendations(video_id: str):
         payload = {"tracks": tracks}
         rec_cache[video_id] = payload
         return payload
-    except Exception as e:
-        print(f"[MELO:REC_ERROR] {e}")
+    except Exception:
         return {"tracks": []}
 
 def parse_lrc(lrc_text: str) -> List[Dict[str, Any]]:
@@ -365,8 +360,8 @@ async def get_lyrics(
                         payload = {"synced": False, "lines": clean}
                         lyrics_cache[cache_key] = payload
                         return payload
-        except Exception as e:
-            print(f"[MELO:LYRICS_LRCLIB_WARN] {e}")
+        except Exception:
+            pass
 
     loop = asyncio.get_running_loop()
     try:
@@ -383,8 +378,8 @@ async def get_lyrics(
             payload = {"synced": False, "lines": clean}
             lyrics_cache[cache_key] = payload
             return payload
-    except Exception as e:
-        print(f"[MELO:LYRICS_YTM_WARN] {e}")
+    except Exception:
+        pass
 
     return {
         "synced": False,
@@ -421,7 +416,7 @@ async def stream_audio(video_id: str, request: Request):
 
     except Exception as e:
         stream_cache.pop(video_id, None)
-        raise HTTPException(status_code=502, detail=f"Upstream stream connection error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Upstream connection error: {str(e)}")
 
     async def body_iterator():
         try:
