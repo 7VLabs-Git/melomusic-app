@@ -3,11 +3,12 @@
 // ==========================================
 
 let playlist = [];
-let heroTracks = [];
+let forYouTracks = [];
 let categoryData = {};
 let currentIndex = -1;
 let favorites = JSON.parse(localStorage.getItem('melo_favorites') || '{}');
 let playlists = JSON.parse(localStorage.getItem('melo_playlists') || '{"pl-favorites":{"id":"pl-favorites","name":"Favorites","tracks":[]}}');
+let playHistory = JSON.parse(localStorage.getItem('melo_history') || '[]');
 let parsedLyrics = [];
 let isSynced = false;
 let activeView = 'home';
@@ -18,6 +19,15 @@ let sleepTimerId = null;
 let currentPrimaryHex = '#fa2d48';
 let activePlayToken = 0;
 let selectedQuality = localStorage.getItem('melo_quality') || '320';
+let currentVibe = 'Flow';
+
+// Helper: Format Seconds to MM:SS
+function fmtTime(s) {
+  if (isNaN(s) || s === null || s === undefined) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
 
 // Global Navigation & Views
 window.switchView = function (view, pushState = true) {
@@ -221,21 +231,91 @@ window.togglePlay = function () {
   }
 };
 
-window.nextTrack = function () {
+// ==========================================
+// SEAMLESS QUEUE TRANSITION ENGINE
+// ==========================================
+
+function calculateAffinity(candidate, current) {
+  if (!candidate || !current) return 0;
+  let score = 0;
+
+  const candArtists = (candidate.artist || '').toLowerCase().split(/[,&/]/).map(s => s.trim());
+  const curArtists = (current.artist || '').toLowerCase().split(/[,&/]/).map(s => s.trim());
+  const hasArtistOverlap = candArtists.some(a => curArtists.includes(a));
+  if (hasArtistOverlap) score += 45;
+
+  if (candidate.album && current.album && candidate.album.toLowerCase() === current.album.toLowerCase()) {
+    score += 30;
+  }
+
+  const parseSec = (d) => {
+    const parts = (d || '3:30').split(':').map(Number);
+    return (parts[0] || 3) * 60 + (parts[1] || 30);
+  };
+  const durDiff = Math.abs(parseSec(candidate.duration) - parseSec(current.duration));
+  if (durDiff < 45) score += 15;
+
+  const recentHistory = playHistory.slice(-6);
+  if (recentHistory.includes(candidate.id)) {
+    score -= 40;
+  }
+
+  return score;
+}
+
+window.nextTrack = async function () {
   const audio = document.getElementById('audio');
   if (repeatMode === 'one' && audio) {
     audio.currentTime = 0;
     audio.play().catch(console.warn);
     return;
   }
+
+  const currentTrack = playlist[currentIndex];
+
   if (isShuffle && playlist.length > 1) {
     const nextIdx = Math.floor(Math.random() * playlist.length);
     window.playIndex(nextIdx);
     return;
   }
+
   if (currentIndex + 1 < playlist.length) {
-    window.playIndex(currentIndex + 1);
-  } else if (repeatMode === 'all' && playlist.length > 0) {
+    const remaining = playlist.slice(currentIndex + 1);
+    let bestIdx = currentIndex + 1;
+    let maxScore = -999;
+
+    remaining.slice(0, 8).forEach((candidate, offset) => {
+      const score = calculateAffinity(candidate, currentTrack) + (8 - offset);
+      if (score > maxScore) {
+        maxScore = score;
+        bestIdx = currentIndex + 1 + offset;
+      }
+    });
+
+    window.playIndex(bestIdx);
+    return;
+  }
+
+  if (playlist.length > 0 && currentTrack) {
+    try {
+      const res = await fetch(`/api/recommendations/${currentTrack.id}?title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist)}`);
+      const data = await res.json();
+      if (data.tracks && data.tracks.length > 0) {
+        const existingIds = new Set(playlist.map(t => t.id));
+        const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
+        if (newTracks.length > 0) {
+          const startIdx = playlist.length;
+          playlist.push(...newTracks);
+          window.playIndex(startIdx);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Smart autoplay buffer error:", err);
+    }
+  }
+
+  if (repeatMode === 'all') {
     window.playIndex(0);
   }
 };
@@ -361,6 +441,10 @@ window.playIndex = function (idx) {
   const track = playlist[currentIndex];
   const audio = document.getElementById('audio');
 
+  playHistory.push(track.id);
+  if (playHistory.length > 50) playHistory.shift();
+  localStorage.setItem('melo_history', JSON.stringify(playHistory));
+
   const dockTitle = document.getElementById('dockTitle');
   const dockArtist = document.getElementById('dockArtist');
   const dockThumb = document.getElementById('dockThumb');
@@ -460,7 +544,7 @@ function syncSheetTrackInfo() {
     favIcon.style.color = isFav ? 'var(--accent)' : '#fff';
   }
 
-  updateArtworkPalette(track.thumbnail);
+  updateArtworkPalette(track.thumbnail, track.title, track.id);
 
   const cinImg = document.getElementById('cinematicArtImg');
   if (cinImg) cinImg.src = track.thumbnail || '';
@@ -470,175 +554,123 @@ function syncSheetTrackInfo() {
   if (cinArtist) cinArtist.innerText = track.artist;
 }
 
-window.updateArtworkPalette = function (imgUrl) {
+window.updateArtworkPalette = function (imgUrl, trackTitle = '', trackId = '') {
   if (!imgUrl) return;
   const img = new Image();
-  img.crossOrigin = "Anonymous";
+  img.crossOrigin = "anonymous";
   img.src = imgUrl;
+
   img.onload = () => {
     try {
       const cvs = document.createElement("canvas");
       const ctx = cvs.getContext("2d");
-      const size = 16;
+      const size = 32;
       cvs.width = size;
       cvs.height = size;
       ctx.drawImage(img, 0, 0, size, size);
 
-      const imgData = ctx.getImageData(0, 0, size, size).data;
-      let colors = [];
+      const data = ctx.getImageData(0, 0, size, size).data;
+      const buckets = {};
 
-      for (let i = 0; i < imgData.length; i += 4) {
-        let r = imgData[i];
-        let g = imgData[i + 1];
-        let b = imgData[i + 2];
-        let a = imgData[i + 3];
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const a = data[i + 3];
 
         if (a < 128) continue;
 
-        let max = Math.max(r, g, b);
-        let min = Math.min(r, g, b);
-        let l = (max + min) / 2;
-        let s = max === min ? 0 : (max - min) / (1 - Math.abs(2 * l / 255 - 1)) / 255;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const l = (max + min) / 2;
+        const s = max === min ? 0 : (max - min) / (255 - Math.abs(2 * l - 255));
 
-        if (l > 15 && l < 240 && s > 0.15) {
-          colors.push({ r, g, b, score: s * (max - min) });
+        if (l < 30 || l > 230 || s < 0.18) continue;
+
+        const qr = Math.round(r / 24) * 24;
+        const qg = Math.round(g / 24) * 24;
+        const qb = Math.round(b / 24) * 24;
+        const key = `${qr},${qg},${qb}`;
+
+        if (!buckets[key]) {
+          buckets[key] = { r: qr, g: qg, b: qb, count: 0, sat: s };
+        }
+        buckets[key].count += 1;
+      }
+
+      const sorted = Object.values(buckets).sort((a, b) => (b.count * b.sat) - (a.count * a.sat));
+
+      let primary = sorted[0];
+      let secondary = null;
+
+      if (primary) {
+        for (let j = 1; j < sorted.length; j++) {
+          const cand = sorted[j];
+          const dist = Math.sqrt(
+            Math.pow(cand.r - primary.r, 2) +
+            Math.pow(cand.g - primary.g, 2) +
+            Math.pow(cand.b - primary.b, 2)
+          );
+          if (dist > 75) {
+            secondary = cand;
+            break;
+          }
         }
       }
 
-      if (colors.length === 0) {
-        for (let i = 0; i < imgData.length; i += 4) {
-          colors.push({ r: imgData[i], g: imgData[i+1], b: imgData[i+2], score: 1 });
-        }
+      if (!primary) primary = { r: 250, g: 45, b: 72 };
+      if (!secondary) {
+        secondary = {
+          r: Math.min(240, Math.max(40, 255 - primary.r)),
+          g: Math.min(240, Math.max(40, primary.b)),
+          b: Math.min(240, Math.max(40, primary.g))
+        };
       }
-
-      colors.sort((a, b) => b.score - a.score);
-
-      let primary = colors[0] || { r: 250, g: 45, b: 72 };
-      let secondary = colors.find(c => {
-        let dist = Math.abs(c.r - primary.r) + Math.abs(c.g - primary.g) + Math.abs(c.b - primary.b);
-        return dist > 80;
-      }) || colors[Math.floor(colors.length / 2)] || { r: 192, g: 38, b: 211 };
 
       const r1 = primary.r, g1 = primary.g, b1 = primary.b;
       const r2 = secondary.r, g2 = secondary.g, b2 = secondary.b;
 
-      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.92)`);
-      document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.85)`);
-      document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
+      currentPrimaryHex = `#${((1 << 24) + (r1 << 16) + (g1 << 8) + b1).toString(16).slice(1)}`;
+      const primaryCol = `rgb(${r1}, ${g1}, ${b1})`;
+
+      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.95)`);
+      document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.88)`);
+      document.documentElement.style.setProperty('--play-accent-color', primaryCol);
 
       const luminance = (0.299 * r1 + 0.587 * g1 + 0.114 * b1) / 255;
       const playSvg = document.getElementById('sheetPlayBtnSvg');
       if (playSvg) {
-        playSvg.style.fill = luminance > 0.65 ? '#000000' : '#ffffff';
+        playSvg.style.fill = luminance > 0.6 ? '#000000' : '#ffffff';
       }
-    } catch (err) {
-      applyUrlColorExtraction(imgUrl);
+    } catch (e) {
+      applyUrlColorExtraction(imgUrl || trackTitle || trackId);
     }
   };
+
   img.onerror = () => {
-    applyUrlColorExtraction(imgUrl);
+    applyUrlColorExtraction(imgUrl || trackTitle || trackId);
   };
 };
 
-function applyUrlColorExtraction(url) {
+function applyUrlColorExtraction(seedStr) {
   let hash = 0;
-  for (let i = 0; i < url.length; i++) {
-    hash = url.charCodeAt(i) + ((hash << 5) - hash);
+  for (let i = 0; i < seedStr.length; i++) {
+    hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
   }
-  const r1 = Math.abs((hash * 31) % 170) + 60;
-  const g1 = Math.abs((hash * 17) % 140) + 50;
-  const b1 = Math.abs((hash * 47) % 190) + 60;
+  const r1 = Math.abs((hash * 37) % 180) + 55;
+  const g1 = Math.abs((hash * 19) % 150) + 45;
+  const b1 = Math.abs((hash * 53) % 200) + 55;
   const r2 = Math.min(240, Math.abs(255 - r1) + 40);
   const g2 = Math.min(240, Math.abs(255 - g1) + 40);
   const b2 = Math.min(240, Math.abs(255 - b1) + 40);
 
-  document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.92)`);
-  document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.85)`);
+  currentPrimaryHex = `#${((1 << 24) + (r1 << 16) + (g1 << 8) + b1).toString(16).slice(1)}`;
+  document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.95)`);
+  document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.88)`);
   document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
 }
 
-function renderSheetQueueList() {
-  const qView = document.getElementById('sheetViewQueue');
-  if (!qView) return;
-  qView.innerHTML = '<div style="font-size:0.9rem;font-weight:700;color:var(--text-muted);margin-bottom:8px;padding-left:4px;">Upcoming Tracks</div>';
-
-  const upcoming = playlist.slice(currentIndex + 1, currentIndex + 25);
-  if (upcoming.length === 0) {
-    qView.innerHTML += '<p style="color:var(--text-dim);font-size:0.85rem;padding:8px;">No more tracks in queue. Autoplay will buffer next songs.</p>';
-    return;
-  }
-
-  upcoming.forEach((t, idx) => {
-    const item = document.createElement('div');
-    item.className = 'queue-row';
-    const isFav = !!favorites[t.id];
-
-    item.innerHTML = `
-      <img class="queue-thumb" src="${t.thumbnail || ''}" />
-      <div class="queue-info">
-        <div class="queue-title">${t.title}</div>
-        <div class="queue-artist">${t.artist}</div>
-      </div>
-      <div class="queue-actions-cluster">
-        <button class="queue-action-btn" title="Add to Favorites" onclick="event.stopPropagation(); toggleFavTrackDirect('${t.id}', this)">
-          ${isFav ? '♥' : '♡'}
-        </button>
-        <button class="queue-action-btn" title="Add to Playlist" onclick="event.stopPropagation(); addQueueTrackToPlaylist('${t.id}')">
-          +
-        </button>
-      </div>
-    `;
-    item.onclick = () => window.playIndex(currentIndex + 1 + idx);
-    qView.appendChild(item);
-  });
-}
-
-window.toggleFavTrackDirect = function (trackId, btn) {
-  const track = playlist.find(t => t.id === trackId);
-  if (!track) return;
-  if (favorites[trackId]) {
-    delete favorites[trackId];
-    btn.innerText = '♡';
-    btn.style.color = 'var(--text-muted)';
-  } else {
-    favorites[trackId] = track;
-    btn.innerText = '♥';
-    btn.style.color = 'var(--accent)';
-  }
-  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
-};
-
-window.addQueueTrackToPlaylist = function (trackId) {
-  const track = playlist.find(t => t.id === trackId);
-  if (!track) return;
-  const plNames = Object.values(playlists).map(p => p.name).join(', ');
-  const target = prompt(`Enter playlist name to add "${track.title}" (${plNames}):`);
-  if (target) {
-    const found = Object.values(playlists).find(p => p.name.toLowerCase() === target.trim().toLowerCase());
-    if (found) {
-      found.tracks.push(track);
-      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
-      alert(`Added to "${found.name}"!`);
-    } else {
-      alert("Playlist not found.");
-    }
-  }
-};
-
-async function fetchRecommendations(videoId) {
-  try {
-    const res = await fetch(`/api/recommendations/${videoId}`);
-    const data = await res.json();
-    if (data.tracks && data.tracks.length > 0) {
-      const existingIds = new Set(playlist.map(t => t.id));
-      const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
-      playlist.push(...newTracks);
-    }
-  } catch (e) {
-    console.warn("Recommendations buffer error", e);
-  }
-}
-
+// Lyrics Engine
 async function fetchLyrics(track, token) {
   const container = document.getElementById('sheetViewLyrics');
   if (container) container.innerHTML = `<div class="lyrics-line active">Syncing lyrics...</div>`;
@@ -700,15 +732,136 @@ function populateCinematicLyrics() {
   });
 }
 
-function fmtTime(s) {
-  if (isNaN(s)) return "0:00";
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+// Hybrid Recommendations Fetcher
+async function fetchRecommendations(videoId) {
+  const currentTrack = playlist[currentIndex];
+  const queryParam = currentTrack ? `&title=${encodeURIComponent(currentTrack.title)}&artist=${encodeURIComponent(currentTrack.artist)}` : '';
+  try {
+    const res = await fetch(`/api/recommendations/${videoId}?${queryParam}`);
+    const data = await res.json();
+    if (data.tracks && data.tracks.length > 0) {
+      const existingIds = new Set(playlist.map(t => t.id));
+      const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
+      playlist.push(...newTracks);
+      // Re-render queue if open
+      if (document.getElementById('tabQueue')?.classList.contains('active')) {
+        renderSheetQueueList();
+      }
+    }
+  } catch (e) {
+    console.warn("Recommendations buffer error", e);
+  }
 }
 
 // ==========================================
-// 3. VIEWS (Home, Search, Favorites, Modes, Spaces, Category Detail)
+// EXPLAINED CONTEXT-AWARE QUEUE VIEW
+// ==========================================
+function renderSheetQueueList() {
+  const qView = document.getElementById('sheetViewQueue');
+  if (!qView) return;
+  qView.innerHTML = '';
+
+  const remaining = playlist.slice(currentIndex + 1);
+  if (remaining.length === 0) {
+    qView.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem;padding:12px;">Radio algorithms are buffering the next songs...</p>';
+    return;
+  }
+
+  const vibeSection = remaining.slice(0, 3);
+  const recallSection = remaining.slice(3, 5);
+  const wildcardSection = remaining.slice(5, 6);
+  const tailSection = remaining.slice(6, 20);
+
+  const createRow = (t, globalIdx, reasonBadge = null) => {
+    const item = document.createElement('div');
+    item.className = 'queue-row';
+    const isFav = !!favorites[t.id];
+
+    item.innerHTML = `
+      <img class="queue-thumb" src="${t.thumbnail || ''}" />
+      <div class="queue-info">
+        <div class="queue-title">${t.title}</div>
+        <div class="queue-artist" style="display:flex; align-items:center; gap:6px;">
+          <span>${t.artist}</span>
+          ${reasonBadge ? `<span class="queue-reason-tag ${reasonBadge.cls}">${reasonBadge.label}</span>` : ''}
+        </div>
+      </div>
+      <div class="queue-actions-cluster">
+        <button class="queue-action-btn" title="Add to Favorites" onclick="event.stopPropagation(); toggleFavTrackDirect('${t.id}', this)">
+          ${isFav ? '♥' : '♡'}
+        </button>
+        <button class="queue-action-btn" title="Add to Playlist" onclick="event.stopPropagation(); addQueueTrackToPlaylist('${t.id}')">
+          +
+        </button>
+      </div>
+    `;
+    item.onclick = () => window.playIndex(globalIdx);
+    return item;
+  };
+
+  if (vibeSection.length > 0) {
+    qView.innerHTML += `<div class="queue-section-header"><span>Matching Current Vibe</span><span class="queue-reason-tag tag-vibe">${vibeSection.length} Tracks</span></div>`;
+    vibeSection.forEach((t, i) => {
+      qView.appendChild(createRow(t, currentIndex + 1 + i, { label: 'Vibe Match', cls: 'tag-vibe' }));
+    });
+  }
+
+  if (recallSection.length > 0) {
+    qView.innerHTML += `<div class="queue-section-header"><span>Haven't Heard Recently</span><span class="queue-reason-tag tag-recall">${recallSection.length} Tracks</span></div>`;
+    recallSection.forEach((t, i) => {
+      qView.appendChild(createRow(t, currentIndex + 4 + i, { label: 'Fresh Rotation', cls: 'tag-recall' }));
+    });
+  }
+
+  if (wildcardSection.length > 0) {
+    qView.innerHTML += `<div class="queue-section-header"><span>Wildcard Discovery</span><span class="queue-reason-tag tag-wildcard">1 Track</span></div>`;
+    wildcardSection.forEach((t) => {
+      qView.appendChild(createRow(t, currentIndex + 6, { label: 'Wildcard', cls: 'tag-wildcard' }));
+    });
+  }
+
+  if (tailSection.length > 0) {
+    qView.innerHTML += `<div class="queue-section-header"><span>Coming Up Next</span><span class="queue-reason-tag">${tailSection.length} Tracks</span></div>`;
+    tailSection.forEach((t, i) => {
+      qView.appendChild(createRow(t, currentIndex + 7 + i));
+    });
+  }
+}
+
+window.toggleFavTrackDirect = function (trackId, btn) {
+  const track = playlist.find(t => t.id === trackId);
+  if (!track) return;
+  if (favorites[trackId]) {
+    delete favorites[trackId];
+    btn.innerText = '♡';
+    btn.style.color = 'var(--text-muted)';
+  } else {
+    favorites[trackId] = track;
+    btn.innerText = '♥';
+    btn.style.color = 'var(--accent)';
+  }
+  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+};
+
+window.addQueueTrackToPlaylist = function (trackId) {
+  const track = playlist.find(t => t.id === trackId);
+  if (!track) return;
+  const plNames = Object.values(playlists).map(p => p.name).join(', ');
+  const target = prompt(`Enter playlist name to add "${track.title}" (${plNames}):`);
+  if (target) {
+    const found = Object.values(playlists).find(p => p.name.toLowerCase() === target.trim().toLowerCase());
+    if (found) {
+      found.tracks.push(track);
+      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      alert(`Added to "${found.name}"!`);
+    } else {
+      alert("Playlist not found.");
+    }
+  }
+};
+
+// ==========================================
+// 3. VIEWS (Home, Search, Categories, Details)
 // ==========================================
 
 function renderHomeView() {
@@ -725,19 +878,37 @@ function renderHomeView() {
         </button>
       </div>
 
-      <div class="hero-slider-section">
-        <div class="hero-slider-wrap" id="heroSlider"></div>
-        <div class="slider-dots" id="sliderDots"></div>
+      <div class="for-you-spotlight">
+        <div class="for-you-halo"></div>
+        <div class="for-you-header">
+          <div class="for-you-title">
+            <span class="for-you-pulse-dot"></span>
+            <span>Made For You</span>
+          </div>
+          <button class="pill-action-btn" onclick="playForYouAll()">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play Mix</span>
+          </button>
+        </div>
+
+        <div class="vibe-chips-row">
+          <button class="vibe-chip active" onclick="switchVibePreset('Flow', this)">🌊 Flow</button>
+          <button class="vibe-chip" onclick="switchVibePreset('Acoustic Chill', this)">☕ Acoustic</button>
+          <button class="vibe-chip" onclick="switchVibePreset('Workout High Energy', this)">⚡ Energy</button>
+          <button class="vibe-chip" onclick="switchVibePreset('Late Night Soul', this)">🌙 Velvet</button>
+        </div>
+
+        <div class="capsule-grid" id="forYouGrid" style="margin-bottom:0;"></div>
       </div>
 
       <div class="section-heading"><h2>Modes & Sonic Spaces</h2></div>
       <div class="search-mood-cards" style="margin-bottom:32px;">
-        <div class="mood-card" onclick="openCategoryDetail('Deep Focus', 'Deep Focus Lo-Fi Beats')"><span>Deep Focus</span><span class="mood-icon">🧠</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Late Night Chill', 'Late Night Acoustic Melodies')"><span>Late Night</span><span class="mood-icon">🌙</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Workout BPM', 'Workout Gym Energy Bangers')"><span>Workout BPM</span><span class="mood-icon">⚡</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Cinematic', 'Cinematic Ambient Soundscapes')"><span>Cinematic</span><span class="mood-icon">🌌</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Retro Gold', 'Retro Bollywood Classics')"><span>Retro Gold</span><span class="mood-icon">📻</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Sufi Chill', 'Sufi Ghazals & Acoustic')"><span>Sufi Chill</span><span class="mood-icon">🕊️</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Deep Focus', 'Deep Focus Lo-Fi Beats')" style="background-color: #e11d48;"><span>Deep Focus</span><span class="mood-icon">🧠</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Late Night Chill', 'Late Night Acoustic Melodies')" style="background-color: #ea580c;"><span>Late Night</span><span class="mood-icon">🌙</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Workout BPM', 'Workout Gym Energy Bangers')" style="background-color: #7c3aed;"><span>Workout BPM</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Cinematic', 'Cinematic Ambient Soundscapes')" style="background-color: #2563eb;"><span>Cinematic</span><span class="mood-icon">🌌</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Retro Gold', 'Retro Bollywood Classics')" style="background-color: #059669;"><span>Retro Gold</span><span class="mood-icon">📻</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Sufi Chill', 'Sufi Ghazals & Acoustic')" style="background-color: #0891b2;"><span>Sufi Chill</span><span class="mood-icon">🕊️</span></div>
       </div>
 
       <div class="section-heading" id="trendingShelf">
@@ -773,7 +944,7 @@ function renderHomeView() {
     </div>
   `;
 
-  loadHeroCatalog();
+  loadForYouCatalog('Acoustic Bollywood Indie Hits');
   window.loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
   window.loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
   window.loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
@@ -781,6 +952,33 @@ function renderHomeView() {
   window.loadShelfCategory('Retro Bollywood Classics', 'retroGrid');
   window.loadShelfCategory('Sufi Ghazals & Acoustic', 'sufiGrid');
 }
+
+async function loadForYouCatalog(query = 'Acoustic Bollywood Indie Hits') {
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const tracks = data.results || [];
+    forYouTracks = tracks.slice(0, 6);
+    categoryData['forYouGrid'] = forYouTracks;
+    renderGridContainer('forYouGrid', forYouTracks);
+  } catch (err) {
+    console.warn("For You load error", err);
+  }
+}
+
+window.switchVibePreset = function (vibe, btn) {
+  document.querySelectorAll('.vibe-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentVibe = vibe;
+  loadForYouCatalog(vibe === 'Flow' ? 'Acoustic Bollywood Indie Hits' : vibe);
+};
+
+window.playForYouAll = function () {
+  if (forYouTracks.length > 0) {
+    playlist = [...forYouTracks];
+    window.playIndex(0);
+  }
+};
 
 // Dedicated Modes View
 function renderModesView() {
@@ -863,7 +1061,7 @@ function renderSpacesView() {
   `;
 }
 
-// Dedicated Category Detail Page (Lists Songs Accordingly)
+// Dedicated Category Detail Page
 window.openCategoryDetail = async function(title, query) {
   activeView = 'category';
   const viewContainer = document.getElementById('viewContainer');
@@ -953,85 +1151,6 @@ window.openCategoryDetail = async function(title, query) {
   }
 };
 
-async function loadHeroCatalog() {
-  try {
-    const queries = [
-      'Top Hindi Trending Songs 2026',
-      'Bollywood Romantic Hits',
-      'Punjabi Hits 2026',
-      'Indian Indie Songs'
-    ];
-    
-    let allTracks = [];
-    for (const q of queries) {
-      const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      if (data.results) {
-        allTracks.push(...data.results);
-      }
-    }
-
-    const seenThumbs = new Set();
-    heroTracks = [];
-    for (const track of allTracks) {
-      if (track.thumbnail && !seenThumbs.has(track.thumbnail)) {
-        seenThumbs.add(track.thumbnail);
-        heroTracks.push(track);
-      }
-      if (heroTracks.length >= 6) break;
-    }
-
-    renderHeroSlider();
-  } catch (err) {
-    console.warn("Hero fetch failed:", err);
-  }
-}
-
-function renderHeroSlider() {
-  const slider = document.getElementById('heroSlider');
-  const dots = document.getElementById('sliderDots');
-  if (!slider || !dots) return;
-
-  slider.innerHTML = '';
-  dots.innerHTML = '';
-
-  heroTracks.forEach((track, i) => {
-    const slide = document.createElement('div');
-    slide.className = 'hero-slide-card';
-    slide.onclick = () => {
-      playlist = [...heroTracks];
-      window.playIndex(i);
-    };
-    slide.innerHTML = `
-      <img class="hero-slide-img" src="${track.thumbnail || ''}" loading="lazy" />
-      <div class="hero-slide-overlay">
-        <div class="hero-slide-tag">Curated Soundstage</div>
-        <div class="hero-slide-title">${track.title}</div>
-        <div class="hero-slide-artist">${track.artist}</div>
-      </div>
-    `;
-    slider.appendChild(slide);
-
-    const dot = document.createElement('div');
-    dot.className = `dot ${i === 0 ? 'active' : ''}`;
-    dots.appendChild(dot);
-  });
-
-  if (heroTracks.length > 0) {
-    updateArtworkPalette(heroTracks[0].thumbnail);
-  }
-
-  slider.addEventListener('scroll', () => {
-    const index = Math.round(slider.scrollLeft / (slider.offsetWidth * 0.90));
-    dots.querySelectorAll('.dot').forEach((d, idx) => {
-      d.classList.toggle('active', idx === index);
-    });
-    if (heroTracks[index] && heroTracks[index].thumbnail) {
-      updateArtworkPalette(heroTracks[index].thumbnail);
-    }
-  }, { passive: true });
-}
-
 window.loadShelfCategory = async function (query, containerId) {
   try {
     const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
@@ -1057,8 +1176,13 @@ function renderGridContainer(containerId, items) {
     const item = document.createElement('div');
     item.className = 'poster-item';
     item.onclick = () => {
-      playlist = categoryData[containerId] || items;
-      window.playIndex(i);
+      if (containerId === 'searchGrid') {
+        playlist = [track];
+        window.playIndex(0);
+      } else {
+        playlist = categoryData[containerId] || items;
+        window.playIndex(i);
+      }
     };
     item.innerHTML = `
       <div class="poster-wrap">
@@ -1072,6 +1196,9 @@ function renderGridContainer(containerId, items) {
   });
 }
 
+// ----------------------------------------------------
+// SEARCH VIEW
+// ----------------------------------------------------
 function renderSearchView() {
   const viewContainer = document.getElementById('viewContainer');
   if (!viewContainer) return;
@@ -1093,21 +1220,39 @@ function renderSearchView() {
       </div>
 
       <div class="section-heading">
-        <h2 id="searchResultsTitle">Trending Recommendations</h2>
-      </div>
-      <div id="searchTracklist" style="margin-bottom:32px;"></div>
-
-      <div class="section-heading">
         <h2>Explore by Mood & Genre</h2>
       </div>
-      <div class="search-mood-cards" style="margin-bottom:32px;">
-        <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
-        <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
-        <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
-        <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Party Hits', 'Bollywood Dance Hits Party')"><span>Party Hits</span><span class="mood-icon">🎉</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('South Cinema', 'South Indian Cinema Bangers')"><span>South Cinema</span><span class="mood-icon">🚀</span></div>
+      <div class="search-mood-cards" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:14px; margin-bottom:32px;">
+        <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')" style="background-color: #e11d48; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">Romance</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">💖</span>
+        </div>
+        <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')" style="background-color: #ea580c; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">Punjabi Wave</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">🔥</span>
+        </div>
+        <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')" style="background-color: #7c3aed; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">Desi Rap</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">⚡</span>
+        </div>
+        <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')" style="background-color: #2563eb; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">Indie Chill</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">🌙</span>
+        </div>
+        <div class="mood-card" onclick="quickSearch('Bollywood Dance Hits Party')" style="background-color: #059669; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">Party Hits</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">🎉</span>
+        </div>
+        <div class="mood-card" onclick="quickSearch('South Indian Cinema Bangers')" style="background-color: #0891b2; border:none; padding:18px; border-radius:16px; min-height:85px; display:flex; flex-direction:column; justify-content:space-between; cursor:pointer;">
+          <span style="font-weight:700; font-size:1rem; color:#fff;">South Cinema</span>
+          <span class="mood-icon" style="align-self:flex-end; font-size:1.4rem;">🚀</span>
+        </div>
       </div>
+
+      <div class="section-heading">
+        <h2 id="searchResultsTitle">Trending Recommendations</h2>
+      </div>
+      <div class="capsule-grid" id="searchGrid" style="margin-bottom:32px;"></div>
 
       <div class="section-heading"><h2>Bollywood Chartbusters</h2></div>
       <div class="capsule-grid" id="searchBollywoodGrid"></div>
@@ -1129,16 +1274,19 @@ function renderSearchView() {
       clearTimeout(searchTimer);
       const q = input.value.trim();
       if (clearBtn) clearBtn.style.display = q ? 'flex' : 'none';
-      if (!q) return;
+      if (!q) {
+        window.clearSearchInput();
+        return;
+      }
       searchTimer = setTimeout(() => {
         const title = document.getElementById('searchResultsTitle');
         if (title) title.innerText = `Results for "${q}"`;
-        loadSearchTracklist(q);
+        loadSearchShelf(q, 'searchGrid', 18);
       }, 300);
     });
   }
 
-  loadSearchTracklist('Bollywood Trending 2026');
+  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12);
   loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
   loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
   loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
@@ -1151,7 +1299,7 @@ window.clearSearchInput = function () {
   if (clearBtn) clearBtn.style.display = 'none';
   const title = document.getElementById('searchResultsTitle');
   if (title) title.innerText = "Trending Recommendations";
-  loadSearchTracklist('Bollywood Trending 2026');
+  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12);
   loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
   loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
   loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
@@ -1166,50 +1314,10 @@ window.quickSearch = function (query) {
   }
   const title = document.getElementById('searchResultsTitle');
   if (title) title.innerText = `Results for "${query}"`;
-  loadSearchTracklist(query);
+  loadSearchShelf(query, 'searchGrid', 18);
+  const grid = document.getElementById('searchGrid');
+  if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 };
-
-async function loadSearchTracklist(query) {
-  try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
-    const data = await res.json();
-    const items = data.results || [];
-    playlist = items;
-
-    const container = document.getElementById('searchTracklist');
-    if (!container) return;
-
-    if (items.length === 0) {
-      container.innerHTML = `<p style="color:var(--text-dim); padding:12px;">No songs found matching your query.</p>`;
-      return;
-    }
-
-    container.innerHTML = '';
-    items.forEach((track, i) => {
-      const row = document.createElement('div');
-      row.className = 'track-row';
-      row.onclick = () => {
-        playlist = items;
-        window.playIndex(i);
-      };
-      const isFav = !!favorites[track.id];
-      row.innerHTML = `
-        <div class="tr-num">${i + 1}</div>
-        <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
-        <div class="tr-info">
-          <div class="tr-title">${track.title}</div>
-          <div class="tr-artist">${track.artist}</div>
-        </div>
-        <div class="tr-album">${track.album || 'Single'}</div>
-        <div class="tr-time">${track.duration}</div>
-        <button class="tr-fav ${isFav ? 'active' : ''}" onclick="removeFavoriteItem(event, '${track.id}')">${isFav ? '♥' : '♡'}</button>
-      `;
-      container.appendChild(row);
-    });
-  } catch (err) {
-    console.error("Search tracklist load failed", err);
-  }
-}
 
 async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
   try {
@@ -1331,7 +1439,7 @@ window.createCustomPlaylistDialog = function () {
 function openPlaylistDetails(plId) {
   const pl = playlists[plId];
   const viewContainer = document.getElementById('viewContainer');
-  if (!pl || !viewContainer) return;
+  if (!viewContainer) return;
 
   viewContainer.innerHTML = `
     <div class="stage-content">
@@ -1548,7 +1656,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Fluid Mesh Animation
+  // Live Fluid Mesh Renderer
   const fluidCanvases = [document.getElementById('fluidMeshCanvas'), document.getElementById('cinematicMeshCanvas')];
   let fluidTime = 0;
 
@@ -1574,8 +1682,8 @@ document.addEventListener('DOMContentLoaded', () => {
     fluidTime += 0.007;
 
     const computedStyle = getComputedStyle(document.documentElement);
-    const color1 = computedStyle.getPropertyValue('--mesh-color-1').trim() || 'rgba(250, 45, 72, 0.9)';
-    const color2 = computedStyle.getPropertyValue('--mesh-color-2').trim() || 'rgba(192, 38, 211, 0.8)';
+    const color1 = computedStyle.getPropertyValue('--mesh-color-1').trim() || 'rgba(250, 45, 72, 0.95)';
+    const color2 = computedStyle.getPropertyValue('--mesh-color-2').trim() || 'rgba(192, 38, 211, 0.88)';
 
     fluidCanvases.forEach(canv => {
       if (!canv) return;
@@ -1695,6 +1803,5 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Launch initial home stage
   renderHomeView();
 });

@@ -1,7 +1,8 @@
 import os
 import re
+import html
 import base64
-import asyncio
+import urllib.parse
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, Query, Response
 from fastapi.responses import StreamingResponse, FileResponse
@@ -10,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
+from ytmusicapi import YTMusic
 
-app = FastAPI(title="MELO Audio Engine", version="7.4.1")
+app = FastAPI(title="MELO Hybrid Engine", version="9.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,13 +23,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-stream_cache = TTLCache(maxsize=3000, ttl=14400)
-search_cache = TTLCache(maxsize=1000, ttl=3600)
-lyrics_cache = TTLCache(maxsize=1000, ttl=86400)
-rec_cache = TTLCache(maxsize=1000, ttl=7200)
-image_cache = TTLCache(maxsize=3000, ttl=86400)
+# In-memory caches
+stream_cache = TTLCache(maxsize=15000, ttl=86400)
+search_cache = TTLCache(maxsize=1500, ttl=3600)
+lyrics_cache = TTLCache(maxsize=1500, ttl=86400)
+rec_cache = TTLCache(maxsize=1500, ttl=7200)
+image_cache = TTLCache(maxsize=5000, ttl=86400)
 
 http_client: Optional[httpx.AsyncClient] = None
+ytm: Optional[YTMusic] = None
 
 DES_KEY = b"38346591"
 DES_CIPHER = des(DES_KEY, ECB, padmode=PAD_PKCS5)
@@ -41,12 +45,16 @@ CDN_HEADERS = {
 
 @app.on_event("startup")
 async def startup_event():
-    global http_client
+    global http_client, ytm
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(15.0, connect=5.0),
-        limits=httpx.Limits(max_keepalive_connections=100, max_connections=300),
+        limits=httpx.Limits(max_keepalive_connections=150, max_connections=400),
         follow_redirects=True,
     )
+    try:
+        ytm = YTMusic()
+    except Exception as e:
+        print(f"[YTM_INIT_WARNING] {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -77,10 +85,11 @@ def decrypt_saavn_url(enc_str: str) -> str:
 def clean_thumbnail_url(raw_url: str) -> str:
     if not raw_url:
         return ""
-    thumb = raw_url.replace("150x150", "500x500").replace("50x50", "500x500")
-    if "http://" in thumb:
-        thumb = thumb.replace("http://", "https://")
-    return thumb
+    clean = html.unescape(raw_url.strip())
+    clean = clean.replace("50x50", "500x500").replace("150x150", "500x500")
+    if "http://" in clean:
+        clean = clean.replace("http://", "https://")
+    return clean
 
 def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     more_info = item.get("more_info", {})
@@ -103,20 +112,29 @@ def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     title = item.get("title", item.get("song", "Unknown Title"))
-    title = re.sub(r"&quot;", '"', re.sub(r"&#039;", "'", title)).strip()
+    title = html.unescape(re.sub(r"&quot;", '"', re.sub(r"&#039;", "'", title)).strip())
 
     artist = more_info.get("music", item.get("primary_artists", item.get("singers", "Unknown Artist")))
+    artist = html.unescape(artist).strip()
+
     album = more_info.get("album", item.get("album", ""))
+    album = html.unescape(album).strip()
+
     duration = more_info.get("duration", item.get("duration", "210"))
-    
     try:
         dur_secs = int(duration)
         dur_str = f"{dur_secs // 60}:{dur_secs % 60:02d}"
     except Exception:
         dur_str = "3:30"
 
-    raw_image = item.get("image", "")
+    raw_image = more_info.get("image") or item.get("image") or item.get("image_url") or ""
     thumb = clean_thumbnail_url(raw_image)
+
+    decrypted_audio_url = decrypt_saavn_url(enc_url)
+    if decrypted_audio_url:
+        stream_cache[str(track_id)] = decrypted_audio_url
+
+    encoded_thumb_param = urllib.parse.quote(thumb, safe="") if thumb else ""
 
     return {
         "id": str(track_id),
@@ -124,9 +142,35 @@ def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "artist": artist,
         "album": album,
         "duration": dur_str,
-        "thumbnail": f"/api/proxy-image?url={httpx.URL(thumb)}" if thumb else "",
+        "thumbnail": f"/api/proxy-image?url={encoded_thumb_param}" if encoded_thumb_param else thumb,
         "enc_url": enc_url
     }
+
+async def search_single_saavn_track(query_str: str) -> Optional[Dict[str, Any]]:
+    clean_q = query_str.strip()
+    api_url = "https://www.jiosaavn.com/api.php"
+    params = {
+        "__call": "search.getResults",
+        "_format": "json",
+        "_marker": "0",
+        "api_version": "4",
+        "ctx": "web6dot0",
+        "p": "1",
+        "n": "5",
+        "q": clean_q
+    }
+    try:
+        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get("results", [])
+            for item in results:
+                track = format_saavn_track(item)
+                if track:
+                    return {k: v for k, v in track.items() if k != "enc_url"}
+    except Exception:
+        pass
+    return None
 
 @app.get("/api/search")
 async def search_endpoint(query: str = Query(..., min_length=1)):
@@ -140,6 +184,7 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
         "_format": "json",
         "_marker": "0",
         "api_version": "4",
+        "ctx": "web6dot0",
         "p": "1",
         "n": "40",
         "q": q
@@ -163,11 +208,6 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
                     continue
                 seen_titles.add(clean_title)
 
-                if track["enc_url"]:
-                    decrypted = decrypt_saavn_url(track["enc_url"])
-                    if decrypted:
-                        stream_cache[track["id"]] = decrypted
-
                 clean_payload = {k: v for k, v in track.items() if k != "enc_url"}
                 formatted.append(clean_payload)
 
@@ -175,58 +215,63 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
             search_cache[q] = payload
             return payload
     except Exception as e:
-        print(f"[MELO:SEARCH_ERROR] {e}")
+        print(f"[SEARCH_ERROR] {e}")
 
     return {"results": []}
 
+# HYBRID RADIO ENDPOINT: YouTube Music Radio Algorithm -> JioSaavn Streams
 @app.get("/api/recommendations/{video_id}")
-async def get_recommendations(video_id: str):
-    if video_id in rec_cache:
-        return rec_cache[video_id]
+async def get_recommendations(
+    video_id: str,
+    title: Optional[str] = Query(None),
+    artist: Optional[str] = Query(None)
+):
+    cache_key = f"{video_id}:{title}:{artist}"
+    if cache_key in rec_cache:
+        return rec_cache[cache_key]
 
-    api_url = "https://www.jiosaavn.com/api.php"
-    params = {
-        "__call": "reco.getrecos",
-        "_format": "json",
-        "_marker": "0",
-        "api_version": "4",
-        "pid": video_id
-    }
+    matched_tracks = []
+    seen_track_ids = {str(video_id)}
 
-    try:
-        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS)
-        if resp.status_code == 200:
-            data = resp.json()
-            tracks = []
-            seen_thumbs = set()
+    # 1. Use YouTube Music watch-playlist algorithm
+    if ytm and title:
+        try:
+            yt_search_query = f"{title} {artist or ''}".strip()
+            yt_results = ytm.search(yt_search_query, filter="songs")
+            if yt_results and len(yt_results) > 0:
+                yt_video_id = yt_results[0].get("videoId")
+                if yt_video_id:
+                    # YouTube Music watch playlist (radio algorithm)
+                    watch_data = ytm.get_watch_playlist(videoId=yt_video_id, limit=12)
+                    yt_tracks = watch_data.get("tracks", [])
 
-            if isinstance(data, list):
-                for item in data:
-                    track = format_saavn_track(item)
-                    if not track or track["id"] == video_id:
-                        continue
+                    for item in yt_tracks[1:10]: # Skip the seed track itself
+                        t_title = item.get("title", "")
+                        t_artists = item.get("artists", [])
+                        t_artist_name = t_artists[0].get("name", "") if t_artists else ""
 
-                    thumb = track.get("thumbnail")
-                    if thumb and thumb in seen_thumbs:
-                        continue
-                    if thumb:
-                        seen_thumbs.add(thumb)
+                        if t_title:
+                            saavn_match = await search_single_saavn_track(f"{t_title} {t_artist_name}".strip())
+                            if saavn_match and saavn_match["id"] not in seen_track_ids:
+                                seen_track_ids.add(saavn_match["id"])
+                                matched_tracks.append(saavn_match)
+        except Exception as e:
+            print(f"[YTM_RADIO_FALLBACK] {e}")
 
-                    if track["enc_url"]:
-                        decrypted = decrypt_saavn_url(track["enc_url"])
-                        if decrypted:
-                            stream_cache[track["id"]] = decrypted
+    # 2. Fallback: Artist and genre-clustering lookup
+    if len(matched_tracks) < 5 and artist:
+        first_artist = artist.split(',')[0].split('&')[0].strip()
+        fallback_res = await search_endpoint(query=first_artist)
+        for t in fallback_res.get("results", []):
+            if t["id"] not in seen_track_ids:
+                seen_track_ids.add(t["id"])
+                matched_tracks.append(t)
+            if len(matched_tracks) >= 12:
+                break
 
-                    clean_payload = {k: v for k, v in track.items() if k != "enc_url"}
-                    tracks.append(clean_payload)
-
-            payload = {"tracks": tracks}
-            rec_cache[video_id] = payload
-            return payload
-    except Exception:
-        pass
-
-    return {"tracks": []}
+    payload = {"tracks": matched_tracks}
+    rec_cache[cache_key] = payload
+    return payload
 
 async def resolve_saavn_url(track_id: str) -> str:
     if track_id in stream_cache:
@@ -238,6 +283,7 @@ async def resolve_saavn_url(track_id: str) -> str:
         "_format": "json",
         "_marker": "0",
         "api_version": "4",
+        "ctx": "web6dot0",
         "pids": track_id
     }
 
@@ -256,7 +302,7 @@ async def resolve_saavn_url(track_id: str) -> str:
                             break
                 else:
                     for k, v in data.items():
-                        if isinstance(v, dict) and str(k) == str(track_id):
+                        if isinstance(v, dict) and (str(k) == str(track_id) or str(v.get("id")) == str(track_id)):
                             item = v
                             break
 
@@ -268,31 +314,7 @@ async def resolve_saavn_url(track_id: str) -> str:
                         stream_cache[track_id] = dec
                         return dec
     except Exception as e:
-        print(f"[MELO:RESOLVE_DETAIL_ERR] {e}")
-
-    try:
-        search_params = {
-            "__call": "search.getResults",
-            "_format": "json",
-            "api_version": "4",
-            "q": track_id,
-            "n": "5"
-        }
-        resp = await http_client.get(api_url, params=search_params, headers=CDN_HEADERS)
-        if resp.status_code == 200:
-            data = resp.json()
-            res = data.get("results", [])
-            for res_item in res:
-                r_id = res_item.get("id") or res_item.get("more_info", {}).get("song_id")
-                if str(r_id) == str(track_id) or len(res) == 1:
-                    enc_url = res_item.get("more_info", {}).get("encrypted_media_url", res_item.get("encrypted_media_url", ""))
-                    if enc_url:
-                        dec = decrypt_saavn_url(enc_url)
-                        if dec:
-                            stream_cache[track_id] = dec
-                            return dec
-    except Exception:
-        pass
+        print(f"[RESOLVE_ERROR] {e}")
 
     raise HTTPException(status_code=404, detail="Audio stream could not be resolved.")
 
@@ -358,8 +380,10 @@ async def stream_audio(
 async def proxy_image(url: str):
     if not url:
         raise HTTPException(status_code=400, detail="Missing URL")
-    if url in image_cache:
-        cached_data, content_type = image_cache[url]
+
+    decoded_url = urllib.parse.unquote(url)
+    if decoded_url in image_cache:
+        cached_data, content_type = image_cache[decoded_url]
         return Response(
             content=cached_data,
             media_type=content_type,
@@ -370,10 +394,10 @@ async def proxy_image(url: str):
         )
 
     try:
-        resp = await http_client.get(url, headers=CDN_HEADERS, timeout=8.0)
+        resp = await http_client.get(decoded_url, headers=CDN_HEADERS, timeout=8.0)
         if resp.status_code == 200:
             content_type = resp.headers.get("content-type", "image/jpeg")
-            image_cache[url] = (resp.content, content_type)
+            image_cache[decoded_url] = (resp.content, content_type)
             return Response(
                 content=resp.content,
                 media_type=content_type,
@@ -382,19 +406,9 @@ async def proxy_image(url: str):
                     "Access-Control-Allow-Origin": "*"
                 }
             )
+        return Response(status_code=302, headers={"Location": decoded_url, "Access-Control-Allow-Origin": "*"})
     except Exception:
-        pass
-
-    # Fallback 1x1 transparent PNG bytes so proxy never fails or taints canvas
-    fallback_png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc``\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82'
-    return Response(
-        content=fallback_png,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+        return Response(status_code=302, headers={"Location": decoded_url, "Access-Control-Allow-Origin": "*"})
 
 def parse_lrc(lrc_text: str) -> List[Dict[str, Any]]:
     lines = []
