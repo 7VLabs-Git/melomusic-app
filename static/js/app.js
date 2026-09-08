@@ -882,11 +882,10 @@ function renderHomeView() {
         <div class="for-you-halo"></div>
         <div class="for-you-header">
           <div class="for-you-title">
-            <span class="for-you-pulse-dot"></span>
             <span>Made For You</span>
           </div>
-          <button class="pill-action-btn" onclick="playForYouAll()">
-            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <button class="pill-action-btn" onclick="playForYouAll()" style="padding: 6px 12px; font-size: 0.85rem;">
+            <svg viewBox="0 0 24 24" style="width: 14px; height: 14px;"><path d="M8 5v14l11-7z"/></svg>
             <span>Play Mix</span>
           </button>
         </div>
