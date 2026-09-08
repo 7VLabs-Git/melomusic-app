@@ -3,4 +3,5 @@ uvicorn
 httpx
 cachetools
 aiofiles
-pydes
+pyDes
+ytmusicapi
