@@ -1,33 +1,7 @@
 // ==========================================
-// 1. GLOBAL SCOPE SAFE GUARDS & PWA CONTROLLER
-// (Defined immediately on window so onclick NEVER fails)
+// 1. GLOBAL SCOPE & APP STATE BINDINGS
 // ==========================================
 
-let deferredPwaPrompt = null;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPwaPrompt = e;
-  setTimeout(() => {
-    const pwaBanner = document.getElementById('pwaBanner');
-    if (pwaBanner) pwaBanner.classList.add('visible');
-  }, 2500);
-});
-
-window.triggerPwaInstall = function () {
-  if (!deferredPwaPrompt) return;
-  deferredPwaPrompt.prompt();
-  deferredPwaPrompt.userChoice.then(() => {
-    window.dismissPwaBanner();
-    deferredPwaPrompt = null;
-  });
-};
-
-window.dismissPwaBanner = function () {
-  const pwaBanner = document.getElementById('pwaBanner');
-  if (pwaBanner) pwaBanner.classList.remove('visible');
-};
-
-// Global App State
 let playlist = [];
 let heroTracks = [];
 let categoryData = {};
@@ -45,7 +19,7 @@ let currentPrimaryHex = '#fa2d48';
 let activePlayToken = 0;
 let selectedQuality = localStorage.getItem('melo_quality') || '320';
 
-// Global Player & Navigation Stubs
+// Global Navigation & Views
 window.switchView = function (view, pushState = true) {
   if (pushState && activeView !== view) {
     navigationHistory.push(view);
@@ -62,6 +36,10 @@ window.switchView = function (view, pushState = true) {
     document.getElementById('navSearch')?.classList.add('active');
     document.getElementById('mNavSearch')?.classList.add('active');
     renderSearchView();
+  } else if (view === 'modes') {
+    renderModesView();
+  } else if (view === 'spaces') {
+    renderSpacesView();
   } else if (view === 'favorites') {
     document.getElementById('navFavs')?.classList.add('active');
     document.getElementById('mNavFavs')?.classList.add('active');
@@ -86,6 +64,23 @@ window.scrollToCategory = function (id) {
   if (el) el.scrollIntoView({ behavior: 'smooth' });
 };
 
+// Themed Quality Modal Controllers
+window.promptQualitySelection = function () {
+  window.closeSettingsModal();
+  document.getElementById('qualityModal')?.classList.add('open');
+};
+
+window.closeQualityModal = function (e) {
+  if (!e || e.target === document.getElementById('qualityModal') || e.target.classList.contains('drag-handle')) {
+    document.getElementById('qualityModal')?.classList.remove('open');
+  }
+};
+
+window.selectQualityOption = function (val) {
+  window.changeQuality(val);
+  window.closeQualityModal();
+};
+
 window.changeQuality = function (val) {
   selectedQuality = val;
   localStorage.setItem('melo_quality', val);
@@ -101,11 +96,6 @@ window.changeQuality = function (val) {
     audio.currentTime = curTime;
     audio.play().catch(console.warn);
   }
-};
-
-window.promptQualitySelection = function () {
-  const q = prompt("Select Audio Bitrate (320, 160, 96):", selectedQuality);
-  if (['320', '160', '96'].includes(q)) window.changeQuality(q);
 };
 
 window.openFullscreenPlayer = function () {
@@ -337,7 +327,7 @@ window.actionViewCredits = function () {
 };
 
 // ==========================================
-// 2. PLAYBACK ENGINE & DESYNC SHIELD
+// 2. PLAYBACK ENGINE & ACCURATE PIXEL CLUSTERING COLOR EXTRACTOR
 // ==========================================
 
 window.playIndex = function (idx) {
@@ -455,6 +445,93 @@ function syncSheetTrackInfo() {
   if (cinTitle) cinTitle.innerText = track.title;
   const cinArtist = document.getElementById('cinematicArtist');
   if (cinArtist) cinArtist.innerText = track.artist;
+}
+
+window.updateArtworkPalette = function (imgUrl) {
+  if (!imgUrl) return;
+  const img = new Image();
+  img.crossOrigin = "Anonymous";
+  img.src = imgUrl;
+  img.onload = () => {
+    try {
+      const cvs = document.createElement("canvas");
+      const ctx = cvs.getContext("2d");
+      const size = 16;
+      cvs.width = size;
+      cvs.height = size;
+      ctx.drawImage(img, 0, 0, size, size);
+
+      const imgData = ctx.getImageData(0, 0, size, size).data;
+      let colors = [];
+
+      for (let i = 0; i < imgData.length; i += 4) {
+        let r = imgData[i];
+        let g = imgData[i + 1];
+        let b = imgData[i + 2];
+        let a = imgData[i + 3];
+
+        if (a < 128) continue;
+
+        let max = Math.max(r, g, b);
+        let min = Math.min(r, g, b);
+        let l = (max + min) / 2;
+        let s = max === min ? 0 : (max - min) / (1 - Math.abs(2 * l / 255 - 1)) / 255;
+
+        if (l > 15 && l < 240 && s > 0.15) {
+          colors.push({ r, g, b, score: s * (max - min) });
+        }
+      }
+
+      if (colors.length === 0) {
+        for (let i = 0; i < imgData.length; i += 4) {
+          colors.push({ r: imgData[i], g: imgData[i+1], b: imgData[i+2], score: 1 });
+        }
+      }
+
+      colors.sort((a, b) => b.score - a.score);
+
+      let primary = colors[0] || { r: 250, g: 45, b: 72 };
+      let secondary = colors.find(c => {
+        let dist = Math.abs(c.r - primary.r) + Math.abs(c.g - primary.g) + Math.abs(c.b - primary.b);
+        return dist > 80;
+      }) || colors[Math.floor(colors.length / 2)] || { r: 192, g: 38, b: 211 };
+
+      const r1 = primary.r, g1 = primary.g, b1 = primary.b;
+      const r2 = secondary.r, g2 = secondary.g, b2 = secondary.b;
+
+      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.92)`);
+      document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.85)`);
+      document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
+
+      const luminance = (0.299 * r1 + 0.587 * g1 + 0.114 * b1) / 255;
+      const playSvg = document.getElementById('sheetPlayBtnSvg');
+      if (playSvg) {
+        playSvg.style.fill = luminance > 0.65 ? '#000000' : '#ffffff';
+      }
+    } catch (err) {
+      applyUrlColorExtraction(imgUrl);
+    }
+  };
+  img.onerror = () => {
+    applyUrlColorExtraction(imgUrl);
+  };
+};
+
+function applyUrlColorExtraction(url) {
+  let hash = 0;
+  for (let i = 0; i < url.length; i++) {
+    hash = url.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const r1 = Math.abs((hash * 31) % 170) + 60;
+  const g1 = Math.abs((hash * 17) % 140) + 50;
+  const b1 = Math.abs((hash * 47) % 190) + 60;
+  const r2 = Math.min(240, Math.abs(255 - r1) + 40);
+  const g2 = Math.min(240, Math.abs(255 - g1) + 40);
+  const b2 = Math.min(240, Math.abs(255 - b1) + 40);
+
+  document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.92)`);
+  document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.85)`);
+  document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
 }
 
 function renderSheetQueueList() {
@@ -600,45 +677,6 @@ function populateCinematicLyrics() {
   });
 }
 
-function updateArtworkPalette(imgUrl) {
-  if (!imgUrl) return;
-  const img = new Image();
-  img.crossOrigin = "Anonymous";
-  img.src = imgUrl;
-  img.onload = () => {
-    try {
-      const cvs = document.createElement("canvas");
-      const c = cvs.getContext("2d");
-      cvs.width = 16;
-      cvs.height = 16;
-      c.drawImage(img, 0, 0, 16, 16);
-      const p1 = c.getImageData(3, 3, 1, 1).data;
-      const p2 = c.getImageData(12, 12, 1, 1).data;
-
-      const palR1 = p1[0]; const palG1 = p1[1]; const palB1 = p1[2];
-      const palR2 = p2[0]; const palG2 = p2[1]; const palB2 = p2[2];
-
-      currentPrimaryHex = `#${((1 << 24) + (palR1 << 16) + (palG1 << 8) + palB1).toString(16).slice(1)}`;
-      const primaryCol = `rgb(${palR1}, ${palG1}, ${palB1})`;
-
-      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${palR1}, ${palG1}, ${palB1}, 0.85)`);
-      document.documentElement.style.setProperty('--mesh-color-2', `rgba(${palR2}, ${palG2}, ${palB2}, 0.75)`);
-      document.documentElement.style.setProperty('--play-accent-color', primaryCol);
-
-      const luminance = (0.299 * palR1 + 0.587 * palG1 + 0.114 * palB1) / 255;
-      const playSvg = document.getElementById('sheetPlayBtnSvg');
-      if (playSvg) {
-        playSvg.style.fill = luminance > 0.65 ? '#000000' : '#ffffff';
-      }
-    } catch (e) {
-      currentPrimaryHex = '#fa2d48';
-      document.documentElement.style.setProperty('--play-accent-color', '#ffffff');
-      const playSvg = document.getElementById('sheetPlayBtnSvg');
-      if (playSvg) playSvg.style.fill = '#000000';
-    }
-  };
-}
-
 function fmtTime(s) {
   if (isNaN(s)) return "0:00";
   const m = Math.floor(s / 60);
@@ -647,7 +685,7 @@ function fmtTime(s) {
 }
 
 // ==========================================
-// 3. VIEW RENDERERS (Home, Search, Favorites)
+// 3. VIEWS (Home, Search, Favorites, Modes, Spaces, Category Detail)
 // ==========================================
 
 function renderHomeView() {
@@ -671,12 +709,12 @@ function renderHomeView() {
 
       <div class="section-heading"><h2>Modes & Sonic Spaces</h2></div>
       <div class="search-mood-cards" style="margin-bottom:32px;">
-        <div class="mood-card" onclick="loadShelfCategory('Deep Focus Lo-Fi Beats', 'trendingGrid')"><span>Deep Focus</span><span class="mood-icon">🧠</span></div>
-        <div class="mood-card" onclick="loadShelfCategory('Late Night Acoustic Melodies', 'bollywoodGrid')"><span>Late Night</span><span class="mood-icon">🌙</span></div>
-        <div class="mood-card" onclick="loadShelfCategory('Workout Gym Energy Bangers', 'punjabiGrid')"><span>Workout BPM</span><span class="mood-icon">⚡</span></div>
-        <div class="mood-card" onclick="loadShelfCategory('Cinematic Ambient Soundscapes', 'indieGrid')"><span>Cinematic</span><span class="mood-icon">🌌</span></div>
-        <div class="mood-card" onclick="loadShelfCategory('Retro Bollywood Classics', 'retroGrid')"><span>Retro Gold</span><span class="mood-icon">📻</span></div>
-        <div class="mood-card" onclick="loadShelfCategory('Sufi Ghazals & Acoustic', 'sufiGrid')"><span>Sufi Chill</span><span class="mood-icon">🕊️</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Deep Focus', 'Deep Focus Lo-Fi Beats')"><span>Deep Focus</span><span class="mood-icon">🧠</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Late Night Chill', 'Late Night Acoustic Melodies')"><span>Late Night</span><span class="mood-icon">🌙</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Workout BPM', 'Workout Gym Energy Bangers')"><span>Workout BPM</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Cinematic', 'Cinematic Ambient Soundscapes')"><span>Cinematic</span><span class="mood-icon">🌌</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Retro Gold', 'Retro Bollywood Classics')"><span>Retro Gold</span><span class="mood-icon">📻</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Sufi Chill', 'Sufi Ghazals & Acoustic')"><span>Sufi Chill</span><span class="mood-icon">🕊️</span></div>
       </div>
 
       <div class="section-heading" id="trendingShelf">
@@ -721,11 +759,205 @@ function renderHomeView() {
   window.loadShelfCategory('Sufi Ghazals & Acoustic', 'sufiGrid');
 }
 
+// Dedicated Modes View
+function renderModesView() {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Sonic Modes</h1>
+      </div>
+
+      <div class="page-header" style="margin-bottom:28px;">
+        <p style="color:var(--text-muted); font-size:0.95rem;">Bespoke acoustic soundscapes tuned to your state of mind and workflow.</p>
+      </div>
+
+      <div class="modes-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:20px;">
+        <div class="mode-card" onclick="openCategoryDetail('Deep Focus', 'Deep Focus Lo-Fi Beats')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">🧠</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Deep Focus Flow</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Instrumental alpha waves and ambient lofi beats for intense productivity.</p>
+        </div>
+        <div class="mode-card" onclick="openCategoryDetail('Peak Adrenaline', 'Workout Gym Energy Bangers')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">⚡</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Peak Adrenaline</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">High BPM Punjabi bangers and electronic anthems for max gym output.</p>
+        </div>
+        <div class="mode-card" onclick="openCategoryDetail('Late Night Chill', 'Late Night Acoustic Melodies')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">🌙</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Late Night Velvet</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Warm acoustic melodies, soulful indie vocals, and calm tones.</p>
+        </div>
+        <div class="mode-card" onclick="openCategoryDetail('Delta Sleep', 'Sleep Ambient Rain Frequencies')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">🌌</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Delta Sleep & Rain</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Continuous pink noise, gentle rain textures, and low-frequency drones.</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Dedicated Sonic Spaces View
+function renderSpacesView() {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Sonic Spaces</h1>
+      </div>
+
+      <div class="page-header" style="margin-bottom:28px;">
+        <p style="color:var(--text-muted); font-size:0.95rem;">Spatial environmental audio engineered with 3D stereo width.</p>
+      </div>
+
+      <div class="spaces-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:20px;">
+        <div class="space-card" onclick="openCategoryDetail('Monsoon Canopy', 'Rain Thunderstorm 3D Binaural')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">🌧️</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Monsoon Canopy</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Spatial rainstorms, distant thunder, and relaxing acoustic instruments.</p>
+        </div>
+        <div class="space-card" onclick="openCategoryDetail('Tokyo Midnight Cafe', 'Coffee Shop Jazz Ambience')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">☕</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Tokyo Midnight Cafe</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Vinyl crackle, gentle chatter, and smooth late-night jazz chords.</p>
+        </div>
+        <div class="space-card" onclick="openCategoryDetail('Nebula Deep Cosmos', 'Deep Space Drone Ambient')" style="padding:28px; background:var(--surface-card); border-radius:18px; border:1px solid var(--border-subtle); cursor:pointer;">
+          <div style="font-size:36px; margin-bottom:12px;">🛸</div>
+          <h3 style="font-size:1.15rem; font-weight:700; margin-bottom:6px;">Nebula Deep Cosmos</h3>
+          <p style="font-size:0.82rem; color:var(--text-muted);">Resonant sub-harmonics and deep space drone ambient soundscapes.</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Dedicated Category Detail Page (Lists Songs Accordingly)
+window.openCategoryDetail = async function(title, query) {
+  activeView = 'category';
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+
+  viewContainer.innerHTML = `
+    <div class="stage-content">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">${title}</h1>
+      </div>
+
+      <div class="playlist-editorial-hero" style="margin-bottom:28px;">
+        <div class="pl-hero-glow"></div>
+        <div class="pl-hero-cover">✨</div>
+        <div class="pl-hero-meta">
+          <div class="pl-badge-chip">Curated Soundstage</div>
+          <h1 class="pl-title-text">${title}</h1>
+          <p class="pl-sub-text">Handpicked tracks matching your requested vibe</p>
+          <div class="pl-actions-row">
+            <button class="pill-action-btn" id="catPlayAllBtn" style="display:none;">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              <span>Play All</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-heading"><h2>Tracks</h2></div>
+      <div id="categoryTracksList">
+        <p style="color:var(--text-muted); padding:16px;">Loading tracks for ${title}...</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const tracks = data.results || [];
+    categoryData['categoryDetail'] = tracks;
+
+    const listContainer = document.getElementById('categoryTracksList');
+    if (!listContainer) return;
+
+    if (tracks.length === 0) {
+      listContainer.innerHTML = `<p style="color:var(--text-muted); padding:16px;">No tracks found for this category.</p>`;
+      return;
+    }
+
+    listContainer.innerHTML = '';
+    tracks.forEach((track, i) => {
+      const row = document.createElement('div');
+      row.className = 'track-row';
+      row.onclick = () => {
+        playlist = tracks;
+        window.playIndex(i);
+      };
+      row.innerHTML = `
+        <div class="tr-num">${i + 1}</div>
+        <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+        <div class="tr-info">
+          <div class="tr-title">${track.title}</div>
+          <div class="tr-artist">${track.artist}</div>
+        </div>
+        <div class="tr-album">${track.album || 'Single'}</div>
+        <div class="tr-time">${track.duration}</div>
+      `;
+      listContainer.appendChild(row);
+    });
+
+    const playAllBtn = document.getElementById('catPlayAllBtn');
+    if (playAllBtn && tracks.length > 0) {
+      playAllBtn.style.display = 'inline-flex';
+      playAllBtn.onclick = () => {
+        playlist = tracks;
+        window.playIndex(0);
+      };
+    }
+  } catch (err) {
+    console.error("Category detail fetch error:", err);
+    const listContainer = document.getElementById('categoryTracksList');
+    if (listContainer) {
+      listContainer.innerHTML = `<p style="color:var(--accent); padding:16px;">Failed to load tracks. Please try again.</p>`;
+    }
+  }
+};
+
 async function loadHeroCatalog() {
   try {
-    const res = await fetch('/api/search?query=Top%20Hindi%20Trending%20Songs%202026');
-    const data = await res.json();
-    heroTracks = (data.results || []).slice(0, 6);
+    const queries = [
+      'Top Hindi Trending Songs 2026',
+      'Bollywood Romantic Hits',
+      'Punjabi Hits 2026',
+      'Indian Indie Songs'
+    ];
+    
+    let allTracks = [];
+    for (const q of queries) {
+      const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (data.results) {
+        allTracks.push(...data.results);
+      }
+    }
+
+    const seenThumbs = new Set();
+    heroTracks = [];
+    for (const track of allTracks) {
+      if (track.thumbnail && !seenThumbs.has(track.thumbnail)) {
+        seenThumbs.add(track.thumbnail);
+        heroTracks.push(track);
+      }
+      if (heroTracks.length >= 6) break;
+    }
+
     renderHeroSlider();
   } catch (err) {
     console.warn("Hero fetch failed:", err);
@@ -841,12 +1073,12 @@ function renderSearchView() {
         <h2>Explore by Mood & Genre</h2>
       </div>
       <div class="search-mood-cards">
-        <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
-        <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
-        <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
-        <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
-        <div class="mood-card" onclick="quickSearch('Bollywood Dance Hits Party')"><span>Party Hits</span><span class="mood-icon">🎉</span></div>
-        <div class="mood-card" onclick="quickSearch('South Indian Cinema Bangers')"><span>South Cinema</span><span class="mood-icon">🚀</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Romance', 'Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Punjabi Wave', 'Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Desi Rap', 'Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Indie Chill', 'Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('Party Hits', 'Bollywood Dance Hits Party')"><span>Party Hits</span><span class="mood-icon">🎉</span></div>
+        <div class="mood-card" onclick="openCategoryDetail('South Cinema', 'South Indian Cinema Bangers')"><span>South Cinema</span><span class="mood-icon">🚀</span></div>
       </div>
 
       <div class="section-heading">
@@ -1255,8 +1487,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Fluid Mesh Animation
   const fluidCanvases = [document.getElementById('fluidMeshCanvas'), document.getElementById('cinematicMeshCanvas')];
   let fluidTime = 0;
-  let palR1 = 250, palG1 = 45, palB1 = 72;
-  let palR2 = 192, palG2 = 38, palB2 = 211;
 
   function resizeFluidCanvases() {
     fluidCanvases.forEach(canv => {
@@ -1279,6 +1509,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fluidTime += 0.007;
 
+    const computedStyle = getComputedStyle(document.documentElement);
+    const color1 = computedStyle.getPropertyValue('--mesh-color-1').trim() || 'rgba(250, 45, 72, 0.9)';
+    const color2 = computedStyle.getPropertyValue('--mesh-color-2').trim() || 'rgba(192, 38, 211, 0.8)';
+
     fluidCanvases.forEach(canv => {
       if (!canv) return;
       const fCtx = canv.getContext('2d');
@@ -1289,7 +1523,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const cx1 = w * (0.35 + 0.25 * Math.sin(fluidTime));
       const cy1 = h * (0.35 + 0.25 * Math.cos(fluidTime * 0.8));
       const g1 = fCtx.createRadialGradient(cx1, cy1, 0, cx1, cy1, w * 0.95);
-      g1.addColorStop(0, `rgba(${palR1}, ${palG1}, ${palB1}, 0.95)`);
+      g1.addColorStop(0, color1);
       g1.addColorStop(1, 'transparent');
       fCtx.fillStyle = g1;
       fCtx.fillRect(0, 0, w, h);
@@ -1297,7 +1531,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
       const cy2 = h * (0.65 + 0.25 * Math.sin(fluidTime * 0.7));
       const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
-      g2.addColorStop(0, `rgba(${palR2}, ${palG2}, ${palB2}, 0.9)`);
+      g2.addColorStop(0, color2);
       g2.addColorStop(1, 'transparent');
       fCtx.fillStyle = g2;
       fCtx.fillRect(0, 0, w, h);

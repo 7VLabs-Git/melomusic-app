@@ -17,9 +17,14 @@ class MeloPlayer {
 
     this.retryAttempts = 0;
     this.maxRetries = 2;
+    this.playToken = 0;
 
     this.setupListeners();
     this.restoreState();
+  }
+
+  getQuality() {
+    return localStorage.getItem('melo_quality') || '320';
   }
 
   setupListeners() {
@@ -37,7 +42,7 @@ class MeloPlayer {
       this.flushPlaybackStats();
       if (this.repeatMode === 'one') {
         this.audio.currentTime = 0;
-        this.audio.play();
+        this.audio.play().catch(console.warn);
       } else {
         this.next();
       }
@@ -71,24 +76,28 @@ class MeloPlayer {
   }
 
   restoreState() {
-    const pb = window.meloStore.state.playback;
-    if (!pb) return;
+    try {
+      const pb = window.meloStore?.state?.playback || JSON.parse(localStorage.getItem('melo_playback_fallback') || 'null');
+      if (!pb) return;
 
-    this.queue = pb.queue || [];
-    this.originalQueue = [...this.queue];
-    this.currentIndex = pb.currentTrack ? this.queue.findIndex(t => t.id === pb.currentTrack.id) : -1;
-    this.isShuffle = pb.shuffle || false;
-    this.repeatMode = pb.repeatMode || 'none';
-    this.audio.volume = pb.volume !== undefined ? pb.volume : 0.85;
+      this.queue = pb.queue || [];
+      this.originalQueue = [...this.queue];
+      this.currentIndex = pb.currentTrack ? this.queue.findIndex(t => t.id === pb.currentTrack.id) : -1;
+      this.isShuffle = pb.shuffle || false;
+      this.repeatMode = pb.repeatMode || 'none';
+      this.audio.volume = pb.volume !== undefined ? pb.volume : 0.85;
 
-    if (pb.currentTrack) {
-      window.dispatchEvent(new CustomEvent('player:trackchanged', { detail: pb.currentTrack }));
+      if (pb.currentTrack) {
+        window.dispatchEvent(new CustomEvent('player:trackchanged', { detail: pb.currentTrack }));
+      }
+    } catch (e) {
+      console.warn("MeloPlayer: State restore error", e);
     }
   }
 
   saveState() {
     const currentTrack = this.queue[this.currentIndex] || null;
-    window.meloStore.state.playback = {
+    const stateObj = {
       currentTrack,
       currentTime: this.audio.currentTime,
       volume: this.audio.volume,
@@ -97,11 +106,17 @@ class MeloPlayer {
       repeatMode: this.repeatMode,
       queue: this.queue
     };
-    window.meloStore.save();
+
+    if (window.meloStore?.state) {
+      window.meloStore.state.playback = stateObj;
+      window.meloStore.save?.();
+    } else {
+      localStorage.setItem('melo_playback_fallback', JSON.stringify(stateObj));
+    }
   }
 
   flushPlaybackStats() {
-    if (this.currentIndex !== -1 && this.queue[this.currentIndex]) {
+    if (this.currentIndex !== -1 && this.queue[this.currentIndex] && window.meloStore?.recordPlayback) {
       window.meloStore.recordPlayback(this.queue[this.currentIndex], this.currentTrackDurationListened);
     }
     this.currentTrackDurationListened = 0;
@@ -144,18 +159,33 @@ class MeloPlayer {
     if (index < 0 || index >= this.queue.length) return;
     if (resetRetries) this.retryAttempts = 0;
 
+    const token = ++this.playToken;
     this.flushPlaybackStats();
     this.currentIndex = index;
     const track = this.queue[this.currentIndex];
 
-    this.audio.src = `/api/stream/${track.id}`;
+    // Build URL with quality parameter
+    const quality = this.getQuality();
+    this.audio.src = `/api/stream/${track.id}?quality=${quality}`;
     this.audio.load();
-    this.audio.play()
-      .then(() => {
-        this.setupMediaSession(track);
-        this.preloadNextTrack();
-      })
-      .catch((err) => console.warn("MeloPlayer: Play blocked/interrupted", err));
+
+    const playPromise = this.audio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          if (token !== this.playToken) {
+            this.audio.pause();
+            return;
+          }
+          this.setupMediaSession(track);
+          this.preloadNextTrack();
+        })
+        .catch((err) => {
+          if (token === this.playToken) {
+            console.warn("MeloPlayer: Play interrupted", err);
+          }
+        });
+    }
 
     this.saveState();
     window.dispatchEvent(new CustomEvent('player:trackchanged', { detail: track }));
@@ -165,8 +195,8 @@ class MeloPlayer {
     const nextIdx = this.currentIndex + 1;
     if (nextIdx < this.queue.length) {
       const nextTrack = this.queue[nextIdx];
-      // Warm up the backend stream cache ahead of time
-      fetch(`/api/stream/${nextTrack.id}`, { headers: { Range: 'bytes=0-1' } }).catch(() => {});
+      const quality = this.getQuality();
+      fetch(`/api/stream/${nextTrack.id}?quality=${quality}`, { headers: { Range: 'bytes=0-1' } }).catch(() => {});
     }
   }
 
@@ -176,7 +206,7 @@ class MeloPlayer {
       return;
     }
     if (this.audio.paused) {
-      this.audio.play();
+      this.audio.play().catch(console.warn);
     } else {
       this.audio.pause();
     }
@@ -185,7 +215,7 @@ class MeloPlayer {
   next() {
     if (this.currentIndex + 1 < this.queue.length) {
       this.playIndex(this.currentIndex + 1);
-    } else if (this.repeatMode === 'all') {
+    } else if (this.repeatMode === 'all' && this.queue.length > 0) {
       this.playIndex(0);
     } else {
       this.audio.pause();
@@ -193,7 +223,6 @@ class MeloPlayer {
   }
 
   previous() {
-    // Intelligent Previous: if played > 3 seconds, restart current track
     if (this.audio.currentTime > 3.0) {
       this.audio.currentTime = 0;
       return;
@@ -225,11 +254,11 @@ class MeloPlayer {
     this.isShuffle = !this.isShuffle;
     const currentTrack = this.queue[this.currentIndex];
 
-    if (this.isShuffle) {
+    if (this.isShuffle && currentTrack) {
       const rest = this.originalQueue.filter(t => t.id !== currentTrack.id);
       this.queue = [currentTrack, ...this.shuffleArray(rest)];
       this.currentIndex = 0;
-    } else {
+    } else if (currentTrack) {
       this.queue = [...this.originalQueue];
       this.currentIndex = this.queue.findIndex(t => t.id === currentTrack.id);
     }

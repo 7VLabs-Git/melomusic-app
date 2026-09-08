@@ -11,7 +11,7 @@ import httpx
 from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
 
-app = FastAPI(title="MELO Audio Engine (Saavn Edition)", version="6.2.0")
+app = FastAPI(title="MELO Audio Engine", version="7.4.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,16 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Caches
-stream_cache = TTLCache(maxsize=2000, ttl=14400)      # 4 Hours
-search_cache = TTLCache(maxsize=1000, ttl=3600)       # 1 Hour
-lyrics_cache = TTLCache(maxsize=1000, ttl=86400)      # 24 Hours
-rec_cache = TTLCache(maxsize=1000, ttl=7200)          # 2 Hours
-image_cache = TTLCache(maxsize=3000, ttl=86400)       # 24 Hours
+stream_cache = TTLCache(maxsize=3000, ttl=14400)
+search_cache = TTLCache(maxsize=1000, ttl=3600)
+lyrics_cache = TTLCache(maxsize=1000, ttl=86400)
+rec_cache = TTLCache(maxsize=1000, ttl=7200)
+image_cache = TTLCache(maxsize=3000, ttl=86400)
 
 http_client: Optional[httpx.AsyncClient] = None
 
-# JioSaavn Media Decryption uses DES ECB Mode
 DES_KEY = b"38346591"
 DES_CIPHER = des(DES_KEY, ECB, padmode=PAD_PKCS5)
 
@@ -57,12 +55,10 @@ async def shutdown_event():
         await http_client.aclose()
 
 def decrypt_saavn_url(enc_str: str) -> str:
-    """Accurately decrypts JioSaavn encrypted media URLs using DES in ECB mode."""
     if not enc_str:
         return ""
     try:
         clean_enc = enc_str.strip()
-        # Add required Base64 padding if missing
         missing_padding = len(clean_enc) % 4
         if missing_padding:
             clean_enc += "=" * (4 - missing_padding)
@@ -71,48 +67,66 @@ def decrypt_saavn_url(enc_str: str) -> str:
         decrypted_bytes = DES_CIPHER.decrypt(raw_bytes)
         decrypted_str = decrypted_bytes.decode("utf-8", errors="ignore").strip()
 
-        # Sanitize any residual null/control characters
         url = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', decrypted_str)
         if url.startswith("http"):
             return url
         return ""
-    except Exception as e:
-        print(f"[MELO:DECRYPT_ERROR] {e}")
+    except Exception:
         return ""
 
+def clean_thumbnail_url(raw_url: str) -> str:
+    if not raw_url:
+        return ""
+    thumb = raw_url.replace("150x150", "500x500").replace("50x50", "500x500")
+    if "http://" in thumb:
+        thumb = thumb.replace("http://", "https://")
+    return thumb
+
 def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    track_id = item.get("id") or item.get("perma_url", "").split("/")[-1]
+    more_info = item.get("more_info", {})
+    enc_url = more_info.get("encrypted_media_url", item.get("encrypted_media_url", ""))
+    
+    item_type = item.get("type", "")
+    if item_type and item_type not in ("song", "tracks"):
+        if not enc_url:
+            return None
+    if not enc_url:
+        return None
+
+    track_id = item.get("id") or more_info.get("song_id") or item.get("songid")
+    if not track_id:
+        perma = item.get("perma_url", "")
+        if perma:
+            track_id = perma.split("/")[-1]
+    
     if not track_id:
         return None
 
     title = item.get("title", item.get("song", "Unknown Title"))
     title = re.sub(r"&quot;", '"', re.sub(r"&#039;", "'", title)).strip()
 
-    artist = item.get("more_info", {}).get("music", item.get("primary_artists", item.get("singers", "Unknown Artist")))
-    album = item.get("more_info", {}).get("album", item.get("album", ""))
-    duration = item.get("more_info", {}).get("duration", item.get("duration", "210"))
+    artist = more_info.get("music", item.get("primary_artists", item.get("singers", "Unknown Artist")))
+    album = more_info.get("album", item.get("album", ""))
+    duration = more_info.get("duration", item.get("duration", "210"))
     
     try:
         dur_secs = int(duration)
-        mins = dur_secs // 60
-        secs = dur_secs % 60
-        dur_str = f"{mins}:{secs:02d}"
+        dur_str = f"{dur_secs // 60}:{dur_secs % 60:02d}"
     except Exception:
         dur_str = "3:30"
 
     raw_image = item.get("image", "")
-    thumb = raw_image.replace("150x150", "500x500").replace("50x50", "500x500")
+    thumb = clean_thumbnail_url(raw_image)
 
     return {
-        "id": track_id,
+        "id": str(track_id),
         "title": title,
         "artist": artist,
         "album": album,
         "duration": dur_str,
-        "thumbnail": f"/api/proxy-image?url={httpx.URL(thumb)}" if thumb else ""
+        "thumbnail": f"/api/proxy-image?url={httpx.URL(thumb)}" if thumb else "",
+        "enc_url": enc_url
     }
-
-# --- SEARCH & RECOMMENDATIONS ---
 
 @app.get("/api/search")
 async def search_endpoint(query: str = Query(..., min_length=1)):
@@ -127,7 +141,7 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
         "_marker": "0",
         "api_version": "4",
         "p": "1",
-        "n": "30",
+        "n": "40",
         "q": q
     }
 
@@ -137,17 +151,25 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
             data = resp.json()
             raw_results = data.get("results", [])
             formatted = []
+            seen_titles = set()
+
             for item in raw_results:
                 track = format_saavn_track(item)
-                if track:
-                    enc_url = item.get("more_info", {}).get("encrypted_media_url")
-                    if enc_url:
-                        decrypted = decrypt_saavn_url(enc_url)
-                        if decrypted:
-                            stream_cache[track["id"]] = decrypted
-                            if item.get("id"):
-                                stream_cache[str(item["id"])] = decrypted
-                    formatted.append(track)
+                if not track:
+                    continue
+
+                clean_title = re.sub(r'\(.*?\)|\[.*?\]', '', track["title"]).strip().lower()
+                if clean_title in seen_titles:
+                    continue
+                seen_titles.add(clean_title)
+
+                if track["enc_url"]:
+                    decrypted = decrypt_saavn_url(track["enc_url"])
+                    if decrypted:
+                        stream_cache[track["id"]] = decrypted
+
+                clean_payload = {k: v for k, v in track.items() if k != "enc_url"}
+                formatted.append(clean_payload)
 
             payload = {"results": formatted}
             search_cache[q] = payload
@@ -176,18 +198,27 @@ async def get_recommendations(video_id: str):
         if resp.status_code == 200:
             data = resp.json()
             tracks = []
+            seen_thumbs = set()
+
             if isinstance(data, list):
                 for item in data:
                     track = format_saavn_track(item)
-                    if track and track["id"] != video_id:
-                        enc_url = item.get("more_info", {}).get("encrypted_media_url")
-                        if enc_url:
-                            decrypted = decrypt_saavn_url(enc_url)
-                            if decrypted:
-                                stream_cache[track["id"]] = decrypted
-                                if item.get("id"):
-                                    stream_cache[str(item["id"])] = decrypted
-                        tracks.append(track)
+                    if not track or track["id"] == video_id:
+                        continue
+
+                    thumb = track.get("thumbnail")
+                    if thumb and thumb in seen_thumbs:
+                        continue
+                    if thumb:
+                        seen_thumbs.add(thumb)
+
+                    if track["enc_url"]:
+                        decrypted = decrypt_saavn_url(track["enc_url"])
+                        if decrypted:
+                            stream_cache[track["id"]] = decrypted
+
+                    clean_payload = {k: v for k, v in track.items() if k != "enc_url"}
+                    tracks.append(clean_payload)
 
             payload = {"tracks": tracks}
             rec_cache[video_id] = payload
@@ -197,10 +228,7 @@ async def get_recommendations(video_id: str):
 
     return {"tracks": []}
 
-# --- DIRECT AUDIO STREAM ENGINE ---
-
 async def resolve_saavn_url(track_id: str) -> str:
-    """Resolves track stream URL with multi-schema parsing and fallback."""
     if track_id in stream_cache:
         return stream_cache[track_id]
 
@@ -218,18 +246,22 @@ async def resolve_saavn_url(track_id: str) -> str:
         if resp.status_code == 200:
             data = resp.json()
             item = None
-            if "songs" in data and isinstance(data["songs"], list) and len(data["songs"]) > 0:
-                item = data["songs"][0]
-            elif track_id in data:
-                item = data[track_id]
-            elif isinstance(data, dict):
-                for v in data.values():
-                    if isinstance(v, dict) and "more_info" in v:
-                        item = v
-                        break
+            if isinstance(data, dict):
+                if track_id in data:
+                    item = data[track_id]
+                elif "songs" in data and isinstance(data["songs"], list):
+                    for s in data["songs"]:
+                        if str(s.get("id")) == str(track_id) or str(s.get("songid")) == str(track_id):
+                            item = s
+                            break
+                else:
+                    for k, v in data.items():
+                        if isinstance(v, dict) and str(k) == str(track_id):
+                            item = v
+                            break
 
             if item:
-                enc_url = item.get("more_info", {}).get("encrypted_media_url")
+                enc_url = item.get("more_info", {}).get("encrypted_media_url", item.get("encrypted_media_url", ""))
                 if enc_url:
                     dec = decrypt_saavn_url(enc_url)
                     if dec:
@@ -238,37 +270,46 @@ async def resolve_saavn_url(track_id: str) -> str:
     except Exception as e:
         print(f"[MELO:RESOLVE_DETAIL_ERR] {e}")
 
-    # Fallback to general search if pids misses
     try:
         search_params = {
             "__call": "search.getResults",
             "_format": "json",
             "api_version": "4",
             "q": track_id,
-            "n": "1"
+            "n": "5"
         }
         resp = await http_client.get(api_url, params=search_params, headers=CDN_HEADERS)
         if resp.status_code == 200:
             data = resp.json()
             res = data.get("results", [])
-            if res:
-                enc_url = res[0].get("more_info", {}).get("encrypted_media_url")
-                if enc_url:
-                    dec = decrypt_saavn_url(enc_url)
-                    if dec:
-                        stream_cache[track_id] = dec
-                        return dec
+            for res_item in res:
+                r_id = res_item.get("id") or res_item.get("more_info", {}).get("song_id")
+                if str(r_id) == str(track_id) or len(res) == 1:
+                    enc_url = res_item.get("more_info", {}).get("encrypted_media_url", res_item.get("encrypted_media_url", ""))
+                    if enc_url:
+                        dec = decrypt_saavn_url(enc_url)
+                        if dec:
+                            stream_cache[track_id] = dec
+                            return dec
     except Exception:
         pass
 
     raise HTTPException(status_code=404, detail="Audio stream could not be resolved.")
 
 @app.get("/api/stream/{video_id}")
-async def stream_audio(video_id: str, request: Request):
-    raw_stream_url = await resolve_saavn_url(video_id)
+async def stream_audio(
+    video_id: str,
+    request: Request,
+    quality: str = Query("320", regex="^(96|160|320|low|medium|high)$")
+):
+    raw_url = await resolve_saavn_url(video_id)
+    bitrate_suffix = "_320.mp4"
+    if quality in ("96", "low"):
+        bitrate_suffix = "_96.mp4"
+    elif quality in ("160", "medium"):
+        bitrate_suffix = "_160.mp4"
 
-    # Prefer 320kbps, fallback to 160/96
-    target_url = raw_stream_url.replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
+    target_url = re.sub(r'_(96|160|320)\.mp4', bitrate_suffix, raw_url)
 
     headers = dict(CDN_HEADERS)
     client_range = request.headers.get("range")
@@ -280,15 +321,15 @@ async def stream_audio(video_id: str, request: Request):
         upstream = await http_client.send(req, stream=True)
 
         if upstream.status_code in (403, 404):
-            target_url = raw_stream_url
+            target_url = raw_url
             req = http_client.build_request("GET", target_url, headers=headers)
             upstream = await http_client.send(req, stream=True)
 
         if upstream.status_code not in (200, 206):
-            return Response(status_code=302, headers={"Location": target_url})
+            return Response(status_code=302, headers={"Location": target_url, "Access-Control-Allow-Origin": "*"})
 
     except Exception:
-        return Response(status_code=302, headers={"Location": raw_stream_url})
+        return Response(status_code=302, headers={"Location": raw_url, "Access-Control-Allow-Origin": "*"})
 
     async def body_iterator():
         try:
@@ -299,7 +340,8 @@ async def stream_audio(video_id: str, request: Request):
 
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": "audio/mp4"
+        "Content-Type": "audio/mp4",
+        "Access-Control-Allow-Origin": "*"
     }
     for key in ["Content-Range", "Content-Length"]:
         if key in upstream.headers:
@@ -312,26 +354,47 @@ async def stream_audio(video_id: str, request: Request):
         media_type="audio/mp4"
     )
 
-# --- IMAGE PROXY & LYRICS ---
-
 @app.get("/api/proxy-image")
 async def proxy_image(url: str):
     if not url:
         raise HTTPException(status_code=400, detail="Missing URL")
-    
     if url in image_cache:
         cached_data, content_type = image_cache[url]
-        return Response(content=cached_data, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+        return Response(
+            content=cached_data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "Access-Control-Allow-Origin": "*"
+            }
+        )
 
     try:
         resp = await http_client.get(url, headers=CDN_HEADERS, timeout=8.0)
         if resp.status_code == 200:
             content_type = resp.headers.get("content-type", "image/jpeg")
             image_cache[url] = (resp.content, content_type)
-            return Response(content=resp.content, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
-        return Response(status_code=302, headers={"Location": url})
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            )
     except Exception:
-        return Response(status_code=302, headers={"Location": url})
+        pass
+
+    # Fallback 1x1 transparent PNG bytes so proxy never fails or taints canvas
+    fallback_png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc``\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82'
+    return Response(
+        content=fallback_png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
 
 def parse_lrc(lrc_text: str) -> List[Dict[str, Any]]:
     lines = []

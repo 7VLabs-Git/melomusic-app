@@ -39,7 +39,7 @@
 body {
   background-color: var(--bg-core);
   color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, sans-serif;
   height: 100vh;
   height: 100dvh;
   width: 100vw;
@@ -84,18 +84,6 @@ aside.sidebar {
   border-radius: 9999px;
   width: fit-content;
 }
-.brand-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--accent-gradient);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 14px var(--accent-glow);
-}
-.brand-icon svg { width: 16px; height: 16px; fill: #fff; }
-.brand-name { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.03em; color: #fff; }
 
 .nav-section { display: flex; flex-direction: column; gap: 4px; }
 .nav-header {
@@ -130,6 +118,14 @@ aside.sidebar {
   color: #fff;
   font-weight: 600;
   box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.capsule-select {
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+.capsule-select:focus {
+  border-color: var(--accent);
 }
 
 /* Viewport */
@@ -192,7 +188,7 @@ main.main-viewport {
   stroke-linejoin: round;
 }
 
-/* Borderless Hero Carousel without Glow (Enlarged) */
+/* Hero Carousel */
 .hero-slider-section {
   position: relative;
   margin-bottom: 36px;
@@ -575,7 +571,7 @@ main.main-viewport {
   cursor: pointer;
 }
 
-/* MINI-PLAYER DOCK & TIDAL WAVE */
+/* Mini-Player Dock & Tidal Waveform */
 footer.dock-player {
   grid-column: 1 / -1;
   background: rgba(20, 20, 24, 0.94);
@@ -591,17 +587,20 @@ footer.dock-player {
   overflow: hidden;
 }
 
+/* High-DPI Waveform Layer */
 .miniplayer-canvas-waveform {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
   width: 100%;
-  height: 16px;
+  height: 22px;
   pointer-events: none;
   transition: opacity 0.4s ease, transform 0.4s ease;
   opacity: 0;
   transform: translateY(8px);
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
 }
 footer.dock-player.is-playing .miniplayer-canvas-waveform {
   opacity: 1;
@@ -695,9 +694,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
 .time-label { font-size: 0.7rem; color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 32px; }
 .player-tools { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
 
-/* =======================================================
-   FLAGSHIP FULLSCREEN PLAYER & RE-POSITIONED CONTROLS
-   ======================================================= */
+/* Flagship Fullscreen Player */
 .lyrics-overlay {
   position: fixed;
   inset: 0;
@@ -803,7 +800,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  max-width: 420px; /* Shortened width */
+  max-width: 420px;
   margin: 0 auto;
   width: 100%;
 }
@@ -827,7 +824,6 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   padding-bottom: 4px;
 }
 
-/* Seamless Organic Cover Art Container (Zero Boxy Shadows) */
 .sheet-cover-container {
   position: relative;
   width: 86%;
@@ -909,7 +905,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   text-overflow: ellipsis;
 }
 
-/* Thicker Straight Scrubber with Live Played Wave */
+/* Straight Scrubber Track Zone */
 .straight-wave-scrubber {
   width: 100%;
   display: flex;
@@ -932,7 +928,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.15);
 }
-.scrubber-played-zone-masked {
+.scrubber-played-zone {
   position: absolute;
   left: 0;
   top: 0;
@@ -971,7 +967,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   padding: 0 2px;
 }
 
-/* Redesigned Transport Controls */
+/* Transport Controls */
 .sheet-transport-btns {
   display: flex;
   justify-content: space-between;
@@ -1008,7 +1004,6 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   border-color: var(--border-glow);
 }
 
-/* Vibrant, Glowing Play/Pause Button (Artwork Color Synced, Zero Boxy Shadow) */
 .sheet-play-large {
   width: 72px;
   height: 72px;
@@ -1067,7 +1062,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   text-shadow: 0 4px 24px rgba(255, 255, 255, 0.5);
 }
 
-/* Queue Sub-View & Action Buttons */
+/* Queue Sub-View */
 .sheet-queue-view {
   display: none;
   flex-direction: column;
@@ -1112,9 +1107,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
 }
 .queue-action-btn:hover { background: var(--accent); color: #fff; }
 
-/* =======================================================
-   CINEMATIC AMBIENT LANDSCAPE VIEW
-   ======================================================= */
+/* Cinematic Ambient View */
 .cinematic-overlay {
   position: fixed;
   inset: 0;
@@ -1207,7 +1200,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
 }
 .cinematic-right-lyrics::-webkit-scrollbar { display: none; }
 
-/* Three Dots Bottom Modal */
+/* Context Action Modal */
 .context-action-modal {
   position: fixed;
   inset: 0;
@@ -1253,7 +1246,7 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
 }
 .context-action-row svg { width: 20px; height: 20px; fill: none; stroke: var(--text-dim); stroke-width: 2px; }
 
-/* Obsidian Capsule Floating Pill Navigation Bar (Mobile) */
+/* Obsidian Capsule Floating Pill Nav (Mobile) */
 .mobile-nav-container {
   display: none;
   position: fixed;
@@ -1325,6 +1318,109 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
   z-index: 1;
 }
 .pill-nav-item.active .pill-active-bg { display: block; }
+
+/* Chrome PWA Push-Up Install Banner */
+.pwa-install-banner {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%) translateY(160%);
+  width: calc(100% - 32px);
+  max-width: 440px;
+  z-index: 99999;
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.pwa-install-banner.visible {
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.pwa-card {
+  background: rgba(18, 19, 25, 0.98);
+  backdrop-filter: blur(30px) saturate(200%);
+  -webkit-backdrop-filter: blur(30px) saturate(200%);
+  border: 1px solid rgba(250, 45, 72, 0.35);
+  border-radius: 20px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.95), 0 0 20px rgba(250, 45, 72, 0.2);
+  pointer-events: auto;
+}
+
+.pwa-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pwa-text {
+  flex: 1;
+}
+
+.pwa-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.pwa-sub {
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.pwa-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.pwa-btn-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  position: relative;
+  z-index: 100000;
+  pointer-events: auto;
+}
+.pwa-btn-dismiss:hover { color: #fff; }
+
+.pwa-btn-install {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px var(--accent-glow);
+  transition: transform 0.15s ease, background 0.15s ease;
+  position: relative;
+  z-index: 100000;
+  pointer-events: auto;
+}
+.pwa-btn-install:hover {
+  background: var(--accent-hover);
+  transform: scale(1.04);
+}
 
 /* Mobile Optimizations (< 768px) */
 @media (max-width: 768px) {
@@ -1444,4 +1540,8 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
     gap: 32px;
   }
   .cinematic-left-art { display: none; }
+
+  .pwa-install-banner {
+    bottom: calc(140px + env(safe-area-inset-bottom, 0px));
+  }
 }
