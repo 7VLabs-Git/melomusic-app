@@ -219,7 +219,6 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
 
     return {"results": []}
 
-# HYBRID RADIO ENDPOINT: YouTube Music Radio Algorithm -> JioSaavn Streams
 @app.get("/api/recommendations/{video_id}")
 async def get_recommendations(
     video_id: str,
@@ -233,7 +232,6 @@ async def get_recommendations(
     matched_tracks = []
     seen_track_ids = {str(video_id)}
 
-    # 1. Use YouTube Music watch-playlist algorithm
     if ytm and title:
         try:
             yt_search_query = f"{title} {artist or ''}".strip()
@@ -241,11 +239,10 @@ async def get_recommendations(
             if yt_results and len(yt_results) > 0:
                 yt_video_id = yt_results[0].get("videoId")
                 if yt_video_id:
-                    # YouTube Music watch playlist (radio algorithm)
                     watch_data = ytm.get_watch_playlist(videoId=yt_video_id, limit=12)
                     yt_tracks = watch_data.get("tracks", [])
 
-                    for item in yt_tracks[1:10]: # Skip the seed track itself
+                    for item in yt_tracks[1:10]:
                         t_title = item.get("title", "")
                         t_artists = item.get("artists", [])
                         t_artist_name = t_artists[0].get("name", "") if t_artists else ""
@@ -258,7 +255,6 @@ async def get_recommendations(
         except Exception as e:
             print(f"[YTM_RADIO_FALLBACK] {e}")
 
-    # 2. Fallback: Artist and genre-clustering lookup
     if len(matched_tracks) < 5 and artist:
         first_artist = artist.split(',')[0].split('&')[0].strip()
         fallback_res = await search_endpoint(query=first_artist)
@@ -322,7 +318,7 @@ async def resolve_saavn_url(track_id: str) -> str:
 async def stream_audio(
     video_id: str,
     request: Request,
-    quality: str = Query("320", regex="^(96|160|320|low|medium|high)$")
+    quality: str = Query("320", pattern="^(96|160|320|low|medium|high)$")
 ):
     raw_url = await resolve_saavn_url(video_id)
     bitrate_suffix = "_320.mp4"
@@ -491,8 +487,12 @@ async def favicon():
     svg_data = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#fa2d48"/></svg>'
     return Response(content=svg_data, media_type="image/svg+xml")
 
+class NoCacheStaticFiles(StaticFiles):
+    def is_not_modified(self, response: Response, request) -> bool:
+        return False
+
 os.makedirs("static", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", NoCacheStaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def serve_index():
