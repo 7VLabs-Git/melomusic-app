@@ -10,7 +10,7 @@
   <title>MELO MUSIC</title>
   
   <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="/static/css/app.css?v=1.0.1" />
+  <link rel="stylesheet" href="/static/css/app.css?v=2.0.0" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -222,11 +222,9 @@
   <!-- CINEMATIC AMBIENT LANDSCAPE VIEW -->
   <div class="cinematic-overlay" id="cinematicOverlay">
     <canvas class="live-fluid-mesh-canvas" id="cinematicMeshCanvas"></canvas>
-    
     <div class="cinematic-top-row">
       <button class="cinematic-subtle-cross" onclick="closeCinematicMode()" title="Exit">✕</button>
     </div>
-
     <div class="cinematic-stage-layout">
       <div class="cinematic-left-art">
         <div class="cinematic-art-halo" id="cinematicArtHalo"></div>
@@ -236,10 +234,7 @@
           <div class="cinematic-track-artist" id="cinematicArtist">—</div>
         </div>
       </div>
-
-      <div class="cinematic-right-lyrics" id="cinematicLyricsScroll">
-        <div class="lyrics-line active">Experience losslessly synced lyrics</div>
-      </div>
+      <div class="cinematic-right-lyrics" id="cinematicLyricsScroll"></div>
     </div>
   </div>
 
@@ -265,24 +260,75 @@
     </div>
   </div>
 
-  <!-- IMPORT FROM OTHER PLATFORMS MODAL -->
+  <!-- IMPORT MODAL -->
   <div class="context-action-modal" id="importModal" onclick="closeImportModal(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()">
       <div class="drag-handle" onclick="closeImportModal()"></div>
       <div class="context-modal-title">Import Playlist</div>
       <p style="color:var(--text-muted); font-size:0.85rem; text-align:center; margin-bottom:16px;">
-        Paste your Spotify, Apple Music, or YouTube playlist link below.
+        Paste your YouTube, YouTube Music, or Spotify playlist link below.
       </p>
       <div style="display:flex; flex-direction:column; gap:12px;">
-        <input type="text" id="importPlaylistUrlInput" placeholder="https://open.spotify.com/playlist/..." style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
-        <button class="pill-action-btn" onclick="executePlaylistImport()" style="width:100%; justify-content:center; padding:12px; background:var(--accent); color:#fff;">
+        <input type="text" id="importPlaylistUrlInput" placeholder="Paste playlist link here..." style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
+        <button class="pill-action-btn" id="executeImportBtn" onclick="executePlaylistImport()" style="width:100%; justify-content:center; padding:12px; background:var(--accent); color:#fff;">
           Import to MELO Hub
         </button>
       </div>
     </div>
   </div>
 
-  <!-- THEMED AUDIO QUALITY SELECTION MODAL -->
+  <!-- THEMED ADD TO PLAYLIST MODAL -->
+  <div class="context-action-modal" id="addToPlaylistModal" onclick="closeAddToPlaylistModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="max-height:82vh;">
+      <div class="drag-handle" onclick="closeAddToPlaylistModal()"></div>
+      <div class="context-modal-title" id="addToPlaylistModalTitle">Add to Playlist</div>
+      
+      <div id="playlistOptionsList" class="themed-playlist-picker-grid"></div>
+
+      <div class="create-pl-drawer" id="createPlDrawer">
+        <div style="font-weight:700; font-size:0.92rem; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+          <span>+ Create New Playlist</span>
+        </div>
+        <input type="text" id="newPlTitleInput" placeholder="Playlist title..." class="themed-pl-input" />
+        <label class="custom-file-upload-label" for="newPlCoverInput">
+          <span id="coverUploadText">Choose Custom Photo Cover (Optional)</span>
+          <input type="file" id="newPlCoverInput" accept="image/*" style="display:none;" onchange="handleCoverFileSelected(event)" />
+        </label>
+        <div id="coverUploadPreview" class="cover-upload-preview" style="display:none;"></div>
+        <button class="pill-action-btn" onclick="confirmCreateAndAddToPlaylist()" style="width:100%; justify-content:center; padding:12px; margin-top:8px;">
+          Create & Save
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- THEMED PLAYLIST EDIT MODAL (RENAME & CHANGE PHOTO) -->
+  <div class="context-action-modal" id="playlistEditModal" onclick="closePlaylistEditModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closePlaylistEditModal()"></div>
+      <div class="context-modal-title">Edit Playlist</div>
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div>
+          <label style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-dim); font-weight:700; display:block; margin-bottom:6px;">Playlist Name</label>
+          <input type="text" id="editPlNameInput" class="themed-pl-input" placeholder="Playlist title..." />
+        </div>
+        <div>
+          <label style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-dim); font-weight:700; display:block; margin-bottom:6px;">Cover Photo</label>
+          <label class="custom-file-upload-label" for="editPlCoverInput">
+            <span id="editCoverUploadText">Change Photo Cover</span>
+            <input type="file" id="editPlCoverInput" accept="image/*" style="display:none;" onchange="handleEditCoverFileSelected(event)" />
+          </label>
+          <div id="editCoverUploadPreview" class="cover-upload-preview" style="display:none;"></div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button class="pill-action-btn" onclick="confirmPlaylistEdit()" style="flex:1; justify-content:center; padding:12px;">Save Changes</button>
+          <button class="filter-chip" onclick="resetPlaylistCoverToCollage(currentEditingPlId)" style="padding:12px 16px;">Reset Collage</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AUDIO QUALITY MODAL -->
   <div class="context-action-modal" id="qualityModal" onclick="closeQualityModal(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()">
       <div class="drag-handle" onclick="closeQualityModal()"></div>
@@ -299,14 +345,14 @@
           <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
           <div style="display:flex; flex-direction:column; text-align:left;">
             <span style="font-weight:700; color:#fff;">Hi-Fi Standard (160 kbps)</span>
-            <span style="font-size:0.75rem; color:var(--text-muted);">Balanced audio and streaming bandwidth</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Balanced audio and bandwidth</span>
           </div>
         </div>
         <div class="context-action-row" onclick="selectQualityOption('96')">
           <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
           <div style="display:flex; flex-direction:column; text-align:left;">
             <span style="font-weight:700; color:#fff;">Data Saver (96 kbps)</span>
-            <span style="font-size:0.75rem; color:var(--text-muted);">Optimized for slow mobile connections</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Optimized for slow connections</span>
           </div>
         </div>
       </div>
@@ -328,7 +374,7 @@
           <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
           <span id="ctxFavText">Save to Favorites</span>
         </div>
-        <div class="context-action-row" onclick="actionAddToPlaylistPrompt()">
+        <div class="context-action-row" onclick="actionOpenAddToPlaylist()">
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           <span>Add to Playlist</span>
         </div>
@@ -348,11 +394,10 @@
     </div>
   </div>
 
+  <div id="meloToast" class="melo-toast"></div>
   <audio id="audio" preload="auto"></audio>
 
   <!-- External JavaScript Files with Cache Busting -->
-  <script src="/static/js/store.js?v=1.0.1"></script>
-  <script src="/static/js/player.js?v=1.0.1"></script>
-  <script src="/static/js/app.js?v=1.0.1"></script>
+  <script src="/static/js/app.js?v=2.0.0"></script>
 </body>
 </html>

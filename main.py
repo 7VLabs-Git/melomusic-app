@@ -8,12 +8,13 @@ from fastapi import FastAPI, HTTPException, Request, Query, Response
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import httpx
 from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
 from ytmusicapi import YTMusic
 
-app = FastAPI(title="MELO Hybrid Engine", version="9.0.0")
+app = FastAPI(title="MELO Hybrid Engine", version="9.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +43,9 @@ CDN_HEADERS = {
     "Accept-Encoding": "identity",
     "Referer": "https://www.jiosaavn.com/",
 }
+
+class ImportRequest(BaseModel):
+    url: str
 
 @app.on_event("startup")
 async def startup_event():
@@ -239,10 +243,10 @@ async def get_recommendations(
             if yt_results and len(yt_results) > 0:
                 yt_video_id = yt_results[0].get("videoId")
                 if yt_video_id:
-                    watch_data = ytm.get_watch_playlist(videoId=yt_video_id, limit=12)
+                    watch_data = ytm.get_watch_playlist(videoId=yt_video_id, limit=20)
                     yt_tracks = watch_data.get("tracks", [])
 
-                    for item in yt_tracks[1:10]:
+                    for item in yt_tracks[1:]:
                         t_title = item.get("title", "")
                         t_artists = item.get("artists", [])
                         t_artist_name = t_artists[0].get("name", "") if t_artists else ""
@@ -252,22 +256,98 @@ async def get_recommendations(
                             if saavn_match and saavn_match["id"] not in seen_track_ids:
                                 seen_track_ids.add(saavn_match["id"])
                                 matched_tracks.append(saavn_match)
+                            if len(matched_tracks) >= 15:
+                                break
         except Exception as e:
             print(f"[YTM_RADIO_FALLBACK] {e}")
 
-    if len(matched_tracks) < 5 and artist:
+    if len(matched_tracks) < 8 and artist:
         first_artist = artist.split(',')[0].split('&')[0].strip()
         fallback_res = await search_endpoint(query=first_artist)
         for t in fallback_res.get("results", []):
             if t["id"] not in seen_track_ids:
                 seen_track_ids.add(t["id"])
                 matched_tracks.append(t)
-            if len(matched_tracks) >= 12:
+            if len(matched_tracks) >= 15:
                 break
 
     payload = {"tracks": matched_tracks}
     rec_cache[cache_key] = payload
     return payload
+
+@app.post("/api/import-playlist")
+async def import_playlist(req: ImportRequest):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL cannot be empty")
+
+    imported_tracks = []
+    playlist_name = "Imported Playlist"
+
+    try:
+        # YouTube / YouTube Music playlist detection
+        if "youtube.com" in url or "youtu.be" in url:
+            parsed = urllib.parse.urlparse(url)
+            query_params = urllib.parse.parse_qs(parsed.query)
+            playlist_id = query_params.get("list", [None])[0]
+
+            if not playlist_id and "playlist/" in url:
+                playlist_id = url.split("playlist/")[1].split("?")[0]
+
+            if playlist_id and ytm:
+                pl_data = ytm.get_playlist(playlist_id, limit=60)
+                playlist_name = pl_data.get("title", "YouTube Playlist")
+                raw_tracks = pl_data.get("tracks", [])
+
+                for item in raw_tracks[:35]:
+                    t_name = item.get("title", "")
+                    t_artists = item.get("artists", [])
+                    t_artist = t_artists[0].get("name", "") if t_artists else ""
+                    if t_name:
+                        matched = await search_single_saavn_track(f"{t_name} {t_artist}".strip())
+                        if matched:
+                            imported_tracks.append(matched)
+
+        # Spotify URL detection
+        elif "spotify.com" in url:
+            oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(url)}"
+            oembed_resp = await http_client.get(oembed_url, headers=CDN_HEADERS, timeout=6.0)
+            if oembed_resp.status_code == 200:
+                o_data = oembed_resp.json()
+                playlist_name = o_data.get("title", "Spotify Playlist")
+
+            resp = await http_client.get(url, headers=CDN_HEADERS, timeout=8.0)
+            if resp.status_code == 200:
+                html_text = resp.text
+                track_names = re.findall(r'<meta name="music:song" content="([^"]+)"', html_text)
+                if not track_names:
+                    track_names = re.findall(r'dir="auto">([^<]{3,80})</span>', html_text)
+
+                cleaned_names = list(dict.fromkeys([html.unescape(name).strip() for name in track_names if len(name.strip()) > 2]))
+                for name in cleaned_names[:25]:
+                    matched = await search_single_saavn_track(name)
+                    if matched:
+                        imported_tracks.append(matched)
+
+        # Generic search fallback if standard link
+        if not imported_tracks:
+            clean_search_seed = re.sub(r'https?://[^\s]+', '', url).strip()
+            if clean_search_seed:
+                results = await search_endpoint(query=clean_search_seed)
+                imported_tracks = results.get("results", [])[:20]
+                playlist_name = clean_search_seed.capitalize()
+
+    except Exception as e:
+        print(f"[IMPORT_ERROR] {e}")
+
+    if not imported_tracks:
+        raise HTTPException(status_code=404, detail="Could not retrieve playable songs from that link. Try another public link or song name.")
+
+    return {
+        "success": True,
+        "name": playlist_name,
+        "tracks": imported_tracks
+    }
 
 async def resolve_saavn_url(track_id: str) -> str:
     if track_id in stream_cache:
