@@ -151,6 +151,29 @@ window.closeCinematicMode = function () {
   document.getElementById('cinematicOverlay')?.classList.remove('open');
 };
 
+window.promptImportSelection = function () {
+  window.closeSettingsModal();
+  document.getElementById('importModal')?.classList.add('open');
+};
+
+window.closeImportModal = function (e) {
+  if (!e || e.target === document.getElementById('importModal') || e.target.classList.contains('drag-handle')) {
+    document.getElementById('importModal')?.classList.remove('open');
+  }
+};
+
+window.executePlaylistImport = async function () {
+  const input = document.getElementById('importPlaylistUrlInput');
+  const url = input ? input.value.trim() : '';
+  if (!url) {
+    alert("Please enter a valid playlist link.");
+    return;
+  }
+  window.closeImportModal();
+  alert("Analyzing external playlist structure...");
+  if (input) input.value = '';
+};
+
 window.toggleRepeatMode = function () {
   const rBtn = document.getElementById('sheetRepeatBtn');
   const badge = document.getElementById('loopBadge');
@@ -327,7 +350,7 @@ window.actionViewCredits = function () {
 };
 
 // ==========================================
-// 2. PLAYBACK ENGINE & ACCURATE PIXEL CLUSTERING COLOR EXTRACTOR
+// 2. PLAYBACK ENGINE & COLOR EXTRACTION
 // ==========================================
 
 window.playIndex = function (idx) {
@@ -1070,21 +1093,21 @@ function renderSearchView() {
       </div>
 
       <div class="section-heading">
+        <h2 id="searchResultsTitle">Trending Recommendations</h2>
+      </div>
+      <div id="searchTracklist" style="margin-bottom:32px;"></div>
+
+      <div class="section-heading">
         <h2>Explore by Mood & Genre</h2>
       </div>
-      <div class="search-mood-cards">
-        <div class="mood-card" onclick="openCategoryDetail('Romance', 'Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Punjabi Wave', 'Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Desi Rap', 'Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
-        <div class="mood-card" onclick="openCategoryDetail('Indie Chill', 'Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
+      <div class="search-mood-cards" style="margin-bottom:32px;">
+        <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')"><span>Romance</span><span class="mood-icon">💖</span></div>
+        <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
+        <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
+        <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
         <div class="mood-card" onclick="openCategoryDetail('Party Hits', 'Bollywood Dance Hits Party')"><span>Party Hits</span><span class="mood-icon">🎉</span></div>
         <div class="mood-card" onclick="openCategoryDetail('South Cinema', 'South Indian Cinema Bangers')"><span>South Cinema</span><span class="mood-icon">🚀</span></div>
       </div>
-
-      <div class="section-heading">
-        <h2 id="searchResultsTitle">Trending Recommendations</h2>
-      </div>
-      <div class="capsule-grid" id="searchGrid"></div>
 
       <div class="section-heading"><h2>Bollywood Chartbusters</h2></div>
       <div class="capsule-grid" id="searchBollywoodGrid"></div>
@@ -1110,12 +1133,12 @@ function renderSearchView() {
       searchTimer = setTimeout(() => {
         const title = document.getElementById('searchResultsTitle');
         if (title) title.innerText = `Results for "${q}"`;
-        loadSearchShelf(q, 'searchGrid', 12);
+        loadSearchTracklist(q);
       }, 300);
     });
   }
 
-  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 6);
+  loadSearchTracklist('Bollywood Trending 2026');
   loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
   loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
   loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
@@ -1128,7 +1151,7 @@ window.clearSearchInput = function () {
   if (clearBtn) clearBtn.style.display = 'none';
   const title = document.getElementById('searchResultsTitle');
   if (title) title.innerText = "Trending Recommendations";
-  loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 6);
+  loadSearchTracklist('Bollywood Trending 2026');
   loadSearchShelf('Bollywood Romantic Hits', 'searchBollywoodGrid', 6);
   loadSearchShelf('Punjabi Hits 2026', 'searchPunjabiGrid', 6);
   loadSearchShelf('Indian Indie Songs', 'searchIndieGrid', 6);
@@ -1143,8 +1166,50 @@ window.quickSearch = function (query) {
   }
   const title = document.getElementById('searchResultsTitle');
   if (title) title.innerText = `Results for "${query}"`;
-  loadSearchShelf(query, 'searchGrid', 12);
+  loadSearchTracklist(query);
 };
+
+async function loadSearchTracklist(query) {
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const items = data.results || [];
+    playlist = items;
+
+    const container = document.getElementById('searchTracklist');
+    if (!container) return;
+
+    if (items.length === 0) {
+      container.innerHTML = `<p style="color:var(--text-dim); padding:12px;">No songs found matching your query.</p>`;
+      return;
+    }
+
+    container.innerHTML = '';
+    items.forEach((track, i) => {
+      const row = document.createElement('div');
+      row.className = 'track-row';
+      row.onclick = () => {
+        playlist = items;
+        window.playIndex(i);
+      };
+      const isFav = !!favorites[track.id];
+      row.innerHTML = `
+        <div class="tr-num">${i + 1}</div>
+        <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+        <div class="tr-info">
+          <div class="tr-title">${track.title}</div>
+          <div class="tr-artist">${track.artist}</div>
+        </div>
+        <div class="tr-album">${track.album || 'Single'}</div>
+        <div class="tr-time">${track.duration}</div>
+        <button class="tr-fav ${isFav ? 'active' : ''}" onclick="removeFavoriteItem(event, '${track.id}')">${isFav ? '♥' : '♡'}</button>
+      `;
+      container.appendChild(row);
+    });
+  } catch (err) {
+    console.error("Search tracklist load failed", err);
+  }
+}
 
 async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
   try {
@@ -1153,7 +1218,6 @@ async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
     const items = data.results || [];
     categoryData[containerId] = items;
     renderGridContainer(containerId, items.slice(0, limit));
-    if (containerId === 'searchGrid') playlist = items;
   } catch (err) {
     console.error("Search shelf load failed", err);
   }
