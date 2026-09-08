@@ -10,10 +10,10 @@
   <title>MELO MUSIC</title>
   
   <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="/static/css/app.css?v=2.0.0" />
+  <link rel="stylesheet" href="/static/css/app.css?v=2.1.0" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
 </head>
 <body>
 
@@ -62,7 +62,7 @@
       <div id="viewContainer"></div>
     </main>
 
-    <!-- Floating Capsule Pill Miniplayer with Tidal Waveform -->
+    <!-- Floating Capsule Pill Miniplayer with Fluid Entry/Exit -->
     <footer class="dock-player" id="dockPlayerBar">
       <canvas class="miniplayer-canvas-waveform" id="miniWaveCanvas"></canvas>
 
@@ -328,6 +328,49 @@
     </div>
   </div>
 
+  <!-- PLAYLIST OPTIONS MENU SHEET (TOP-RIGHT THREE-DOT MODAL) -->
+  <div class="context-action-modal" id="playlistActionMenuModal" onclick="closePlaylistActionMenu(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closePlaylistActionMenu()"></div>
+      <div class="context-modal-title" id="plActionMenuTitle">Playlist Options</div>
+      <div class="context-action-list">
+        <div class="context-action-row" onclick="actionFromMenuEditPlaylist()">
+          <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>Edit Title & Cover</span>
+        </div>
+        <div class="context-action-row" onclick="actionFromMenuAddSongs()">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span>Search & Add Songs</span>
+        </div>
+        <div class="context-action-row" onclick="actionToggleRemoveSongsMode()">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span id="removeSongsToggleText">Remove Songs</span>
+        </div>
+        <div class="context-action-row" id="plMenuDeleteRow" onclick="actionFromMenuDeletePlaylist()" style="color:#ff526c;">
+          <svg viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+          <span>Delete Playlist</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SEARCH & ADD SONGS MODAL FOR PLAYLIST -->
+  <div class="context-action-modal" id="playlistSearchAddModal" onclick="closePlaylistSearchAddModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh; display:flex; flex-direction:column;">
+      <div class="drag-handle" onclick="closePlaylistSearchAddModal()"></div>
+      <div class="context-modal-title">Search & Add Songs</div>
+      
+      <div class="search-glass-capsule" style="margin-bottom:16px; width:100%;">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="plSearchAddInput" class="search-glass-input" placeholder="Search Bollywood, Punjabi, artists..." autocomplete="off" />
+      </div>
+
+      <div id="plSearchResultsList" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:6px;">
+        <p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">Type above to find tracks and add directly.</p>
+      </div>
+    </div>
+  </div>
+
   <!-- AUDIO QUALITY MODAL -->
   <div class="context-action-modal" id="qualityModal" onclick="closeQualityModal(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()">
@@ -370,6 +413,10 @@
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span style="color:var(--accent); font-weight:700;">Cinematic Ambient View</span>
         </div>
+        
+        <!-- Updated Download Row ID -->
+        <div class="context-action-row" id="ctxDownloadRow"></div>
+        
         <div class="context-action-row" onclick="actionAddToFavorites()">
           <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
           <span id="ctxFavText">Save to Favorites</span>
@@ -398,6 +445,6 @@
   <audio id="audio" preload="auto"></audio>
 
   <!-- External JavaScript Files with Cache Busting -->
-  <script src="/static/js/app.js?v=2.0.0"></script>
+  <script src="/static/js/app.js?v=2.1.0"></script>
 </body>
 </html>

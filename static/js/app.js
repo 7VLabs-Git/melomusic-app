@@ -1,11 +1,12 @@
 // ==========================================
-// 1. GLOBAL SCOPE & APP STATE BINDINGS
+// 1. GLOBAL SCOPE, STATE & INDEXEDDB OFFLINE
 // ==========================================
 
 let playlist = [];
 let forYouTracks = [];
 let categoryData = {};
 let currentIndex = -1;
+let currentPlaylistContextId = null; // Strictly locks queue when playing custom playlists
 let favorites = JSON.parse(localStorage.getItem('melo_favorites') || '{}');
 let playlists = JSON.parse(localStorage.getItem('melo_playlists') || '{"pl-favorites":{"id":"pl-favorites","name":"Favorites","tracks":[],"customCover":null}}');
 let playHistory = JSON.parse(localStorage.getItem('melo_history') || '[]');
@@ -25,6 +26,86 @@ let newPlaylistTempCover = null;
 let currentEditingPlId = null;
 let editPlTempCover = null;
 let isFetchingInfiniteQueue = false;
+let isRemoveSongsMode = false;
+let downloadedTrackIds = new Set(); // Globally tracks offline songs
+
+// Keep Render.com active by pinging the backend periodically
+setInterval(() => {
+  fetch('/api/ping').catch(() => {});
+}, 10 * 60 * 1000);
+
+// IndexedDB Helper for Storing Song Blobs
+const IDB_NAME = 'melo_offline_db';
+const IDB_STORE = 'downloaded_tracks';
+
+function openMeloDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveTrackToOfflineDB(trackObj, blobData) {
+  const db = await openMeloDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    store.put({
+      id: String(trackObj.id),
+      metadata: trackObj,
+      blob: blobData,
+      downloadedAt: Date.now()
+    });
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getTrackFromOfflineDB(trackId) {
+  try {
+    const db = await openMeloDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const store = tx.objectStore(IDB_STORE);
+      const req = store.get(String(trackId));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (e) {
+    return null;
+  }
+}
+
+async function syncDownloadedPlaylist() {
+  try {
+    const db = await openMeloDB();
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const store = tx.objectStore(IDB_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const records = req.result || [];
+      if (!playlists['pl-downloads']) {
+        playlists['pl-downloads'] = {
+          id: 'pl-downloads',
+          name: 'Downloaded Songs',
+          tracks: [],
+          customCover: null
+        };
+      }
+      playlists['pl-downloads'].tracks = records.map(r => r.metadata);
+      downloadedTrackIds = new Set(records.map(r => String(r.id)));
+      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      if (activeView === 'favorites') renderFavoritesView();
+    };
+  } catch (e) {}
+}
 
 // Toast Utility
 function showToast(msg) {
@@ -145,15 +226,86 @@ window.closeSettingsModal = function () {
 window.openContextMenu = function () {
   if (currentIndex === -1 || !playlist[currentIndex]) return;
   const track = playlist[currentIndex];
+  
   const titleEl = document.getElementById('ctxModalSongTitle');
   if (titleEl) titleEl.innerText = track.title;
+  
   const favTextEl = document.getElementById('ctxFavText');
   if (favTextEl) favTextEl.innerText = favorites[track.id] ? "Remove from Favorites" : "Save to Favorites";
+  
+  const dlRow = document.getElementById('ctxDownloadRow');
+  if (dlRow) {
+    if (downloadedTrackIds.has(String(track.id))) {
+      dlRow.innerHTML = `
+        <svg viewBox="0 0 24 24" style="stroke:#10b981; fill:none; stroke-width:2.5;"><path d="M20 6L9 17l-5-5"/></svg>
+        <span style="color:#10b981; font-weight:700;">Downloaded ✓</span>
+      `;
+      dlRow.onclick = () => { showToast("Already downloaded."); window.closeContextMenu(); };
+    } else {
+      dlRow.innerHTML = `
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span style="color:#fff; font-weight:700;">Download for Offline</span>
+      `;
+      dlRow.onclick = () => window.actionDownloadSong();
+    }
+  }
+
   document.getElementById('contextModal')?.classList.add('open');
 };
 
 window.closeContextMenu = function () {
   document.getElementById('contextModal')?.classList.remove('open');
+};
+
+// ====================================================
+// 2. OFFLINE DOWNLOAD WITH INDEXEDDB & SPINNER
+// ====================================================
+window.actionDownloadSong = async function () {
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+
+  const dlRow = document.getElementById('ctxDownloadRow');
+  const originalHtml = dlRow ? dlRow.innerHTML : null;
+
+  if (dlRow) {
+    dlRow.innerHTML = `
+      <svg class="download-spinner" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" stroke-dasharray="32" stroke-dashoffset="12" stroke-linecap="round"></circle>
+      </svg>
+      <span>Downloading Track...</span>
+    `;
+    dlRow.onclick = null;
+  }
+
+  showToast(`Downloading "${track.title}"...`);
+
+  try {
+    const streamUrl = `/api/download/${track.id}?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}&quality=${selectedQuality}`;
+    const resp = await fetch(streamUrl);
+
+    if (!resp.ok) throw new Error("Stream fetch failed");
+
+    const blob = await resp.blob();
+
+    // Save locally
+    await saveTrackToOfflineDB(track, blob);
+    await syncDownloadedPlaylist();
+
+    // Trigger file download
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = `${track.title} - ${track.artist}.m4a`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+
+    showToast(`Offline track saved!`);
+  } catch (err) {
+    showToast("Download failed. Check your network.");
+  } finally {
+    window.closeContextMenu();
+  }
 };
 
 window.promptImportSelection = function () {
@@ -168,7 +320,7 @@ window.closeImportModal = function (e) {
 };
 
 // ==========================================
-// 2. PLAYLIST IMPORT ENGINE
+// 3. PLAYLIST IMPORT ENGINE
 // ==========================================
 window.executePlaylistImport = async function () {
   const input = document.getElementById('importPlaylistUrlInput');
@@ -220,7 +372,7 @@ window.executePlaylistImport = async function () {
 };
 
 // ==========================================
-// 3. 2X2 COLLAGE & COVER HELPERS
+// 4. 2X2 COLLAGE & COVER HELPERS
 // ==========================================
 function renderPlaylistCoverHTML(pl) {
   if (pl.customCover) {
@@ -259,6 +411,7 @@ window.actionOpenAddToPlaylist = function (trackObj = null) {
 
   listEl.innerHTML = '';
   Object.values(playlists).forEach(pl => {
+    if (pl.id === 'pl-downloads') return; // Do not manually add to downloads
     const card = document.createElement('div');
     card.className = 'themed-pl-card';
     card.innerHTML = `
@@ -279,9 +432,28 @@ window.closeAddToPlaylistModal = function (e) {
   }
 };
 
-window.addTrackToSpecificPlaylist = function (plId) {
+window.addTrackToSpecificPlaylist = async function (plId) {
   if (!pendingTrackForPlaylist || !playlists[plId]) return;
-  playlists[plId].tracks.push(pendingTrackForPlaylist);
+  const trackToSave = { ...pendingTrackForPlaylist };
+
+  if (plId === 'pl-downloads') {
+    showToast(`Downloading "${trackToSave.title}" for offline storage...`);
+    window.closeAddToPlaylistModal();
+    try {
+      const streamUrl = `/api/download/${trackToSave.id}?title=${encodeURIComponent(trackToSave.title)}&artist=${encodeURIComponent(trackToSave.artist)}`;
+      const resp = await fetch(streamUrl);
+      if (!resp.ok) throw new Error("Stream fetch failed");
+      const blob = await resp.blob();
+      await saveTrackToOfflineDB(trackToSave, blob);
+      await syncDownloadedPlaylist();
+      showToast(`Saved & Added to Downloaded Songs!`);
+    } catch (e) {
+      showToast("Failed to download track offline.");
+    }
+    return;
+  }
+
+  playlists[plId].tracks.push(trackToSave);
   localStorage.setItem('melo_playlists', JSON.stringify(playlists));
   showToast(`Added to "${playlists[plId].name}"!`);
   window.closeAddToPlaylistModal();
@@ -334,7 +506,147 @@ window.confirmCreateAndAddToPlaylist = function () {
   if (activeView === 'favorites') renderFavoritesView();
 };
 
-// Unified Playlist Edit Modal Logic
+// ====================================================
+// 5. UNIFIED PLAYLIST EDIT & ACTION MODALS
+// ====================================================
+window.openPlaylistActionMenu = function (plId) {
+  currentEditingPlId = plId;
+  const pl = playlists[plId];
+  if (!pl) return;
+
+  const modal = document.getElementById('playlistActionMenuModal');
+  const title = document.getElementById('plActionMenuTitle');
+  const deleteRow = document.getElementById('plMenuDeleteRow');
+  const removeToggle = document.getElementById('removeSongsToggleText');
+
+  if (title) title.innerText = pl.name;
+  if (deleteRow) {
+    deleteRow.style.display = (plId === 'pl-favorites' || plId === 'pl-downloads') ? 'none' : 'flex';
+  }
+  if (removeToggle) {
+    removeToggle.innerText = isRemoveSongsMode ? "Exit Remove Mode" : "Remove Songs";
+  }
+
+  modal?.classList.add('open');
+};
+
+window.closePlaylistActionMenu = function (e) {
+  if (!e || e.target === document.getElementById('playlistActionMenuModal') || e.target.classList.contains('drag-handle')) {
+    document.getElementById('playlistActionMenuModal')?.classList.remove('open');
+  }
+};
+
+window.actionFromMenuEditPlaylist = function () {
+  window.closePlaylistActionMenu();
+  if (currentEditingPlId) window.openPlaylistEditor(currentEditingPlId);
+};
+
+window.actionFromMenuAddSongs = function () {
+  window.closePlaylistActionMenu();
+  if (!currentEditingPlId) return;
+
+  const modal = document.getElementById('playlistSearchAddModal');
+  const input = document.getElementById('plSearchAddInput');
+  const results = document.getElementById('plSearchResultsList');
+
+  if (input) {
+    input.value = '';
+    input.oninput = () => {
+      clearTimeout(window.plSearchTimer);
+      const q = input.value.trim();
+      if (!q) {
+        results.innerHTML = '<p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">Type above to find tracks and add directly.</p>';
+        return;
+      }
+      window.plSearchTimer = setTimeout(async () => {
+        results.innerHTML = '<p style="color:var(--text-muted); font-size:0.85rem; text-align:center; padding:20px;">Searching...</p>';
+        try {
+          const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`);
+          const data = await res.json();
+          const items = data.results || [];
+
+          if (items.length === 0) {
+            results.innerHTML = '<p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">No tracks found.</p>';
+            return;
+          }
+
+          results.innerHTML = '';
+          items.forEach(track => {
+            const row = document.createElement('div');
+            row.className = 'queue-row';
+            row.innerHTML = `
+              <div class="queue-left-block">
+                <img class="queue-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+                <div class="queue-info">
+                  <div class="queue-title">${track.title}</div>
+                  <div class="queue-artist">${track.artist}</div>
+                </div>
+              </div>
+              <button class="queue-action-btn" style="background:var(--accent); color:#fff;">+</button>
+            `;
+            row.onclick = async () => {
+              if (currentEditingPlId === 'pl-downloads') {
+                showToast(`Downloading "${track.title}" offline...`);
+                try {
+                  const streamUrl = `/api/download/${track.id}?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`;
+                  const resp = await fetch(streamUrl);
+                  if (!resp.ok) throw new Error("Download failed");
+                  const blob = await resp.blob();
+                  await saveTrackToOfflineDB(track, blob);
+                  await syncDownloadedPlaylist();
+                  showToast(`Downloaded & added!`);
+                  openPlaylistDetails('pl-downloads');
+                } catch (err) {
+                  showToast("Failed to download track.");
+                }
+              } else if (playlists[currentEditingPlId]) {
+                playlists[currentEditingPlId].tracks.push(track);
+                localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+                showToast(`Added to "${playlists[currentEditingPlId].name}"!`);
+                openPlaylistDetails(currentEditingPlId);
+              }
+            };
+            results.appendChild(row);
+          });
+        } catch (e) {
+          results.innerHTML = '<p style="color:var(--accent); font-size:0.85rem; text-align:center; padding:20px;">Search error.</p>';
+        }
+      }, 250);
+    };
+  }
+
+  modal?.classList.add('open');
+};
+
+window.closePlaylistSearchAddModal = function (e) {
+  if (!e || e.target === document.getElementById('playlistSearchAddModal') || e.target.classList.contains('drag-handle')) {
+    document.getElementById('playlistSearchAddModal')?.classList.remove('open');
+  }
+};
+
+window.actionToggleRemoveSongsMode = function () {
+  window.closePlaylistActionMenu();
+  isRemoveSongsMode = !isRemoveSongsMode;
+  if (currentEditingPlId) openPlaylistDetails(currentEditingPlId);
+};
+
+window.removeTrackFromPlaylistDirect = function (plId, trackIndex) {
+  const pl = playlists[plId];
+  if (!pl || !pl.tracks[trackIndex]) return;
+
+  const trackTitle = pl.tracks[trackIndex].title;
+  pl.tracks.splice(trackIndex, 1);
+  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+  showToast(`Removed "${trackTitle}"`);
+  openPlaylistDetails(plId);
+};
+
+window.actionFromMenuDeletePlaylist = function () {
+  window.closePlaylistActionMenu();
+  if (currentEditingPlId) window.deleteCustomPlaylist(currentEditingPlId);
+};
+
+// Unified Playlist Edit Modal (Single Edit Flow)
 window.openPlaylistEditor = function (plId) {
   currentEditingPlId = plId;
   editPlTempCover = null;
@@ -458,11 +770,13 @@ window.togglePlay = function () {
   }
 };
 
-// ==========================================
-// 4. INFINITE AUTO-BUFFERING QUEUE
-// ==========================================
+// ====================================================
+// 6. QUEUE ENGINE (STRICT PURITY: NO RANDOM INJECTIONS IN PLAYLISTS)
+// ====================================================
 async function checkAndExpandInfiniteQueue() {
+  if (currentPlaylistContextId !== null) return;
   if (isFetchingInfiniteQueue || playlist.length === 0) return;
+
   const remaining = playlist.length - 1 - currentIndex;
 
   if (remaining <= 3) {
@@ -482,7 +796,6 @@ async function checkAndExpandInfiniteQueue() {
         }
       }
     } catch (e) {
-      console.warn("Infinite buffer error", e);
     } finally {
       isFetchingInfiniteQueue = false;
     }
@@ -509,10 +822,15 @@ window.nextTrack = async function () {
     return;
   }
 
-  await checkAndExpandInfiniteQueue();
-  if (currentIndex + 1 < playlist.length) {
-    window.playIndex(currentIndex + 1);
-  } else if (repeatMode === 'all') {
+  if (currentPlaylistContextId === null) {
+    await checkAndExpandInfiniteQueue();
+    if (currentIndex + 1 < playlist.length) {
+      window.playIndex(currentIndex + 1);
+      return;
+    }
+  }
+
+  if (repeatMode === 'all') {
     window.playIndex(0);
   }
 };
@@ -609,7 +927,7 @@ window.actionViewCredits = function () {
 };
 
 // ==========================================
-// 5. PLAYBACK & VIBRANT PALETTE EXTRACTOR
+// 7. PLAYBACK & VIVID COLOR HARMONY
 // ==========================================
 function generateVibrantColors(seedStr) {
   let hash = 0;
@@ -627,6 +945,66 @@ function generateVibrantColors(seedStr) {
   document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.95)`);
   document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.88)`);
   document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
+}
+
+function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
+  let hash = 0;
+  const seed = fallbackSeed || 'melo';
+  for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  const r0 = Math.abs((hash * 47) % 160) + 70;
+  const g0 = Math.abs((hash * 29) % 130) + 40;
+  const b0 = Math.abs((hash * 61) % 170) + 60;
+  
+  document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r0}, ${g0}, ${b0}, 0.7)`);
+  document.documentElement.style.setProperty('--pl-dynamic-bg-dark', `rgba(${r0}, ${g0}, ${b0}, 0.15)`);
+
+  if (!imgUrl) return;
+
+  let safeUrl = imgUrl;
+  if (safeUrl.startsWith('http://') || safeUrl.startsWith('https://')) {
+    if (!safeUrl.includes('/api/proxy-image')) {
+      safeUrl = `/api/proxy-image?url=${encodeURIComponent(safeUrl)}`;
+    }
+  }
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.src = safeUrl;
+
+  img.onload = () => {
+    try {
+      const cvs = document.createElement("canvas");
+      const ctx = cvs.getContext("2d");
+      cvs.width = 32;
+      cvs.height = 32;
+      ctx.drawImage(img, 0, 0, 32, 32);
+      const data = ctx.getImageData(0, 0, 32, 32).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a > 128) {
+          const pr = data[i], pg = data[i + 1], pb = data[i + 2];
+          const max = Math.max(pr, pg, pb), min = Math.min(pr, pg, pb);
+          const sat = max === min ? 0 : (max - min) / (255 - Math.abs(max + min - 255));
+          if (sat > 0.25) {
+            r += pr * (1 + sat);
+            g += pg * (1 + sat);
+            b += pb * (1 + sat);
+            count += (1 + sat);
+          } else {
+            r += pr; g += pg; b += pb; count++;
+          }
+        }
+      }
+      if (count > 0) {
+        r = Math.min(255, Math.round(r / count * 1.15));
+        g = Math.min(255, Math.round(g / count * 1.15));
+        b = Math.min(255, Math.round(b / count * 1.15));
+        document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r}, ${g}, ${b}, 0.72)`);
+        document.documentElement.style.setProperty('--pl-dynamic-bg-dark', `rgba(${r}, ${g}, ${b}, 0.15)`);
+      }
+    } catch (e) {}
+  };
 }
 
 window.updateArtworkPalette = function (imgUrl, trackTitle = '', trackId = '') {
@@ -709,7 +1087,7 @@ window.updateArtworkPalette = function (imgUrl, trackTitle = '', trackId = '') {
   img.onerror = () => generateVibrantColors(trackTitle || trackId);
 };
 
-window.playIndex = function (idx) {
+window.playIndex = async function (idx) {
   if (idx < 0 || idx >= playlist.length) return;
 
   const thisToken = ++activePlayToken;
@@ -731,12 +1109,21 @@ window.playIndex = function (idx) {
 
   syncSheetTrackInfo();
 
+  // Reveal miniplayer with active spring animation
+  const miniplayer = document.getElementById('dockPlayerBar');
+  if (miniplayer) miniplayer.classList.add('active');
+
   if (document.getElementById('tabQueue')?.classList.contains('active')) {
     renderSheetQueueList();
   }
 
   if (audio) {
-    audio.src = `/api/stream/${track.id}?quality=${selectedQuality}`;
+    const offlineRecord = await getTrackFromOfflineDB(track.id);
+    if (offlineRecord && offlineRecord.blob) {
+      audio.src = URL.createObjectURL(offlineRecord.blob);
+    } else {
+      audio.src = `/api/stream/${track.id}?quality=${selectedQuality}`;
+    }
     audio.load();
 
     const playPromise = audio.play();
@@ -751,7 +1138,6 @@ window.playIndex = function (idx) {
         })
         .catch((err) => {
           if (thisToken === activePlayToken) {
-            console.warn("Playback interrupted:", err);
             setPlayState(false);
           }
         });
@@ -866,7 +1252,7 @@ async function fetchLyrics(track, token) {
 }
 
 // ====================================================
-// 6. CLEAN QUEUE VIEW (PROPER FULL-WIDTH, NO CUT-OFF)
+// 8. CLEAN FULL-WIDTH QUEUE VIEW
 // ====================================================
 function renderSheetQueueList() {
   const qView = document.getElementById('sheetViewQueue');
@@ -875,7 +1261,7 @@ function renderSheetQueueList() {
 
   const remaining = playlist.slice(currentIndex + 1);
   if (remaining.length === 0) {
-    qView.innerHTML = '<p style="color:var(--text-dim);font-size:0.88rem;padding:24px 8px;">Buffering upcoming songs for you...</p>';
+    qView.innerHTML = '<p style="color:var(--text-dim);font-size:0.88rem;padding:24px 8px;">End of playback queue.</p>';
     checkAndExpandInfiniteQueue();
     return;
   }
@@ -926,7 +1312,7 @@ window.toggleFavTrackDirect = function (trackId, btn) {
 };
 
 // ==========================================
-// 7. HOME, SEARCH & HUB VIEWS
+// 9. HOME, SEARCH & CLEAN MUSIC HUB
 // ==========================================
 function renderHomeView() {
   const viewContainer = document.getElementById('viewContainer');
@@ -1005,6 +1391,7 @@ window.switchVibePreset = function (vibe, btn) {
 
 window.playForYouAll = function () {
   if (forYouTracks.length > 0) {
+    currentPlaylistContextId = null;
     playlist = [...forYouTracks];
     window.playIndex(0);
   }
@@ -1019,6 +1406,7 @@ window.loadShelfCategory = async function (query, containerId) {
     renderGridContainer(containerId, items.slice(0, 6));
 
     if (containerId === 'trendingGrid' && playlist.length === 0) {
+      currentPlaylistContextId = null;
       playlist = [...items];
     }
   } catch (err) {}
@@ -1033,6 +1421,7 @@ function renderGridContainer(containerId, items) {
     const item = document.createElement('div');
     item.className = 'poster-item';
     item.onclick = () => {
+      currentPlaylistContextId = null; // Radio / Discovery allows recommendations
       if (containerId === 'searchGrid') {
         playlist = [track];
         window.playIndex(0);
@@ -1184,8 +1573,13 @@ async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
 function renderFavoritesView() {
   const viewContainer = document.getElementById('viewContainer');
   if (!viewContainer) return;
-  const favList = Object.values(favorites);
-  const playlistList = Object.values(playlists);
+
+  const downloadedCount = playlists['pl-downloads'] ? playlists['pl-downloads'].tracks.length : 0;
+  const userPlaylists = Object.values(playlists).filter(p => p.id !== 'pl-favorites' && p.id !== 'pl-downloads');
+  
+  if (playlists['pl-favorites']) {
+    playlists['pl-favorites'].tracks = Object.values(favorites);
+  }
 
   viewContainer.innerHTML = `
     <div class="stage-content">
@@ -1196,32 +1590,35 @@ function renderFavoritesView() {
         <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Music Hub</h1>
       </div>
 
-      <div class="hub-editorial-card">
-        <div class="hub-glow-effect"></div>
-        <div class="hub-cover-badge">
-          <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+      <div class="hub-vault-grid">
+        <div class="hub-vault-card" onclick="openPlaylistDetails('pl-favorites')">
+          <div class="hub-vault-badge" style="background: linear-gradient(135deg, #fa2d48, #e11d48);">
+            <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          </div>
+          <div>
+            <div class="hub-vault-title">Loved Tracks</div>
+            <div class="hub-vault-count">${Object.values(favorites).length} saved songs</div>
+          </div>
         </div>
-        <div style="position:relative; z-index:2;">
-          <span class="hub-badge-pill">Personal Collection</span>
-          <h1 class="hub-title">Loved Songs</h1>
-          <p class="hub-subtitle">${favList.length} tracks permanently saved in your vault</p>
-          <div class="hub-actions-bar">
-            <button class="pill-action-btn" onclick="playFavoritesAll()">
-              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              <span>Play All</span>
-            </button>
-            <button class="filter-chip" onclick="actionOpenAddToPlaylist(null)">+ Create Playlist</button>
+
+        <div class="hub-vault-card" onclick="openPlaylistDetails('pl-downloads')">
+          <div class="hub-vault-badge" style="background: linear-gradient(135deg, #2563eb, #7c3aed);">
+            <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          </div>
+          <div>
+            <div class="hub-vault-title">Downloaded Songs</div>
+            <div class="hub-vault-count">${downloadedCount} offline tracks</div>
           </div>
         </div>
       </div>
 
       <div class="section-heading">
-        <h2>Your Playlists (${playlistList.length})</h2>
+        <h2>Your Playlists (${userPlaylists.length})</h2>
         <a onclick="actionOpenAddToPlaylist(null)">+ Create</a>
       </div>
       <div class="capsule-grid" id="customPlaylistsGrid"></div>
 
-      <div class="section-heading"><h2>Saved Tracks</h2></div>
+      <div class="section-heading"><h2>Recent Favorites</h2></div>
       <div id="favsTracklist"></div>
     </div>
   `;
@@ -1229,29 +1626,38 @@ function renderFavoritesView() {
   const plGrid = document.getElementById('customPlaylistsGrid');
   if (plGrid) {
     plGrid.innerHTML = '';
-    playlistList.forEach(pl => {
-      const item = document.createElement('div');
-      item.className = 'poster-item';
-      item.onclick = () => openPlaylistDetails(pl.id);
-      item.innerHTML = `
-        <div class="poster-wrap">${renderPlaylistCoverHTML(pl)}</div>
-        <div class="poster-title">${pl.name}</div>
-        <div class="poster-subtitle">${pl.tracks.length} tracks</div>
-      `;
-      plGrid.appendChild(item);
-    });
+    if (userPlaylists.length === 0) {
+      plGrid.innerHTML = `<p style="color:var(--text-dim);font-size:0.85rem;grid-column:1/-1;">No custom playlists created yet. Tap "+ Create" above.</p>`;
+    } else {
+      userPlaylists.forEach(pl => {
+        const item = document.createElement('div');
+        item.className = 'poster-item';
+        item.onclick = () => openPlaylistDetails(pl.id);
+        item.innerHTML = `
+          <div class="poster-wrap">${renderPlaylistCoverHTML(pl)}</div>
+          <div class="poster-title">${pl.name}</div>
+          <div class="poster-subtitle">${pl.tracks.length} tracks</div>
+        `;
+        plGrid.appendChild(item);
+      });
+    }
   }
 
   const fList = document.getElementById('favsTracklist');
   if (fList) {
     fList.innerHTML = '';
-    if (favList.length === 0) {
-      fList.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:16px;">No loved tracks yet. Tap the heart on any song to save it here.</p>`;
+    const recentFavs = Object.values(favorites).reverse().slice(0, 10);
+    if (recentFavs.length === 0) {
+      fList.innerHTML = `<p style="color:var(--text-dim);font-size:0.88rem;padding:16px;">No loved tracks yet. Tap the heart on any song to save it here.</p>`;
     } else {
-      favList.forEach((track, i) => {
+      recentFavs.forEach((track, i) => {
         const row = document.createElement('div');
         row.className = `track-row`;
-        row.onclick = () => { playlist = favList; window.playIndex(i); };
+        row.onclick = () => {
+          currentPlaylistContextId = 'pl-favorites';
+          playlist = Object.values(favorites);
+          window.playIndex(i);
+        };
         row.innerHTML = `
           <div class="tr-num">${i + 1}</div>
           <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
@@ -1268,11 +1674,6 @@ function renderFavoritesView() {
   }
 }
 
-window.playFavoritesAll = function () {
-  const favList = Object.values(favorites);
-  if (favList.length > 0) { playlist = favList; window.playIndex(0); }
-};
-
 window.removeFavoriteItem = function (e, trackId) {
   e.stopPropagation();
   delete favorites[trackId];
@@ -1281,86 +1682,67 @@ window.removeFavoriteItem = function (e, trackId) {
 };
 
 // ----------------------------------------------------
-// 8. IMMERSIVE PLAYLIST PAGE (MAJOR TOP SCREEN COVER & COLOR FADE)
+// 10. MASSIVE IMMERSIVE PLAYLIST WITH COLOR FADE TO SONG LIST
 // ----------------------------------------------------
 function openPlaylistDetails(plId) {
+  if (plId === 'pl-favorites') {
+    playlists['pl-favorites'].tracks = Object.values(favorites);
+  }
+
   const pl = playlists[plId];
   const viewContainer = document.getElementById('viewContainer');
   if (!viewContainer || !pl) return;
 
   const leadImage = getPlaylistHeroCoverURL(pl);
-  if (leadImage) {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = leadImage;
-    img.onload = () => {
-      try {
-        const cvs = document.createElement("canvas");
-        const ctx = cvs.getContext("2d");
-        cvs.width = 16;
-        cvs.height = 16;
-        ctx.drawImage(img, 0, 0, 16, 16);
-        const data = cvs.getImageData(0, 0, 16, 16).data;
-        let r = 0, g = 0, b = 0, count = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          if (data[i + 3] > 128) {
-            r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
-          }
-        }
-        r = Math.round(r / (count || 1));
-        g = Math.round(g / (count || 1));
-        b = Math.round(b / (count || 1));
-        document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r}, ${g}, ${b}, 0.65)`);
-      } catch (e) {
-        document.documentElement.style.setProperty('--pl-dynamic-bg', 'rgba(250, 45, 72, 0.45)');
-      }
-    };
-  } else {
-    document.documentElement.style.setProperty('--pl-dynamic-bg', 'rgba(250, 45, 72, 0.45)');
-  }
+  applyPlaylistDynamicColors(leadImage, pl.name);
 
   const bgStyle = leadImage ? `style="background-image: url('${leadImage}');"` : '';
+  const isProtected = plId === 'pl-favorites' || plId === 'pl-downloads';
 
   viewContainer.innerHTML = `
     <div class="playlist-immersive-view">
-      <!-- Major Top-Half Screen Cover with Vivid Color Fade -->
+      <!-- Massive Immersive Hero Cover Header -->
       <div class="playlist-immersive-hero" ${bgStyle}>
-        <div style="position:absolute; top:28px; left:36px; z-index:10;">
+        <!-- Top Navigation Row -->
+        <div style="position:absolute; top:28px; left:28px; right:28px; display:flex; justify-content:space-between; align-items:center; z-index:10;">
           <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
             <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          </button>
+          
+          <button class="circle-back-btn" onclick="openPlaylistActionMenu('${plId}')" title="Playlist Menu">
+            <svg viewBox="0 0 24 24" style="stroke:none; fill:#fff;">
+              <circle cx="12" cy="5" r="2.2"/>
+              <circle cx="12" cy="12" r="2.2"/>
+              <circle cx="12" cy="19" r="2.2"/>
+            </svg>
           </button>
         </div>
 
         <div class="playlist-backdrop-content">
-          <span class="pl-meta-tag">Custom Playlist</span>
+          <span class="pl-meta-tag">${plId === 'pl-downloads' ? 'Offline Vault' : (plId === 'pl-favorites' ? 'Curated Collection' : 'Playlist')}</span>
           <div class="playlist-immersive-title-row">
             <h1 class="playlist-immersive-title">${pl.name}</h1>
-            <button class="playlist-subtle-edit-btn" onclick="openPlaylistEditor('${plId}')" title="Edit Playlist Name & Photo">
-              <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-            </button>
           </div>
           <div class="playlist-immersive-stats">${pl.tracks.length} Songs • High Fidelity Lossless Audio</div>
 
           <div class="playlist-immersive-actions">
             ${pl.tracks.length > 0 ? `
-              <button class="pill-action-btn" onclick="playlist = playlists['${plId}'].tracks; window.playIndex(0);">
+              <button class="pill-action-btn" onclick="playPlaylistContext('${plId}')">
                 <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
                 <span>Play All</span>
               </button>
             ` : ''}
-            ${pl.customCover ? `
-              <button class="filter-chip" onclick="resetPlaylistCoverToCollage('${plId}')">Revert to Collage</button>
-            ` : ''}
-            ${plId !== 'pl-favorites' ? `
-              <button class="filter-chip" style="color:#ff526c;" onclick="deleteCustomPlaylist('${plId}')">Delete</button>
+            ${isRemoveSongsMode ? `
+              <button class="filter-chip" style="background:#fa2d48; color:#fff; border-color:#fa2d48;" onclick="actionToggleRemoveSongsMode()">
+                Done Removing
+              </button>
             ` : ''}
           </div>
         </div>
       </div>
 
-      <!-- Songs List Fading In Naturally -->
+      <!-- Color Fades Directly Down Into Tracklist -->
       <div class="playlist-tracks-section">
-        <div class="section-heading" style="margin-bottom:12px;"><h2>Tracks</h2></div>
         <div id="playlistTracksBox"></div>
       </div>
     </div>
@@ -1369,27 +1751,54 @@ function openPlaylistDetails(plId) {
   const box = document.getElementById('playlistTracksBox');
   if (!box) return;
   if (pl.tracks.length === 0) {
-    box.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:24px 8px;">This playlist is empty. Tap "+" on any song to save it here.</p>`;
+    box.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:24px 0;">This playlist is currently empty. Tap the menu (⋮) above to search and add songs.</p>`;
   } else {
     pl.tracks.forEach((track, i) => {
       const row = document.createElement('div');
       row.className = 'track-row';
-      row.onclick = () => { playlist = pl.tracks; window.playIndex(i); };
+      row.onclick = () => {
+        if (isRemoveSongsMode) return;
+        currentPlaylistContextId = plId;
+        playlist = [...pl.tracks];
+        window.playIndex(i);
+      };
+      
+      const downloadedTick = downloadedTrackIds.has(String(track.id)) 
+        ? `<svg viewBox="0 0 24 24" style="width:14px; height:14px; stroke:#10b981; fill:none; stroke-width:2.5; margin-left:6px;"><path d="M20 6L9 17l-5-5"/></svg>`
+        : '';
+
       row.innerHTML = `
         <div class="tr-num">${i + 1}</div>
         <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
         <div class="tr-info">
-          <div class="tr-title">${track.title}</div>
+          <div class="tr-title" style="display:flex;align-items:center;">
+            ${track.title} ${downloadedTick}
+          </div>
           <div class="tr-artist">${track.artist}</div>
         </div>
         <div class="tr-album">${track.album || 'Single'}</div>
         <div class="tr-time">${track.duration}</div>
-        <button class="tr-fav ${favorites[track.id] ? 'active' : ''}" onclick="event.stopPropagation(); toggleFavTrackDirect('${track.id}', this)">♥</button>
+        ${isRemoveSongsMode ? `
+          <button class="tr-remove-btn" title="Remove Song" onclick="event.stopPropagation(); removeTrackFromPlaylistDirect('${plId}', ${i})">
+            ✕
+          </button>
+        ` : `
+          <button class="tr-fav ${favorites[track.id] ? 'active' : ''}" onclick="event.stopPropagation(); toggleFavTrackDirect('${track.id}', this)">♥</button>
+        `}
       `;
       box.appendChild(row);
     });
   }
 }
+
+window.playPlaylistContext = function (plId) {
+  const pl = playlists[plId];
+  if (pl && pl.tracks.length > 0) {
+    currentPlaylistContextId = plId; // Strict playlist isolation
+    playlist = [...pl.tracks];
+    window.playIndex(0);
+  }
+};
 
 window.deleteCustomPlaylist = function (plId) {
   if (confirm("Are you sure you want to delete this playlist?")) {
@@ -1400,7 +1809,7 @@ window.deleteCustomPlaylist = function (plId) {
 };
 
 // ==========================================
-// 9. DOM READY INITIALIZATION & CANVASES
+// 11. DOM READY & CANVASES
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
   const audio = document.getElementById('audio');
@@ -1414,6 +1823,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const sheetTimeDur = document.getElementById('sheetTimeDur');
   const miniWaveCanvas = document.getElementById('miniWaveCanvas');
   const scrubberWaveCanvas = document.getElementById('scrubberWaveCanvas');
+
+  syncDownloadedPlaylist();
 
   // Multi-Thread Luminous Tidal Wave
   const miniWaveCtx = miniWaveCanvas ? miniWaveCanvas.getContext('2d') : null;
@@ -1531,7 +1942,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setTimeout(renderScrubberLiveWave, 80);
 
-  // Clickable Scrubber
   if (scrubberTrackBase && audio) {
     scrubberTrackBase.addEventListener('click', (e) => {
       if (!audio.duration) return;
@@ -1652,7 +2062,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Swipe-Down Dismissal
+  // Smooth Swipe-Down Dismissal Fix
   const overlay = document.getElementById('fullscreenPlayerOverlay');
   let touchStartY = 0;
   let currentTouchY = 0;
@@ -1662,8 +2072,8 @@ document.addEventListener('DOMContentLoaded', () => {
     overlay.addEventListener('touchstart', (e) => {
       const scrollableLyrics = document.getElementById('sheetViewLyrics');
       const scrollableQueue = document.getElementById('sheetViewQueue');
-      const atTop = (!scrollableLyrics || scrollableLyrics.scrollTop <= 0) &&
-                    (!scrollableQueue || scrollableQueue.scrollTop <= 0);
+      const atTop = (window.getComputedStyle(scrollableLyrics).display === 'none' && window.getComputedStyle(scrollableQueue).display === 'none') ||
+                    (scrollableLyrics.scrollTop <= 0 && scrollableQueue.scrollTop <= 0);
 
       if (atTop || e.target.closest('.drag-handle') || e.target.closest('.player-sheet-header')) {
         touchStartY = e.touches[0].clientY;
@@ -1678,10 +2088,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const deltaY = currentTouchY - touchStartY;
 
       if (deltaY > 0) {
+        e.preventDefault(); // STOPS browser native scrolling conflict, making drag perfectly smooth
         overlay.classList.add('dragging');
         overlay.style.transform = `translate3d(0, ${deltaY}px, 0)`;
       }
-    }, { passive: true });
+    }, { passive: false });
 
     overlay.addEventListener('touchend', () => {
       if (!isDraggingOverlay) return;
@@ -1699,7 +2110,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Global Keys
   window.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
     if (e.code === 'Space') {
@@ -1711,6 +2121,8 @@ document.addEventListener('DOMContentLoaded', () => {
       window.closeSettingsModal();
       window.closeAddToPlaylistModal();
       window.closePlaylistEditModal();
+      window.closePlaylistActionMenu();
+      window.closePlaylistSearchAddModal();
     }
   });
 
