@@ -1,4 +1,4 @@
-const CACHE_NAME = 'melo-cache-v3';
+const CACHE_NAME = 'melo-cache-v4';
 
 // Only precache files guaranteed to exist
 const PRECACHE_ASSETS = [
@@ -43,21 +43,22 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// 3. Fetch Strategy: Network First for Dynamic APIs, Cache First for Static Assets
+// 3. Fetch Strategy: Network-First for HTML/APIs, Cache-First for Static Assets
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // A. Bypass media streams, ranges, or non-GET requests entirely
+  // A. Bypass media streams, downloads, byte-range requests, or non-GET requests entirely
   if (
     req.method !== 'GET' ||
     url.pathname.startsWith('/api/stream') ||
+    url.pathname.startsWith('/api/download') ||
     req.headers.has('range')
   ) {
     return;
   }
 
-  // B. Network-first for dynamic search, lyrics, recommendations, and images
+  // B. Network-first for dynamic API routes (search, auth, lyrics, recommendations, sync)
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(req).catch(() => caches.match(req))
@@ -65,24 +66,42 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // C. Cache-first, network fallback for UI assets (CSS, JS, fonts, images)
+  // C. Network-first for root HTML navigation to ensure updates reflect immediately
+  if (req.mode === 'navigate' || url.pathname === '/') {
+    event.respondWith(
+      fetch(req)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, responseClone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // D. Stale-While-Revalidate for static assets (CSS, JS, images, fonts)
   event.respondWith(
     caches.match(req).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(req).then((networkResponse) => {
-        // Cache valid static responses dynamically
-        if (
-          networkResponse &&
-          networkResponse.status === 200 &&
-          (url.pathname.startsWith('/static/') || url.pathname === '/')
-        ) {
-          const responseClone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, responseClone));
-        }
-        return networkResponse;
-      });
+      const fetchPromise = fetch(req)
+        .then((networkResponse) => {
+          if (
+            networkResponse &&
+            networkResponse.status === 200 &&
+            (url.pathname.startsWith('/static/') || url.origin === location.origin)
+          ) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, responseClone));
+          }
+          return networkResponse;
+        })
+        .catch((err) => {
+          console.warn('[MELO:SW] Network fetch failed, falling back to cache:', err);
+        });
+
+      return cachedResponse || fetchPromise;
     })
   );
 });
