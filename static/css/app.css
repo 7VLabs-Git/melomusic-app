@@ -1965,6 +1965,16 @@ footer.dock-player input {
   cursor: default;
 }
 
+/* Ensure the active/visible state actually reveals the floating player */
+footer.dock-player.active,
+footer.dock-player.visible,
+footer.dock-player.is-active,
+#dockPlayerBar.active {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transform: translateY(0) scale(1) !important;
+}
+
 /* Hide artist name text container inside dock metadata */
 .dock-artist {
   display: none !important;
@@ -1985,4 +1995,22 @@ footer.dock-player.is-playing .miniplayer-canvas-waveform {
 footer.dock-player.is-playing {
   border-top: 1px solid var(--play-accent-color, rgba(250, 45, 72, 0.6)) !important;
   box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.75), 0 -4px 20px var(--play-accent-color, rgba(250, 45, 72, 0.25)), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+#dockPlayBtn svg,
+#mDockPlayBtn svg,
+#dockPlayBtn path,
+#mDockPlayBtn path {
+  pointer-events: none;
+}
+
+#dockPlayBtn, #mDockPlayBtn {
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  user-select: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+#dockPlayBtn *, #mDockPlayBtn * {
+  pointer-events: none !important;
 }

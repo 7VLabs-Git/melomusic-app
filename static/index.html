@@ -9,8 +9,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>MELO MUSIC</title>
   
+  <!-- Paste this inside <head> ... </head> -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/images/logo.png?v=2.4.6" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/images/logo.png?v=2.4.6" />
+  <link rel="shortcut icon" type="image/png" href="/static/images/logo.png?v=2.4.6" />
   <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="/static/css/app.css?v=2.4.5" />
+  <link rel="stylesheet" href="/static/css/app.css?v=2.4.6" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
@@ -67,10 +71,10 @@
       <div id="viewContainer"></div>
     </main>
 
-    <footer class="dock-player" id="dockPlayerBar" onclick="if(event.target === this || event.target.classList.contains('player-center') || event.target.classList.contains('cool-slider-wrap')) openFullscreenPlayer()">
+    <footer class="dock-player" id="dockPlayerBar">
       <canvas class="miniplayer-canvas-waveform" id="miniWaveCanvas"></canvas>
 
-      <div class="player-meta" onclick="openFullscreenPlayer()">
+      <div class="player-meta">
         <img id="dockThumb" class="dock-thumb" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' fill='%23222'/>" />
         <div class="dock-details">
           <div class="dock-title" id="dockTitle">Ready to Play</div>
@@ -80,9 +84,15 @@
 
       <div class="player-center">
         <div class="control-row">
-          <button class="ctrl-btn" onclick="prevTrack()" title="Previous"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
-          <button class="play-toggle" id="dockPlayBtn" onclick="togglePlay()" title="Play/Pause"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
-          <button class="ctrl-btn" onclick="nextTrack()" title="Next"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+          <button type="button" class="ctrl-btn" onclick="prevTrack()" title="Previous">
+            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button type="button" class="play-toggle" id="dockPlayBtn" title="Play/Pause">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button type="button" class="ctrl-btn" onclick="nextTrack()" title="Next">
+            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
         </div>
 
         <div class="cool-slider-wrap">
@@ -99,11 +109,15 @@
         </div>
 
         <div class="mobile-controls">
-          <button class="mini-ctrl-btn" onclick="prevTrack()"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
-          <button class="mobile-play-btn" id="mDockPlayBtn" onclick="togglePlay()">
+          <button type="button" class="mini-ctrl-btn" onclick="prevTrack()">
+            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button type="button" class="mobile-play-btn" id="mDockPlayBtn">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </button>
-          <button class="mini-ctrl-btn" onclick="nextTrack()"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+          <button type="button" class="mini-ctrl-btn" onclick="nextTrack()">
+            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
         </div>
       </div>
     </footer>

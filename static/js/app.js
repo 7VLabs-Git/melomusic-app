@@ -357,7 +357,15 @@ function switchView(view, pushState = true) {
       renderOfflineVault();
     } else if (view === 'account') {
       renderAccountView();
+    } else if (view === 'player' || view === 'nowplaying' || view === 'fullscreen') {
+      openFullscreenPlayer();
     }
+
+    // Hide fullscreen overlay if switching back to standard navigation tabs
+    if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
+      closeFullscreenPlayer();
+    }
+
     // Smooth scroll reset to top of viewport to prevent jank
     const vp = $id('mainViewport');
     if (vp) vp.scrollTop = 0;
@@ -772,29 +780,43 @@ async function playIndex(idx) {
 
 function setPlayState(playing) {
   const p = playing ? 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' : 'M8 5v14l11-7z';
-  const dockIcon = `<svg viewBox="0 0 24 24" style="fill:#000000;width:16px;height:16px;"><path d="${p}"/></svg>`;
-  const sheetIcon = `<svg id="sheetPlayBtnSvg" viewBox="0 0 24 24" style="fill:#ffffff;width:28px;height:28px;"><path d="${p}"/></svg>`;
+  const dockIcon = `<svg viewBox="0 0 24 24" style="fill:#000000;width:16px;height:16px;pointer-events:none;"><path d="${p}" style="pointer-events:none;"/></svg>`;
+  const sheetIcon = `<svg id="sheetPlayBtnSvg" viewBox="0 0 24 24" style="fill:#ffffff;width:28px;height:28px;pointer-events:none;"><path d="${p}" style="pointer-events:none;"/></svg>`;
 
-  if ($id('dockPlayBtn')) $id('dockPlayBtn').innerHTML = dockIcon;
-  if ($id('mDockPlayBtn')) $id('mDockPlayBtn').innerHTML = dockIcon;
-  if ($id('sheetPlayBtn')) $id('sheetPlayBtn').innerHTML = sheetIcon;
+  const dBtn = $id('dockPlayBtn');
+  const mBtn = $id('mDockPlayBtn');
+  const sBtn = $id('sheetPlayBtn');
+
+  if (dBtn) dBtn.innerHTML = dockIcon;
+  if (mBtn) mBtn.innerHTML = dockIcon;
+  if (sBtn) sBtn.innerHTML = sheetIcon;
 
   $id('dockPlayerBar')?.classList.toggle('is-playing', playing);
   $id('sheetCoverBox')?.classList.toggle('is-playing', playing);
 
-  // Show/hide mini wave canvas based on playing state
   const mwc = $id('miniWaveCanvas');
   if (mwc) {
     mwc.style.opacity = playing ? '1' : '0';
   }
 }
 
+let isTogglingAudio = false;
+
 function togglePlay() {
   const audio = $id('audio');
   if (!audio) return;
-  if (!audio.src && playlist.length) return playIndex(0);
+
+  if (!audio.src && playlist.length) {
+    return playIndex(currentIndex >= 0 ? currentIndex : 0);
+  }
+
   if (audio.paused) {
-    audio.play().then(() => setPlayState(true)).catch(() => setPlayState(false));
+    audio.play()
+      .then(() => setPlayState(true))
+      .catch((err) => {
+        console.warn('Audio play interrupted:', err);
+        setPlayState(false);
+      });
   } else {
     audio.pause();
     setPlayState(false);
@@ -2425,21 +2447,25 @@ async function executePlaylistImport() {
 }
 
 function openFullscreenPlayer() {
-  const overlay = $id('fullscreenPlayerOverlay');
-  if (!overlay) return;
-  overlay.style.transform = 'translate3d(0, 0, 0)';
-  overlay.classList.add('open');
-  syncSheetTrackInfo();
-  setTimeout(() => {
-    const swc = $id('scrubberWaveCanvas'), stb = $id('scrubberTrackBase');
-    if (swc && stb) {
-      const dpr = window.devicePixelRatio || 1;
-      swc.width = stb.offsetWidth * dpr;
-      swc.height = (swc.offsetHeight || 14) * dpr;
-      const ctx = swc.getContext('2d');
-      if (ctx) ctx.scale(dpr, dpr);
+  const fsOverlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
+  if (fsOverlay) {
+    fsOverlay.classList.add('open');
+    fsOverlay.classList.add('active');
+    fsOverlay.style.display = 'flex';
+  }
+
+  // Ensure current song lyrics sync immediately upon opening
+  const current = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : window.currentTrack;
+  if (current) {
+    window.currentTrack = current;
+    if (typeof loadLyrics === 'function') {
+      loadLyrics(current);
+    } else if (typeof renderLyrics === 'function') {
+      renderLyrics(current.id || current);
+    } else if (typeof updateLyricsSync === 'function') {
+      updateLyricsSync();
     }
-  }, 100);
+  }
 }
 
 function closeFullscreenPlayer() {
@@ -3161,6 +3187,7 @@ async function closeCinematicMode() {
     }
   } catch (err) {}
 }
+
 // ==========================================
 // 17. RUNTIME INITIALIZATION & CANVAS RENDERERS
 // ==========================================
@@ -3177,20 +3204,69 @@ document.addEventListener('DOMContentLoaded', () => {
   initScrubberHandlers();
   initLyricsUserScroll();
   restorePlaybackSession();
-  
+
   // ==========================================
-// ANDROID HARDWARE BACK BUTTON SUPPORT
-// ==========================================
-window.addEventListener('popstate', (e) => {
-  if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
-    switchView('home', false);
-  } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
-    goBack();
-  } else {
-    // Fallback to navigating history stack
-    goBack();
+  // PLAYLIST CARD EVENT DELEGATION
+  // ==========================================
+  document.body.addEventListener('click', (e) => {
+    const card = e.target.closest('.playlist-card') || e.target.closest('[data-playlist-id]');
+    if (card) {
+      e.preventDefault();
+      const playlistId = card.getAttribute('data-playlist-id') || card.dataset.id;
+      if (playlistId) {
+        if (typeof openPlaylistDetail === 'function') {
+          openPlaylistDetail(playlistId);
+        } else if (typeof switchView === 'function') {
+          switchView('playlist-detail', true, { id: playlistId });
+        } else if (typeof loadPlaylist === 'function') {
+          loadPlaylist(playlistId);
+        }
+      }
+    }
+  });
+
+ // ==========================================
+  // MINI PLAYER CONTROLS & FULLSCREEN DELEGATION
+  // ==========================================
+  const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
+
+  if (dockPlayer) {
+    dockPlayer.addEventListener('click', (e) => {
+      // 1. Did the user click Play / Pause?
+      const playBtn = e.target.closest('#dockPlayBtn, #mDockPlayBtn');
+      if (playBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePlay();
+        return;
+      }
+
+      // 2. Did the user tap any other control buttons, scrubbers, or wave canvas?
+      const isControl = e.target.closest(
+        'button, .control-btn, input, .dock-controls, #miniWaveCanvas'
+      );
+      if (isControl) {
+        return;
+      }
+
+      // 3. Tapping background / song title expands fullscreen
+      openFullscreenPlayer();
+    });
   }
-});
+
+  // ==========================================
+  // ANDROID HARDWARE BACK BUTTON SUPPORT
+  // ==========================================
+  window.addEventListener('popstate', (e) => {
+    if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
+      switchView('home', false);
+    } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
+      goBack();
+    } else {
+      goBack();
+    }
+  });
+
   window.addEventListener('online', () => { if (currentUser) store.pushToCloud(); });
   window.addEventListener('offline', () => { if (currentUser) setSyncState('paused'); });
 
@@ -3363,9 +3439,9 @@ window.addEventListener('popstate', (e) => {
 
   function renderLiveFluidMesh(timestamp) {
     const isSheetOpen = $id('fullscreenPlayerOverlay')?.classList.contains('open');
-if ((!isSheetOpen && !isCinematicActive) || prefersReducedMotion || document.hidden) {
-  return requestAnimationFrame(renderLiveFluidMesh);
-}
+    if ((!isSheetOpen && !isCinematicActive) || prefersReducedMotion || document.hidden) {
+      return requestAnimationFrame(renderLiveFluidMesh);
+    }
 
     if (timestamp - lastFluidFrame < 33) {
       return requestAnimationFrame(renderLiveFluidMesh);
@@ -3392,7 +3468,7 @@ if ((!isSheetOpen && !isCinematicActive) || prefersReducedMotion || document.hid
       fCtx.fillRect(0, 0, w, h);
 
       const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
-      const cy2 = h * (0.65 + 0.2 * Math.sin(fluidTime * 0.7));
+      const cy2 = h * (0.55 + 0.25 * Math.sin(fluidTime * 0.7)); // Changed to 0.55 so gradient remains bounded
       const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
       g2.addColorStop(0, color2);
       g2.addColorStop(1, 'transparent');
