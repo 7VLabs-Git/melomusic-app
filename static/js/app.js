@@ -3177,7 +3177,20 @@ document.addEventListener('DOMContentLoaded', () => {
   initScrubberHandlers();
   initLyricsUserScroll();
   restorePlaybackSession();
-
+  
+  // ==========================================
+// ANDROID HARDWARE BACK BUTTON SUPPORT
+// ==========================================
+window.addEventListener('popstate', (e) => {
+  if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
+    switchView('home', false);
+  } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
+    goBack();
+  } else {
+    // Fallback to navigating history stack
+    goBack();
+  }
+});
   window.addEventListener('online', () => { if (currentUser) store.pushToCloud(); });
   window.addEventListener('offline', () => { if (currentUser) setSyncState('paused'); });
 
