@@ -929,10 +929,10 @@ footer.dock-player.active {
 .sheet-cover-container::before {
   content: "";
   position: absolute;
-  inset: -24px;
-  border-radius: 48px;
+  inset: -12px;
+  border-radius: 40px;
   background: radial-gradient(circle at center, var(--play-accent-color), var(--mesh-color-1), transparent 70%);
-  filter: blur(45px);
+  filter: blur(35px);
   z-index: 0;
   opacity: 0.85;
   transition: opacity 0.4s ease, transform 0.4s ease;
@@ -995,7 +995,8 @@ footer.dock-player.active {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 0;
+  padding: 6px 14px;
+  box-sizing: border-box;
   user-select: none;
 }
 
@@ -1100,19 +1101,24 @@ footer.dock-player.active {
   width: 72px;
   height: 72px;
   border-radius: 50%;
-  background: var(--play-accent-color, #ffffff);
+  background: #ffffff !important;
   color: #000;
   border: none;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.85), 0 0 35px var(--play-accent-color);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 30px rgba(255, 255, 255, 0.2);
   transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.3s ease;
 }
-@media (hover: hover) { .sheet-play-large:hover { transform: scale(1.06); box-shadow: 0 14px 42px rgba(0, 0, 0, 0.95), 0 0 45px var(--play-accent-color); } }
+@media (hover: hover) { 
+  .sheet-play-large:hover { 
+    transform: scale(1.06); 
+    box-shadow: 0 14px 42px rgba(0, 0, 0, 0.7), 0 0 35px rgba(255, 255, 255, 0.3); 
+  } 
+}
 .sheet-play-large:active { transform: scale(0.94); }
-.sheet-play-large svg { width: 28px; height: 28px; fill: #000; }
+.sheet-play-large svg { width: 28px; height: 28px; fill: #000000 !important; }
 
 .loop-badge-tag {
   position: absolute;
@@ -1260,7 +1266,6 @@ footer.dock-player.active {
   font-size: 0.95rem;
   transition: all 0.15s ease;
 }
-/* Removed red hover background so it's not sticky on mobile */
 @media (hover: hover) { .queue-action-btn:hover { color: #fff; transform: scale(1.1); } }
 
 /* Hard-Lock Cinematic Overlay to Hidden */
