@@ -997,6 +997,21 @@ window.openFullscreenPlayer = function () {
   overlay.style.transform = 'translate3d(0, 0, 0)';
   overlay.classList.add('open');
   syncSheetTrackInfo();
+  
+  // Update scrubber canvas dimensions for fullscreen
+  setTimeout(() => {
+    const scrubberWaveCanvas = document.getElementById('scrubberWaveCanvas');
+    const scrubberTrackBase = document.getElementById('scrubberTrackBase');
+    if (scrubberWaveCanvas && scrubberTrackBase) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = scrubberTrackBase.offsetWidth;
+      const h = scrubberWaveCanvas.offsetHeight || 14;
+      scrubberWaveCanvas.width = w * dpr;
+      scrubberWaveCanvas.height = h * dpr;
+      const ctx = scrubberWaveCanvas.getContext('2d');
+      if (ctx) ctx.scale(dpr, dpr);
+    }
+  }, 100);
 };
 
 window.closeFullscreenPlayer = function () {
@@ -2109,12 +2124,60 @@ async function fetchLyrics(track, token) {
         }
         container.appendChild(div);
       });
+      
+      // Start lyrics sync loop
+      if (isSynced && parsedLyrics.length > 0) {
+        updateLyricsSync();
+      }
     }
   } catch (err) {
     if (token === activePlayToken && container) {
       container.innerHTML = `<div class="lyrics-line">Lyrics unavailable.</div>`;
     }
   }
+}
+
+// Sync lyrics with playback
+function updateLyricsSync() {
+  if (!isSynced || !parsedLyrics || parsedLyrics.length === 0) {
+    requestAnimationFrame(updateLyricsSync);
+    return;
+  }
+
+  const audio = document.getElementById('audio');
+  if (!audio || isNaN(audio.duration)) {
+    requestAnimationFrame(updateLyricsSync);
+    return;
+  }
+
+  const currentTime = audio.currentTime;
+  const container = document.getElementById('sheetViewLyrics');
+  if (!container) {
+    requestAnimationFrame(updateLyricsSync);
+    return;
+  }
+
+  // Find the active lyrics line based on current time
+  let activeIndex = -1;
+  for (let i = parsedLyrics.length - 1; i >= 0; i--) {
+    if (parsedLyrics[i].time <= currentTime) {
+      activeIndex = i;
+      break;
+    }
+  }
+
+  // Update all lyrics lines
+  const lines = container.querySelectorAll('.lyrics-line');
+  lines.forEach((line, idx) => {
+    line.classList.remove('active');
+    if (idx === activeIndex) {
+      line.classList.add('active');
+      // Scroll active line into view
+      line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+
+  requestAnimationFrame(updateLyricsSync);
 }
 
 // ====================================================
@@ -2213,6 +2276,12 @@ function renderHomeView() {
         <div class="capsule-grid" id="forYouGrid" style="margin-bottom:0;"></div>
       </div>
 
+      <div class="section-heading" id="playlistsShelf">
+        <h2>Your Playlists</h2>
+        <a onclick="actionOpenAddToPlaylist(null)">+ Create</a>
+      </div>
+      <div class="capsule-grid" id="homePlaylistsGrid"></div>
+
       <div class="section-heading" id="trendingShelf">
         <h2>Trending Across India</h2>
         <a onclick="loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid')">Refresh</a>
@@ -2231,10 +2300,35 @@ function renderHomeView() {
   `;
 
   loadForYouCatalog('Acoustic Bollywood Indie Hits');
+  renderHomePagePlaylists();
   window.loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
   window.loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
   window.loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
   window.loadShelfCategory('Indian Indie Songs', 'indieGrid');
+}
+
+function renderHomePagePlaylists() {
+  const plGrid = document.getElementById('homePlaylistsGrid');
+  if (!plGrid) return;
+
+  const userPlaylists = Object.values(playlists).filter(p => p.id !== 'pl-favorites' && p.id !== 'pl-downloads');
+  
+  plGrid.innerHTML = '';
+  if (userPlaylists.length === 0) {
+    plGrid.innerHTML = `<p style="color:var(--text-dim);font-size:0.85rem;grid-column:1/-1;">No playlists yet. Tap "+ Create" to make your first one!</p>`;
+  } else {
+    userPlaylists.forEach(pl => {
+      const item = document.createElement('div');
+      item.className = 'poster-item';
+      item.onclick = () => openPlaylistDetails(pl.id);
+      item.innerHTML = `
+        <div class="poster-wrap">${renderPlaylistCoverHTML(pl)}</div>
+        <div class="poster-title">${pl.name}</div>
+        <div class="poster-subtitle">${pl.tracks.length} tracks</div>
+      `;
+      plGrid.appendChild(item);
+    });
+  }
 }
 
 async function loadForYouCatalog(query = 'Acoustic Bollywood Indie Hits') {
@@ -3072,6 +3166,34 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setTimeout(renderScrubberLiveWave, 80);
 
+  // Update scrubber UI based on audio progress
+  function updateScrubberUI() {
+    if (audio && audio.duration && !isNaN(audio.duration)) {
+      const progress = audio.currentTime / audio.duration;
+      const percent = Math.max(0, Math.min(100, progress * 100));
+
+      // Update dock scrubber input
+      if (dockScrubber) dockScrubber.value = percent;
+
+      // Update played zone width
+      if (scrubberPlayedZone) scrubberPlayedZone.style.width = percent + '%';
+
+      // Update thumb indicator position
+      if (scrubberThumbIndicator && scrubberTrackBase) {
+        const thumbX = (scrubberTrackBase.offsetWidth * progress) - 6; // 6 is half the thumb width
+        scrubberThumbIndicator.style.left = Math.max(0, thumbX) + 'px';
+      }
+
+      // Update time labels
+      if (timeCurrent) timeCurrent.innerText = fmtTime(audio.currentTime);
+      if (timeDuration) timeDuration.innerText = fmtTime(audio.duration);
+      if (sheetTimeCur) sheetTimeCur.innerText = fmtTime(audio.currentTime);
+      if (sheetTimeDur) sheetTimeDur.innerText = fmtTime(audio.duration);
+    }
+    requestAnimationFrame(updateScrubberUI);
+  }
+  setTimeout(updateScrubberUI, 100);
+
   if (scrubberTrackBase && audio) {
     scrubberTrackBase.addEventListener('click', (e) => {
       if (!audio.duration) return;
@@ -3136,4 +3258,9 @@ document.addEventListener('DOMContentLoaded', () => {
     requestAnimationFrame(renderLiveFluidMesh);
   }
   renderLiveFluidMesh();
+
+  // ==========================================
+  // 9. INITIALIZE DEFAULT VIEW
+  // ==========================================
+  window.switchView('home');
 });

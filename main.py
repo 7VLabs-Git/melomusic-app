@@ -48,7 +48,7 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 class User(Base):
     __tablename__ = "users"
@@ -276,31 +276,47 @@ def apply_library_mutation(snapshot: Dict[str, Any], operation: str, payload: Di
 
 @app.post("/api/auth/register")
 def register_user(user: UserCreate, response: Response, db=Depends(get_db)):
-    if db.query(User).filter(User.email == user.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed_password = pwd_context.hash(user.password)
-    new_user = User(email=user.email, password_hash=hashed_password, display_name=user.display_name)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    db.add(UserLibrary(user_id=new_user.id))
-    
-    session = UserSession(user_id=new_user.id, expires_at=datetime.utcnow() + timedelta(days=30))
-    db.add(session)
-    db.commit()
-    
-    is_secure = os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER") is not None
-    response.set_cookie(
-        key="melo_session",
-        value=session.id,
-        httponly=True,
-        samesite="lax",
-        secure=is_secure,
-        max_age=30 * 86400
-    )
-    return {"id": new_user.id, "email": new_user.email, "display_name": new_user.display_name}
+    try:
+        if db.query(User).filter(User.email == user.email).first():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        hashed_password = pwd_context.hash(user.password)
+        new_user = User(email=user.email, password_hash=hashed_password, display_name=user.display_name)
+        db.add(new_user)
+        db.flush()
+        
+        db.add(UserLibrary(
+            user_id=new_user.id,
+            favorites_json="{}",
+            playlists_json="{}",
+            history_json="[]",
+            search_history_json="[]",
+            preferences_json="{}",
+            revision=0
+        ))
+        db.flush()
+        
+        session = UserSession(user_id=new_user.id, expires_at=datetime.utcnow() + timedelta(days=30))
+        db.add(session)
+        db.commit()
+        
+        is_secure = os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER") is not None
+        response.set_cookie(
+            key="melo_session",
+            value=session.id,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=30 * 86400
+        )
+        return {"id": new_user.id, "email": new_user.email, "display_name": new_user.display_name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Registration error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/login")
 def login_user(user: UserLogin, response: Response, db=Depends(get_db)):
@@ -427,7 +443,15 @@ def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(
 
     library = db.query(UserLibrary).filter(UserLibrary.user_id == user.id).first()
     if not library:
-        library = UserLibrary(user_id=user.id)
+        library = UserLibrary(
+            user_id=user.id,
+            favorites_json="{}",
+            playlists_json="{}",
+            history_json="[]",
+            search_history_json="[]",
+            preferences_json="{}",
+            revision=0
+        )
         db.add(library)
         db.flush()
 
