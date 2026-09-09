@@ -290,6 +290,7 @@ let isSynced = false;
 let activeView = 'home';
 let navigationHistory = ['home'];
 let isShuffle = false;
+let isCinematicActive = false;
 let repeatMode = 'none';
 let sleepTimerTimeout = null;
 let sleepTimerEndsAt = 0;
@@ -439,9 +440,14 @@ function recordSuccessfulSync(state) {
 
 setInterval(() => { fetch('/api/ping').catch(() => {}); }, 10 * 60 * 1000);
 
+// ==========================================
+// ROBUST MELO CONFIRMATION MODAL SYSTEM
+// ==========================================
 function showMeloConfirmation({ title, message, actionLabel = 'Confirm', danger = false, action }) {
   meloConfirmationAction = action;
   let modal = $id('meloConfirmModal');
+  
+  // If the modal markup doesn't exist in index.html, inject it dynamically
   if (!modal) {
     modal = document.createElement('div');
     modal.id = 'meloConfirmModal';
@@ -451,21 +457,28 @@ function showMeloConfirmation({ title, message, actionLabel = 'Confirm', danger 
       <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align:center;">
         <div class="drag-handle" onclick="closeMeloConfirmation()"></div>
         <h2 style="font-size:1.3rem;font-weight:800;margin-bottom:8px;" id="meloConfirmTitle"></h2>
-        <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:20px;" id="meloConfirmMsg"></p>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:20px;" id="meloConfirmMessage"></p>
         <div style="display:flex;gap:10px;">
           <button class="filter-chip" onclick="closeMeloConfirmation()" style="flex:1;padding:12px;">Cancel</button>
-          <button class="pill-action-btn" id="meloConfirmBtn" onclick="confirmMeloAction()" style="flex:1;justify-content:center;padding:12px;"></button>
+          <button class="pill-action-btn" id="meloConfirmButton" onclick="confirmMeloAction()" style="flex:1;justify-content:center;padding:12px;"></button>
         </div>
       </div>
     `;
     document.body.appendChild(modal);
   }
-  $id('meloConfirmTitle').innerText = title;
-  $id('meloConfirmMsg').innerText = message;
-  const btn = $id('meloConfirmBtn');
-  btn.innerText = actionLabel;
-  btn.style.background = danger ? '#fa2d48' : '#ffffff';
-  btn.style.color = danger ? '#ffffff' : '#000000';
+
+  const titleEl = $id('meloConfirmTitle');
+  const msgEl = $id('meloConfirmMessage');
+  const btn = $id('meloConfirmButton');
+
+  if (titleEl) titleEl.innerText = title;
+  if (msgEl) msgEl.innerText = message;
+  if (btn) {
+    btn.innerText = actionLabel;
+    btn.style.background = danger ? '#fa2d48' : '#ffffff';
+    btn.style.color = danger ? '#ffffff' : '#000000';
+  }
+  
   modal.classList.add('open');
 }
 
@@ -477,8 +490,9 @@ function closeMeloConfirmation(e) {
 }
 
 function confirmMeloAction() {
-  if (typeof meloConfirmationAction === 'function') meloConfirmationAction();
+  const act = meloConfirmationAction;
   closeMeloConfirmation();
+  if (typeof act === 'function') act();
 }
 
 // ==========================================
@@ -707,7 +721,7 @@ async function playIndex(idx) {
   store.saveQueue({ tracks: playlist, currentIndex, context: currentPlaylistContextId });
 
   if ($id('dockTitle')) $id('dockTitle').innerText = track.title;
-  if ($id('dockArtist')) $id('dockArtist').innerText = track.artist;
+  if ($id('dockArtist')) $id('dockArtist').innerText = ''; // Hide artist name in mini player as requested
   if ($id('dockThumb')) $id('dockThumb').src = track.thumbnail || '';
 
   syncSheetTrackInfo();
@@ -767,6 +781,12 @@ function setPlayState(playing) {
 
   $id('dockPlayerBar')?.classList.toggle('is-playing', playing);
   $id('sheetCoverBox')?.classList.toggle('is-playing', playing);
+
+  // Show/hide mini wave canvas based on playing state
+  const mwc = $id('miniWaveCanvas');
+  if (mwc) {
+    mwc.style.opacity = playing ? '1' : '0';
+  }
 }
 
 function togglePlay() {
@@ -1035,8 +1055,7 @@ async function fetchLyrics(track, token) {
 function updateLyricsSync() {
   if (!isSynced || !parsedLyrics || !parsedLyrics.length) return;
   const audio = $id('audio');
-  const container = $id('sheetViewLyrics');
-  if (!audio || !container || isNaN(audio.currentTime)) return;
+  if (!audio || isNaN(audio.currentTime)) return;
 
   const curTime = audio.currentTime;
   let activeIndex = -1;
@@ -1049,24 +1068,44 @@ function updateLyricsSync() {
 
   if (activeIndex !== lastActiveLyricIdx && activeIndex >= 0) {
     lastActiveLyricIdx = activeIndex;
-    const lines = container.querySelectorAll('.lyrics-line');
-    lines.forEach((line, idx) => {
-      if (idx === activeIndex) {
-        line.classList.add('active');
-        if (!isUserScrollingLyrics) {
-          const targetY = line.offsetTop - (container.clientHeight / 2) + (line.clientHeight / 2);
-          container.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+
+    // A. Update Regular Player Sheet Lyrics
+    const container = $id('sheetViewLyrics');
+    if (container) {
+      const lines = container.querySelectorAll('.lyrics-line');
+      lines.forEach((line, idx) => {
+        if (idx === activeIndex) {
+          line.classList.add('active');
+          if (!isUserScrollingLyrics) {
+            const targetY = line.offsetTop - (container.clientHeight / 2) + (line.clientHeight / 2);
+            container.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+          }
+        } else {
+          line.classList.remove('active');
         }
-      } else {
-        line.classList.remove('active');
-      }
-    });
+      });
+    }
+
+    // B. Update Cinematic View Lyrics
+    const cineContainer = $id('cinematicLyricsScroll');
+    if (cineContainer) {
+      const cineLines = cineContainer.querySelectorAll('.cinematic-lyrics-line');
+      cineLines.forEach((line, idx) => {
+        if (idx === activeIndex) {
+          line.classList.add('active');
+          if (!isUserScrollingLyrics) {
+            const targetY = line.offsetTop - (cineContainer.clientHeight / 2) + (line.clientHeight / 2);
+            cineContainer.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+          }
+        } else {
+          line.classList.remove('active');
+        }
+      });
+    }
   }
 }
 
 function initLyricsUserScroll() {
-  const container = $id('sheetViewLyrics');
-  if (!container) return;
   const markUserScroll = () => {
     isUserScrollingLyrics = true;
     clearTimeout(lyricsScrollResumeTimer);
@@ -1075,8 +1114,18 @@ function initLyricsUserScroll() {
       updateLyricsSync();
     }, 4000);
   };
-  container.addEventListener('wheel', markUserScroll, { passive: true });
-  container.addEventListener('touchmove', markUserScroll, { passive: true });
+
+  const container = $id('sheetViewLyrics');
+  if (container) {
+    container.addEventListener('wheel', markUserScroll, { passive: true });
+    container.addEventListener('touchmove', markUserScroll, { passive: true });
+  }
+
+  const cineContainer = $id('cinematicLyricsScroll');
+  if (cineContainer) {
+    cineContainer.addEventListener('wheel', markUserScroll, { passive: true });
+    cineContainer.addEventListener('touchmove', markUserScroll, { passive: true });
+  }
 }
 
 // ==========================================
@@ -2309,7 +2358,11 @@ function closeContextMenu() { $id('contextModal')?.classList.remove('open'); }
 async function actionDownloadSong() {
   const track = contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
   if (!track) return;
-  if (downloadedTrackIds.has(String(track.id))) { showToast('Available offline'); closeContextMenu(); return; }
+  if (downloadedTrackIds.has(String(track.id))) {
+    showToast('Available offline');
+    closeContextMenu();
+    return;
+  }
   const dlRow = $id('ctxDownloadRow');
   if (dlRow) {
     dlRow.innerHTML = `<svg class="download-spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="32" stroke-dashoffset="12" stroke-linecap="round"></circle></svg><span>Downloading Track...</span>`;
@@ -2334,15 +2387,10 @@ async function actionDownloadSong() {
       }
     }
     const blob = chunks.length ? new Blob(chunks, { type: 'audio/mp4' }) : await resp.blob();
+    // Save cleanly to IndexedDB and update player state without triggering browser external file downloads
     await saveTrackToOfflineDB(track, blob);
     await syncDownloadedPlaylist();
-    const objectUrl = URL.createObjectURL(blob), anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = `${track.title} - ${track.artist}.m4a`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    showToast(`Offline track saved!`);
+    showToast(`"${track.title}" saved offline!`);
   } catch (err) {
     showToast("Download failed. Check network.");
   } finally {
@@ -2716,10 +2764,12 @@ function executeDeleteAccount() {
           await store.switchProfile(null);
           updateAccountUI();
           switchView('home');
-          showToast("Account deleted.");
+          showToast("Account deleted successfully.");
+        } else {
+          showToast("Failed to delete account.");
         }
       } catch (e) {
-        showToast("Failed to delete account.");
+        showToast("Network error while deleting account.");
       }
     }
   });
@@ -3041,9 +3091,82 @@ window.executeDeleteAccount = executeDeleteAccount;
 window.closeMigrationModal = closeMigrationModal;
 window.executeLocalToCloudMigration = executeLocalToCloudMigration;
 
+function updateCinematicInfo() {
+  if (currentIndex === -1 || !playlist[currentIndex]) return;
+  const track = playlist[currentIndex];
+  if ($id('cinematicTitle')) $id('cinematicTitle').innerText = track.title;
+  if ($id('cinematicArtist')) $id('cinematicArtist').innerText = track.artist;
+  if ($id('cinematicArtImg')) $id('cinematicArtImg').src = track.thumbnail || '';
+}
+
+function renderCinematicLyrics() {
+  const container = $id('cinematicLyricsScroll');
+  if (!container) return;
+  if (!parsedLyrics || !parsedLyrics.length) {
+    container.innerHTML = `<div class="cinematic-lyrics-line" style="opacity:0.4; cursor:default; font-size:1.8rem;">Lyrics aren’t available.</div>`;
+    return;
+  }
+  container.innerHTML = '';
+  parsedLyrics.forEach((l) => {
+    const div = document.createElement('div');
+    div.className = 'cinematic-lyrics-line';
+    div.innerText = l.text;
+    if (isSynced && typeof l.time === 'number') {
+      div.onclick = () => {
+        const audio = $id('audio');
+        if (audio) {
+          audio.currentTime = l.time;
+          updateLyricsSync();
+        }
+      };
+    }
+    container.appendChild(div);
+  });
+}
+
+async function actionOpenCinematicMode() {
+  closeContextMenu();
+  closeFullscreenPlayer();
+  const overlay = $id('cinematicOverlay');
+  if (!overlay) return;
+
+  isCinematicActive = true;
+  overlay.classList.add('open');
+  updateCinematicInfo();
+  renderCinematicLyrics();
+
+  // Request fullscreen and attempt orientation lock
+  try {
+    if (document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen().catch(() => {});
+    }
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock('landscape').catch(() => {});
+    }
+  } catch (err) {}
+}
+
+async function closeCinematicMode() {
+  const overlay = $id('cinematicOverlay');
+  if (!overlay) return;
+  isCinematicActive = false;
+  overlay.classList.remove('open');
+
+  try {
+    if (screen.orientation && screen.orientation.unlock) {
+      screen.orientation.unlock();
+    }
+    if (document.exitFullscreen && document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+    }
+  } catch (err) {}
+}
 // ==========================================
 // 17. RUNTIME INITIALIZATION & CANVAS RENDERERS
 // ==========================================
+window.actionOpenCinematicMode = actionOpenCinematicMode;
+window.closeCinematicMode = closeCinematicMode;
+
 document.addEventListener('DOMContentLoaded', () => {
   const audio = $id('audio');
   const mwc = $id('miniWaveCanvas');
@@ -3092,24 +3215,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     audio.addEventListener('error', () => {
-      showToast("Stream loading error. Skipping to next track...");
+      showToast("Stream loading error. Skipping forward...");
       setTimeout(() => nextTrack(), 1500);
     });
   }
 
-  // =========================================================
-  // MINI PLAYER MULTI-THREAD LUMINOUS TIDAL WAVE (3 THREADS)
-  // =========================================================
+  // Mini-player tidal wave visualizer
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const miniCtx = mwc ? mwc.getContext('2d') : null;
   let wavePhase = 0, colorShift = 0, currentAmplitude = 1.0;
 
   function resizeMiniWave() {
     if (!mwc || !miniCtx) return;
     const dpr = window.devicePixelRatio || 1;
-    const w = mwc.offsetWidth;
-    const h = mwc.offsetHeight;
-    mwc.width = w * dpr;
-    mwc.height = h * dpr;
+    mwc.width = mwc.offsetWidth * dpr;
+    mwc.height = mwc.offsetHeight * dpr;
     miniCtx.setTransform(1, 0, 0, 1, 0, 0);
     miniCtx.scale(dpr, dpr);
   }
@@ -3175,9 +3295,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setTimeout(() => { resizeMiniWave(); renderTidalLightWave(); }, 60);
 
-  // =========================================================
-  // LIVE SCRUBBER WAVEFORM
-  // =========================================================
+  // Scrubber live wave
   const scrubberWaveCtx = swc ? swc.getContext('2d') : null;
   let scrubberWavePhase = 0;
 
@@ -3215,11 +3333,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setTimeout(renderScrubberLiveWave, 80);
 
-  // =========================================================
-  // FULL SCREEN LIVE FLUID BLOB MESH BACKGROUND (Throttled 30FPS)
-  // =========================================================
-  const fluidCanvases = [$id('fluidMeshCanvas')];
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Fluid blob mesh background
+  const fluidCanvases = [$id('fluidMeshCanvas'), $id('cinematicMeshCanvas')];
   let fluidTime = 0;
   let lastFluidFrame = 0;
 
@@ -3235,11 +3350,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderLiveFluidMesh(timestamp) {
     const isSheetOpen = $id('fullscreenPlayerOverlay')?.classList.contains('open');
-    if (!isSheetOpen || prefersReducedMotion || document.hidden) {
-      return requestAnimationFrame(renderLiveFluidMesh);
-    }
+if ((!isSheetOpen && !isCinematicActive) || prefersReducedMotion || document.hidden) {
+  return requestAnimationFrame(renderLiveFluidMesh);
+}
 
-    // Frame-skipping throttle: run only once every 33ms (~30 FPS) for battery optimization
     if (timestamp - lastFluidFrame < 33) {
       return requestAnimationFrame(renderLiveFluidMesh);
     }
@@ -3253,8 +3367,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fluidCanvases.forEach(canv => {
       if (!canv) return;
       const fCtx = canv.getContext('2d');
-      const w = canv.width;
-      const h = canv.height;
+      const w = canv.width, h = canv.height;
       fCtx.clearRect(0, 0, w, h);
 
       const cx1 = w * (0.35 + 0.25 * Math.sin(fluidTime));
@@ -3278,6 +3391,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   requestAnimationFrame(renderLiveFluidMesh);
 
-  // Initialize Home View
+  // Initialize Home View cleanly
   switchView('home', false);
 });

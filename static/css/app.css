@@ -132,7 +132,7 @@ main.main-viewport {
   overflow-y: auto;
   overflow-x: hidden;
   padding-bottom: 32px;
-  position: relative;
+  position: relative; /* Essential for anchoring the top glow */
   scroll-behavior: smooth;
   transform: translate3d(0, 0, 0);
   width: 100%;
@@ -292,6 +292,8 @@ main.main-viewport {
   min-width: 0;
 }
 .poster-item:hover { transform: translateY(-4px); }
+
+/* UNCROPPED FULL PLAYLIST COVERS */
 .poster-wrap {
   position: relative;
   width: 100%;
@@ -302,15 +304,44 @@ main.main-viewport {
   background: #141418;
   box-shadow: 0 6px 18px rgba(0,0,0,0.5);
   border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.poster-img {
+.poster-img,
+.pl-cover-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.poster-item:hover .poster-img { transform: scale(1.05); }
+.poster-item:hover .poster-img,
+.poster-item:hover .pl-cover-img { transform: scale(1.05); }
+
+.pl-collage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1 / 1;
+}
+.pl-collage-grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.pl-empty-cover {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.2rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .play-bubble {
   position: absolute;
   bottom: 8px;
@@ -545,7 +576,7 @@ main.main-viewport {
 .hub-vault-count { font-size: 0.78rem; color: var(--text-muted); margin-top: 3px; }
 
 /* ====================================================
-   MASSIVE IMMERSIVE PLAYLIST WITH COLOR FADE TO SONG LIST
+   IMMERSIVE PLAYLIST WITH COLOR FADE TO SONG LIST
    ==================================================== */
 .playlist-immersive-view {
   position: relative;
@@ -654,18 +685,22 @@ main.main-viewport {
 
 /* Dock Mini-Player */
 footer.dock-player {
-  grid-column: 1 / -1;
+  width: 85%;
+  max-width: 900px;
+  margin: 0 auto 16px auto;
+  border-radius: 16px;
   background: rgba(14, 16, 22, 0.94);
   backdrop-filter: blur(40px) saturate(200%);
   -webkit-backdrop-filter: blur(40px) saturate(200%);
-  border-top: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
   display: grid;
-  grid-template-columns: 280px 1fr 240px;
+  grid-template-columns: minmax(120px, 150px) minmax(180px, 1fr) minmax(100px, 140px);
   align-items: center;
-  padding: 0 24px;
+  padding: 0 12px;
   z-index: 100;
   position: relative;
   overflow: hidden;
+  cursor: pointer;
 
   opacity: 0;
   pointer-events: none;
@@ -697,10 +732,10 @@ footer.dock-player.active {
   overflow: hidden;
 }
 .dock-thumb {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   aspect-ratio: 1 / 1;
-  border-radius: 10px;
+  border-radius: 8px;
   object-fit: cover;
   background: #18181f;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
@@ -1268,20 +1303,146 @@ footer.dock-player.active {
 }
 @media (hover: hover) { .queue-action-btn:hover { color: #fff; transform: scale(1.1); } }
 
-/* Hard-Lock Cinematic Overlay to Hidden */
-#cinematicOverlay,
+/* ====================================================
+   CINEMATIC AMBIENT VIEW & LANDSCAPE ROTATION
+   ==================================================== */
 .cinematic-overlay {
   position: fixed;
   inset: 0;
-  background: #000000;
-  z-index: 500;
-  display: none !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
-  opacity: 0;
+  background: #050508;
+  z-index: 600;
+  display: none;
   flex-direction: column;
-  padding: 24px 40px;
+  padding: 24px 36px;
   overflow: hidden;
+  transition: opacity 0.35s ease;
+  opacity: 0;
+}
+
+.cinematic-overlay.open {
+  display: flex !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+.cinematic-top-row {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.cinematic-subtle-cross {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-glow);
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+}
+.cinematic-subtle-cross:active { transform: scale(0.9); }
+
+.cinematic-stage-layout {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  align-items: center;
+  height: 100%;
+  gap: 48px;
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.cinematic-left-art {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+}
+
+.cinematic-art-halo {
+  position: absolute;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--mesh-color-1), var(--mesh-color-2), transparent 70%);
+  filter: blur(40px);
+  z-index: 0;
+  animation: haloPulse 6s ease-in-out infinite alternate;
+}
+@keyframes haloPulse {
+  0% { transform: scale(0.95); opacity: 0.7; }
+  100% { transform: scale(1.15); opacity: 1; }
+}
+
+.cinematic-art-img {
+  position: relative;
+  z-index: 1;
+  width: 260px;
+  height: 260px;
+  border-radius: 24px;
+  object-fit: cover;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9);
+}
+
+.cinematic-meta-box {
+  margin-top: 18px;
+  position: relative;
+  z-index: 1;
+  max-width: 280px;
+}
+.cinematic-track-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cinematic-track-artist {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cinematic-right-lyrics {
+  height: 80%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 40px 16px;
+  scrollbar-width: none;
+}
+.cinematic-right-lyrics::-webkit-scrollbar { display: none; }
+
+.cinematic-lyrics-line {
+  font-size: 2.2rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.22);
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cinematic-lyrics-line.active {
+  color: #ffffff;
+  transform: scale(1.05);
+  transform-origin: left;
+  text-shadow: 0 4px 30px rgba(255, 255, 255, 0.6);
 }
 
 /* Modals */
@@ -1370,18 +1531,8 @@ footer.dock-player.active {
   padding: 16px;
 }
 
-/* ====================================================
-   MELO ACCOUNT
-   ==================================================== */
-.account-stage {
-  max-width: 700px;
-  padding-bottom: 140px;
-}
-.account-stage .top-action-bar h1 {
-  font-size: 1.45rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
+/* Account Views */
+.account-stage { max-width: 700px; padding-bottom: 140px; }
 .account-profile-card {
   display: flex;
   align-items: center;
@@ -1456,16 +1607,12 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 }
 .account-password-panel .pill-action-btn { width: 100%; justify-content: center; }
 
-/* ====================================================
-   PHASE 2 · PERSONAL LIBRARY
-   ==================================================== */
+/* Library & Search Elements */
 .library-stage { max-width: 1120px; padding-bottom: 150px; }
-.library-stage .top-action-bar h1 { font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em; }
 .library-hub-grid .hub-vault-card { border: 0; text-align: left; font: inherit; color: inherit; }
 .library-badge-loved { background: linear-gradient(135deg, #fa2d48, #e11d48); font-size: 1.7rem; }
 .library-badge-history { background: linear-gradient(135deg, #8b5cf6, #4f46e5); font-size: 1.5rem; }
 .library-badge-download { background: linear-gradient(135deg, #0284c7, #2563eb); font-size: 1.7rem; }
-.library-badge-playlist { background: linear-gradient(135deg, #db2777, #9333ea); font-size: 1.5rem; }
 .library-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .library-toolbar .themed-pl-input { margin: 0; flex: 1; }
 .library-toolbar .capsule-select { max-width: 170px; }
@@ -1475,10 +1622,6 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 .library-empty .pill-action-btn { margin-top: 8px; }
 .library-empty.compact { padding: 28px; }
 .library-track-row { position: relative; }
-.library-more-btn { border: 0; background: transparent; color: var(--text-muted); min-width: 34px; min-height: 34px; border-radius: 50%; font-size: 1.2rem; cursor: pointer; }
-.library-more-btn:hover { background: rgba(255,255,255,.08); color: #fff; }
-.history-heading { margin-top: 24px; }
-.playlist-library-card { border: 0; color: inherit; text-align: left; font: inherit; background: transparent; cursor: pointer; }
 .playlist-drag-handle, .queue-drag { color: var(--text-dim); cursor: grab; margin-right: 4px; font-size: 1.05rem; }
 .playlist-track-row[draggable="true"] { cursor: grab; }
 .offline-storage-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 18px; border: 1px solid rgba(37,99,235,.32); border-radius: 18px; background: linear-gradient(135deg, rgba(37,99,235,.15), rgba(124,58,237,.1)); }
@@ -1496,6 +1639,7 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 .queue-clear-btn { border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: .76rem; cursor: pointer; }
 .queue-empty-state { padding: 20px 8px; color: var(--text-dim); font-size: .84rem; }
 .queue-draggable { gap: 8px; }
+
 .sync-card {
   display: flex;
   align-items: center;
@@ -1514,19 +1658,6 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 .account-sync-button { flex: 0 0 auto; padding: 8px 14px; font-size: 0.8rem; }
 .account-sync-button:disabled { opacity: 0.65; cursor: wait; }
 @keyframes accountSpin { to { transform: rotate(360deg); } }
-@media (max-width: 520px) {
-  .account-profile-card { padding: 18px; }
-  .account-avatar { width: 56px; height: 56px; flex-basis: 56px; }
-  .sync-card { align-items: flex-start; flex-direction: column; }
-  .account-sync-button { width: 100%; justify-content: center; }
-  .account-password-panel { padding-left: 16px; }
-  .library-toolbar { flex-wrap: wrap; }
-  .library-toolbar .themed-pl-input { flex-basis: 100%; }
-  .library-toolbar .capsule-select { flex: 1; max-width: none; }
-  .library-toolbar .pill-action-btn, .library-toolbar .filter-chip { padding: 8px 10px; font-size: .75rem; }
-  .offline-storage-card { align-items: flex-start; flex-direction: column; }
-  .offline-clear-btn { margin-left: 0; margin-top: 4px; }
-}
 
 .themed-pl-input {
   width: 100%;
@@ -1564,39 +1695,6 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
   background-position: center;
   margin: 0 auto 8px;
 }
-
-/* Toast Capsule */
-.melo-toast {
-  position: fixed;
-  top: 24px;
-  left: 50%;
-  transform: translate3d(-50%, -60px, 0);
-  background: rgba(18, 20, 26, 0.96);
-  backdrop-filter: blur(25px);
-  -webkit-backdrop-filter: blur(25px);
-  border: 1px solid var(--border-glow);
-  color: #fff;
-  padding: 10px 22px;
-  border-radius: 9999px;
-  font-size: 0.88rem;
-  font-weight: 700;
-  z-index: 2000;
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-}
-.melo-toast.show { transform: translate3d(-50%, 0, 0); opacity: 1; }
-
-.download-spinner {
-  width: 20px;
-  height: 20px;
-  stroke: #fff;
-  stroke-width: 2.5;
-  fill: none;
-  animation: spin-loader 0.8s linear infinite;
-}
-@keyframes spin-loader { 100% { transform: rotate(360deg); } }
 
 /* Mobile Nav & Responsiveness */
 .mobile-nav-container {
@@ -1783,9 +1881,98 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
     padding: 16px 14px 0;
   }
 
-  /* Music Hub Mobile */
   .hub-vault-grid {
     grid-template-columns: 1fr;
     gap: 12px;
   }
+
+  /* Cinematic view adjustments on mobile */
+  .cinematic-stage-layout {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .cinematic-art-img {
+    width: 180px;
+    height: 180px;
+  }
+  .cinematic-lyrics-line {
+    font-size: 1.4rem;
+  }
+}
+
+.melo-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translate3d(-50%, -60px, 0);
+  background: rgba(18, 20, 26, 0.96);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border: 1px solid var(--border-glow);
+  color: #fff;
+  padding: 10px 22px;
+  border-radius: 9999px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  z-index: 9999; /* Ensures it floats cleanly above all content */
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  max-width: 90vw;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.melo-toast.show {
+  transform: translate3d(-50%, 0, 0);
+  opacity: 1;
+}
+
+/* Subtle Top Red Ambient Glow */
+.main-viewport::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100vw;
+  max-width: 900px;
+  height: 280px;
+  background: radial-gradient(ellipse at top, rgba(250, 45, 72, 0.18) 0%, rgba(250, 45, 72, 0.04) 45%, transparent 75%);
+  pointer-events: none;
+  z-index: 1;
+  filter: blur(20px);
+  will-change: opacity;
+}
+
+/* Make the entire dock player footer clickable for fullscreen, excluding active interactive buttons */
+footer.dock-player {
+  cursor: pointer;
+}
+
+/* Prevent controls inside the dock from triggering fullscreen when clicked */
+footer.dock-player .player-center,
+footer.dock-player .player-tools,
+footer.dock-player button,
+footer.dock-player input {
+  cursor: default;
+}
+
+/* Hide artist name text container inside dock metadata */
+.dock-artist {
+  display: none !important;
+}
+
+/* Control mini wave visibility smoothly */
+.miniplayer-canvas-waveform {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+footer.dock-player.is-playing .miniplayer-canvas-waveform {
+  opacity: 1;
 }

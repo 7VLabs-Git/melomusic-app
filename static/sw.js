@@ -1,4 +1,4 @@
-const CACHE_NAME = 'melo-cache-v4';
+const CACHE_NAME = 'melo-cache-v6';
 
 // Only precache files guaranteed to exist
 const PRECACHE_ASSETS = [
