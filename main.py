@@ -5,8 +5,11 @@ import json
 import base64
 import asyncio
 import urllib.parse
+import uuid
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Request, Query, Response
+
+from fastapi import FastAPI, HTTPException, Request, Query, Response, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +19,12 @@ from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
 from ytmusicapi import YTMusic
 
-app = FastAPI(title="MELO Hybrid Engine", version="9.4.0")
+from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from passlib.context import CryptContext
+
+app = FastAPI(title="MELO Hybrid Engine", version="10.2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +34,462 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory caches
+# ==========================================
+# 1. DATABASE & AUTHENTICATION SETUP
+# ==========================================
+raw_db_url = os.getenv("DATABASE_URL", "sqlite:///./melo_cloud.db")
+if raw_db_url.startswith("postgres://"):
+    raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(
+    raw_db_url,
+    connect_args={"check_same_thread": False} if "sqlite" in raw_db_url else {},
+    pool_pre_ping=True
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, index=True)
+    password_hash = Column(String)
+    display_name = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class UserSession(Base):
+    __tablename__ = "sessions"
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, index=True)
+    expires_at = Column(DateTime)
+
+class UserLibrary(Base):
+    __tablename__ = "user_libraries"
+    user_id = Column(String, primary_key=True, index=True)
+    favorites_json = Column(Text, default="{}")
+    playlists_json = Column(Text, default="{}")
+    history_json = Column(Text, default="[]")
+    search_history_json = Column(Text, default="[]")
+    preferences_json = Column(Text, default="{}")
+    revision = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class LibraryMutation(Base):
+    __tablename__ = "library_mutations"
+    id = Column(String, primary_key=True)
+    user_id = Column(String, index=True, nullable=False)
+    revision = Column(Integer, index=True, nullable=False)
+    operation = Column(String, nullable=False)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+Base.metadata.create_all(bind=engine)
+
+# create_all intentionally does not alter existing databases. Keep upgrades local,
+# additive, and safe for the SQLite database used in development.
+if "sqlite" in raw_db_url:
+    with engine.begin() as connection:
+        existing_columns = {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info(user_libraries)")
+        }
+        for column_name, definition in {
+            "search_history_json": "TEXT DEFAULT '[]'",
+            "preferences_json": "TEXT DEFAULT '{}'",
+            "revision": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if column_name not in existing_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE user_libraries ADD COLUMN {column_name} {definition}"
+                )
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def get_current_user(request: Request, db):
+    session_id = request.cookies.get("melo_session")
+    if not session_id:
+        return None
+    session = db.query(UserSession).filter(UserSession.id == session_id).first()
+    if not session or session.expires_at < datetime.utcnow():
+        return None
+    return db.query(User).filter(User.id == session.user_id).first()
+
+# ==========================================
+# 2. AUTHENTICATION & SYNC APIS
+# ==========================================
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    display_name: str
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+class SyncPayload(BaseModel):
+    favorites: Dict[str, Any]
+    playlists: Dict[str, Any]
+    history: List[str]
+
+class LibraryMutationPayload(BaseModel):
+    id: str
+    operation: str
+    payload: Dict[str, Any] = {}
+
+class DeltaSyncPayload(BaseModel):
+    base_revision: int = 0
+    mutations: List[LibraryMutationPayload] = []
+
+def json_value(raw: Optional[str], fallback):
+    try:
+        value = json.loads(raw or "")
+        return value if isinstance(value, type(fallback)) else fallback
+    except Exception:
+        return fallback
+
+def library_snapshot(lib: UserLibrary) -> Dict[str, Any]:
+    return {
+        "favorites": json_value(lib.favorites_json, {}),
+        "playlists": json_value(lib.playlists_json, {}),
+        "history": json_value(lib.history_json, []),
+        "search_history": json_value(lib.search_history_json, []),
+        "preferences": json_value(lib.preferences_json, {}),
+        "revision": lib.revision or 0,
+    }
+
+def save_library_snapshot(lib: UserLibrary, snapshot: Dict[str, Any]):
+    lib.favorites_json = json.dumps(snapshot["favorites"])
+    lib.playlists_json = json.dumps(snapshot["playlists"])
+    lib.history_json = json.dumps(snapshot["history"])
+    lib.search_history_json = json.dumps(snapshot["search_history"])
+    lib.preferences_json = json.dumps(snapshot["preferences"])
+    lib.updated_at = datetime.utcnow()
+
+def unique_tracks(tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    result = []
+    for track in tracks:
+        track_id = str(track.get("id", ""))
+        if track_id and track_id not in seen:
+            seen.add(track_id)
+            result.append(track)
+    return result
+
+def apply_library_mutation(snapshot: Dict[str, Any], operation: str, payload: Dict[str, Any]):
+    """Apply a small, idempotent client change while preserving remote additions."""
+    favorites = snapshot["favorites"]
+    playlists = snapshot["playlists"]
+    history = snapshot["history"]
+
+    if operation == "favorite":
+        track = payload.get("track") or {}
+        track_id = str(track.get("id", payload.get("track_id", "")))
+        if payload.get("loved", True) and track_id:
+            favorites[track_id] = track
+        elif track_id:
+            favorites.pop(track_id, None)
+
+    elif operation == "playlist_upsert":
+        incoming = payload.get("playlist") or {}
+        playlist_id = str(incoming.get("id", ""))
+        if playlist_id:
+            existing = playlists.get(playlist_id, {})
+            merged = {**existing, **{k: v for k, v in incoming.items() if k != "tracks"}}
+            old_tracks = existing.get("tracks", [])
+            new_tracks = incoming.get("tracks", [])
+            # An upsert does not discard tracks created by another device.
+            merged["tracks"] = unique_tracks(old_tracks + new_tracks)
+            playlists[playlist_id] = merged
+
+    elif operation == "playlist_delete":
+        playlists.pop(str(payload.get("playlist_id", "")), None)
+
+    elif operation == "playlist_track_add":
+        playlist = playlists.get(str(payload.get("playlist_id", "")))
+        track = payload.get("track") or {}
+        if playlist and track.get("id"):
+            playlist["tracks"] = unique_tracks(playlist.get("tracks", []) + [track])
+            playlist["updated_at"] = payload.get("updated_at") or datetime.utcnow().isoformat()
+
+    elif operation == "playlist_track_remove":
+        playlist = playlists.get(str(payload.get("playlist_id", "")))
+        track_id = str(payload.get("track_id", ""))
+        if playlist and track_id:
+            playlist["tracks"] = [t for t in playlist.get("tracks", []) if str(t.get("id")) != track_id]
+            playlist["updated_at"] = payload.get("updated_at") or datetime.utcnow().isoformat()
+
+    elif operation == "playlist_track_order":
+        playlist = playlists.get(str(payload.get("playlist_id", "")))
+        order = [str(track_id) for track_id in payload.get("track_ids", [])]
+        if playlist and order:
+            tracks = playlist.get("tracks", [])
+            by_id = {str(track.get("id")): track for track in tracks}
+            ordered = [by_id[track_id] for track_id in order if track_id in by_id]
+            # Tracks added remotely after this device went offline are retained at the end.
+            playlist["tracks"] = unique_tracks(ordered + tracks)
+            playlist["updated_at"] = payload.get("updated_at") or datetime.utcnow().isoformat()
+
+    elif operation == "playlist_order":
+        order = [str(playlist_id) for playlist_id in payload.get("playlist_ids", [])]
+        ordered = {playlist_id: playlists[playlist_id] for playlist_id in order if playlist_id in playlists}
+        # Preserve system playlists and newly-created remote playlists not known to this client.
+        for playlist_id, playlist in playlists.items():
+            if playlist_id not in ordered:
+                ordered[playlist_id] = playlist
+        snapshot["playlists"] = ordered
+
+    elif operation == "history_add":
+        entry = payload.get("entry") or {}
+        if entry.get("id") and not any(item.get("id") == entry["id"] for item in history if isinstance(item, dict)):
+            history.append(entry)
+            snapshot["history"] = history[-100:]
+
+    elif operation == "history_remove":
+        entry_id = str(payload.get("entry_id", ""))
+        snapshot["history"] = [entry for entry in history if not isinstance(entry, dict) or entry.get("id") != entry_id]
+
+    elif operation == "search_history":
+        query = str(payload.get("query", "")).strip()
+        current = snapshot["search_history"]
+        if query:
+            current = [item for item in current if str(item.get("query", "")).lower() != query.lower()]
+            snapshot["search_history"] = ([{"query": query, "searched_at": payload.get("searched_at") or datetime.utcnow().isoformat()}] + current)[:12]
+
+    elif operation == "search_history_remove":
+        query = str(payload.get("query", "")).lower()
+        snapshot["search_history"] = [item for item in snapshot["search_history"] if str(item.get("query", "")).lower() != query]
+
+    elif operation == "search_history_clear":
+        snapshot["search_history"] = []
+
+    elif operation == "preferences":
+        snapshot["preferences"].update(payload.get("values") or {})
+
+@app.post("/api/auth/register")
+def register_user(user: UserCreate, response: Response, db=Depends(get_db)):
+    if db.query(User).filter(User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = pwd_context.hash(user.password)
+    new_user = User(email=user.email, password_hash=hashed_password, display_name=user.display_name)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    db.add(UserLibrary(user_id=new_user.id))
+    
+    session = UserSession(user_id=new_user.id, expires_at=datetime.utcnow() + timedelta(days=30))
+    db.add(session)
+    db.commit()
+    
+    is_secure = os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER") is not None
+    response.set_cookie(
+        key="melo_session",
+        value=session.id,
+        httponly=True,
+        samesite="lax",
+        secure=is_secure,
+        max_age=30 * 86400
+    )
+    return {"id": new_user.id, "email": new_user.email, "display_name": new_user.display_name}
+
+@app.post("/api/auth/login")
+def login_user(user: UserLogin, response: Response, db=Depends(get_db)):
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if not db_user or not pwd_context.verify(user.password, db_user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+        
+    session = UserSession(user_id=db_user.id, expires_at=datetime.utcnow() + timedelta(days=30))
+    db.add(session)
+    db.commit()
+    
+    is_secure = os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER") is not None
+    response.set_cookie(
+        key="melo_session",
+        value=session.id,
+        httponly=True,
+        samesite="lax",
+        secure=is_secure,
+        max_age=30 * 86400
+    )
+    return {"id": db_user.id, "email": db_user.email, "display_name": db_user.display_name}
+
+@app.get("/api/auth/me")
+def get_me(request: Request, db=Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"id": user.id, "email": user.email, "display_name": user.display_name}
+
+@app.post("/api/auth/change-password")
+def change_password(req: ChangePasswordRequest, request: Request, db=Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    if not pwd_context.verify(req.old_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password incorrect")
+    
+    user.password_hash = pwd_context.hash(req.new_password)
+    db.commit()
+    return {"success": True, "message": "Password updated successfully"}
+
+@app.post("/api/auth/delete-account")
+def delete_account(request: Request, response: Response, db=Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
+    db.query(LibraryMutation).filter(LibraryMutation.user_id == user.id).delete()
+    db.query(UserLibrary).filter(UserLibrary.user_id == user.id).delete()
+    db.query(User).filter(User.id == user.id).delete()
+    db.commit()
+    
+    response.delete_cookie("melo_session")
+    return {"success": True, "message": "Account deleted successfully"}
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response, db=Depends(get_db)):
+    session_id = request.cookies.get("melo_session")
+    if session_id:
+        db.query(UserSession).filter(UserSession.id == session_id).delete()
+        db.commit()
+    response.delete_cookie("melo_session")
+    return {"success": True}
+
+@app.get("/api/auth/sync")
+def get_sync(request: Request, db=Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    lib = db.query(UserLibrary).filter(UserLibrary.user_id == user.id).first()
+    if not lib:
+        return {"favorites": {}, "playlists": {}, "history": []}
+        
+    try:
+        favs = json.loads(lib.favorites_json)
+    except Exception:
+        favs = {}
+    try:
+        pls = json.loads(lib.playlists_json)
+    except Exception:
+        pls = {}
+    try:
+        hist = json.loads(lib.history_json)
+    except Exception:
+        hist = []
+
+    return {
+        "favorites": favs,
+        "playlists": pls,
+        "history": hist
+    }
+
+@app.post("/api/auth/sync")
+def post_sync(payload: SyncPayload, request: Request, db=Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+        
+    lib = db.query(UserLibrary).filter(UserLibrary.user_id == user.id).first()
+    if not lib:
+        lib = UserLibrary(user_id=user.id)
+        db.add(lib)
+        
+    lib.favorites_json = json.dumps(payload.favorites)
+    lib.playlists_json = json.dumps(payload.playlists)
+    lib.history_json = json.dumps(payload.history)
+    lib.updated_at = datetime.utcnow()
+    db.commit()
+    return {"success": True}
+
+@app.post("/api/auth/library/sync")
+def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(get_db)):
+    """Synchronize only queued library mutations for the authenticated account.
+
+    Mutation ids make retries safe. The server stores a revisioned mutation log so
+    another device can fetch just the changes it has not seen yet.
+    """
+    user = get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    library = db.query(UserLibrary).filter(UserLibrary.user_id == user.id).first()
+    if not library:
+        library = UserLibrary(user_id=user.id)
+        db.add(library)
+        db.flush()
+
+    snapshot = library_snapshot(library)
+    acknowledged_ids = []
+    processed_ids = set()
+    for mutation in payload.mutations[:100]:
+        if not mutation.id or len(mutation.id) > 128:
+            continue
+        if mutation.id in processed_ids:
+            acknowledged_ids.append(mutation.id)
+            continue
+        existing = db.query(LibraryMutation).filter(
+            LibraryMutation.id == mutation.id,
+            LibraryMutation.user_id == user.id,
+        ).first()
+        if existing:
+            acknowledged_ids.append(mutation.id)
+            continue
+
+        apply_library_mutation(snapshot, mutation.operation, mutation.payload)
+        library.revision = (library.revision or 0) + 1
+        db.add(LibraryMutation(
+            id=mutation.id,
+            user_id=user.id,
+            revision=library.revision,
+            operation=mutation.operation,
+            payload_json=json.dumps(mutation.payload),
+        ))
+        processed_ids.add(mutation.id)
+        acknowledged_ids.append(mutation.id)
+
+    save_library_snapshot(library, snapshot)
+    db.flush()
+
+    changes = db.query(LibraryMutation).filter(
+        LibraryMutation.user_id == user.id,
+        LibraryMutation.revision > max(0, payload.base_revision),
+    ).order_by(LibraryMutation.revision.asc()).limit(200).all()
+
+    # A new browser has no mutation log yet. One initial snapshot seeds its cache;
+    # later requests are strictly delta based.
+    include_snapshot = payload.base_revision == 0
+    db.commit()
+    return {
+        "revision": library.revision or 0,
+        "acknowledged_ids": acknowledged_ids,
+        "changes": [
+            {
+                "id": change.id,
+                "revision": change.revision,
+                "operation": change.operation,
+                "payload": json_value(change.payload_json, {}),
+            }
+            for change in changes
+        ],
+        "snapshot": library_snapshot(library) if include_snapshot else None,
+    }
+
+# ==========================================
+# 3. STREAMING, RECOMMENDATIONS & LYRICS
+# ==========================================
 stream_cache = TTLCache(maxsize=15000, ttl=86400)
 search_cache = TTLCache(maxsize=1500, ttl=3600)
 lyrics_cache = TTLCache(maxsize=1500, ttl=86400)
@@ -50,7 +513,6 @@ class ImportRequest(BaseModel):
     url: str
 
 async def keep_alive_task():
-    """Pings the external Render URL every 13 minutes to prevent sleep."""
     await asyncio.sleep(30)
     while True:
         render_url = os.getenv("RENDER_EXTERNAL_URL")
@@ -94,11 +556,9 @@ def decrypt_saavn_url(enc_str: str) -> str:
         missing_padding = len(clean_enc) % 4
         if missing_padding:
             clean_enc += "=" * (4 - missing_padding)
-
         raw_bytes = base64.b64decode(clean_enc)
         decrypted_bytes = DES_CIPHER.decrypt(raw_bytes)
         decrypted_str = decrypted_bytes.decode("utf-8", errors="ignore").strip()
-
         url = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', decrypted_str)
         if url.startswith("http"):
             return url
@@ -240,8 +700,8 @@ async def search_endpoint(query: str = Query(..., min_length=1)):
             payload = {"results": formatted}
             search_cache[q] = payload
             return payload
-    except Exception as e:
-        print(f"[SEARCH_ERROR] {e}")
+    except Exception:
+        pass
 
     return {"results": []}
 
@@ -280,8 +740,8 @@ async def get_recommendations(
                                 matched_tracks.append(saavn_match)
                             if len(matched_tracks) >= 20:
                                 break
-        except Exception as e:
-            print(f"[YTM_RADIO_FALLBACK] {e}")
+        except Exception:
+            pass
 
     if len(matched_tracks) < 10 and (artist or title):
         query_seed = f"{artist or ''} {title or ''}".strip()
@@ -308,7 +768,6 @@ async def import_playlist(req: ImportRequest):
     playlist_name = "Imported Playlist"
 
     try:
-        # Spotify Import via Embed Page extraction
         if "spotify.com" in url:
             match = re.search(r'spotify\.com/(?:intl-[a-z]+/)?(playlist|album|track)/([a-zA-Z0-9]+)', url)
             if match:
@@ -332,10 +791,9 @@ async def import_playlist(req: ImportRequest):
                                     matched = await search_single_saavn_track(f"{t_title} {t_subtitle}".strip())
                                     if matched and matched["id"] not in [x["id"] for x in imported_tracks]:
                                         imported_tracks.append(matched)
-                        except Exception as json_err:
-                            print(f"[SPOTIFY_JSON_ERR] {json_err}")
+                        except Exception:
+                            pass
 
-        # YouTube & YouTube Music Links
         elif "youtube.com" in url or "youtu.be" in url:
             parsed = urllib.parse.urlparse(url)
             query_params = urllib.parse.parse_qs(parsed.query)
@@ -359,10 +817,9 @@ async def import_playlist(req: ImportRequest):
                                 matched = await search_single_saavn_track(f"{t_name} {t_artist}".strip())
                                 if matched and matched["id"] not in [x["id"] for x in imported_tracks]:
                                     imported_tracks.append(matched)
-                    except Exception as ytm_err:
-                        print(f"[YTM_IMPORT_ERR] {ytm_err}")
+                    except Exception:
+                        pass
 
-        # Fallback keyword extraction
         if not imported_tracks:
             clean_seed = re.sub(r'https?://[^\s]+', '', url).strip()
             if clean_seed:
@@ -370,8 +827,8 @@ async def import_playlist(req: ImportRequest):
                 imported_tracks = res.get("results", [])[:20]
                 playlist_name = clean_seed.capitalize()
 
-    except Exception as e:
-        print(f"[IMPORT_ERROR] {e}")
+    except Exception:
+        pass
 
     if not imported_tracks:
         raise HTTPException(status_code=404, detail="Could not retrieve playable songs. Ensure the playlist is public.")
@@ -422,8 +879,8 @@ async def resolve_saavn_url(track_id: str) -> str:
                     if dec:
                         stream_cache[track_id] = dec
                         return dec
-    except Exception as e:
-        print(f"[RESOLVE_ERROR] {e}")
+    except Exception:
+        pass
 
     raise HTTPException(status_code=404, detail="Audio stream could not be resolved.")
 

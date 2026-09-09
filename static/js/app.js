@@ -1,15 +1,429 @@
 // ==========================================
-// 1. GLOBAL SCOPE, STATE & INDEXEDDB OFFLINE
+// 1. GLOBAL SCOPE & STORAGE ABSTRACTION
 // ==========================================
+class MeloStorage {
+  constructor() {
+    this.syncTimer = null;
+  }
+
+  getFavorites() { return JSON.parse(localStorage.getItem('melo_favorites') || '{}'); }
+  saveFavorites(favs) { 
+    localStorage.setItem('melo_favorites', JSON.stringify(favs));
+    this.scheduleSync();
+  }
+  
+  getPlaylists() { 
+    return JSON.parse(localStorage.getItem('melo_playlists') || '{"pl-favorites":{"id":"pl-favorites","name":"Favorites","tracks":[],"customCover":null},"pl-downloads":{"id":"pl-downloads","name":"Downloaded Songs","tracks":[],"customCover":null}}'); 
+  }
+  savePlaylists(pls) { 
+    localStorage.setItem('melo_playlists', JSON.stringify(pls)); 
+    this.scheduleSync();
+  }
+  
+  getHistory() { return JSON.parse(localStorage.getItem('melo_history') || '[]'); }
+  saveHistory(hist) { 
+    localStorage.setItem('melo_history', JSON.stringify(hist)); 
+    this.scheduleSync();
+  }
+  
+  getQuality() { return localStorage.getItem('melo_quality') || '320'; }
+  saveQuality(q) { localStorage.setItem('melo_quality', q); }
+
+  scheduleSync() {
+    if (!currentUser) return;
+    clearTimeout(this.syncTimer);
+    setSyncState('queued');
+    this.syncTimer = setTimeout(() => this.pushToCloud(), 2500);
+  }
+
+  async pushToCloud() {
+    if (!currentUser) return false;
+    setSyncState('syncing');
+    try {
+      const payload = {
+        favorites: this.getFavorites(),
+        playlists: this.getPlaylists(),
+        history: this.getHistory()
+      };
+      const res = await fetch('/api/auth/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`Sync failed (${res.status})`);
+      recordSuccessfulSync('saved');
+      if (activeView === 'account') window.renderAccountView();
+      return true;
+    } catch (e) {
+      setSyncState('paused');
+      if (activeView === 'account') window.renderAccountView();
+      return false;
+    }
+  }
+
+  async pullFromCloud() {
+    if (!currentUser) return false;
+    setSyncState('syncing');
+    try {
+      const res = await fetch('/api/auth/sync', { credentials: 'same-origin' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.favorites && Object.keys(data.favorites).length > 0) {
+          const localFavs = this.getFavorites();
+          Object.assign(localFavs, data.favorites);
+          localStorage.setItem('melo_favorites', JSON.stringify(localFavs));
+          favorites = localFavs;
+        }
+        if (data.playlists && Object.keys(data.playlists).length > 0) {
+          const localPls = this.getPlaylists();
+          for (const key in data.playlists) {
+            if (key !== 'pl-downloads') {
+              localPls[key] = data.playlists[key];
+            }
+          }
+          localStorage.setItem('melo_playlists', JSON.stringify(localPls));
+          playlists = localPls;
+        }
+        recordSuccessfulSync('synced');
+        showToast("Library Synced with Cloud ☁️");
+        if (activeView === 'favorites') renderFavoritesView();
+        if (activeView === 'account') window.renderAccountView();
+        return true;
+      }
+      throw new Error(`Sync failed (${res.status})`);
+    } catch (e) {
+      setSyncState('paused');
+      if (activeView === 'account') window.renderAccountView();
+      return false;
+    }
+  }
+}
+
+// Phase 2 data layer. UI code talks to this object instead of choosing between
+// localStorage, IndexedDB, and the cloud at each call site.
+class MeloDataLayer {
+  constructor() {
+    this.syncTimer = null;
+    this.syncing = false;
+    this.scope = 'guest';
+    this.state = this.readScope(this.scope);
+    this.lastPersisted = this.clone(this.state);
+    this.pending = this.readPending();
+  }
+
+  defaults() {
+    return {
+      favorites: {},
+      playlists: {
+        'pl-favorites': { id: 'pl-favorites', name: 'Loved Tracks', tracks: [], created_at: new Date().toISOString() },
+        'pl-downloads': { id: 'pl-downloads', name: 'Offline Vault', tracks: [], created_at: new Date().toISOString() }
+      },
+      history: [],
+      searchHistory: [],
+      preferences: { quality: '320' },
+      revision: 0,
+      queue: { tracks: [], currentIndex: -1, context: null }
+    };
+  }
+
+  clone(value) { return JSON.parse(JSON.stringify(value)); }
+  scopeKey() { return `melo_library_${this.scope}`; }
+  pendingKey() { return `melo_library_mutations_${this.scope}`; }
+
+  readScope(scope) {
+    const saved = localStorage.getItem(`melo_library_${scope}`);
+    if (saved) {
+      try { return this.normalize(JSON.parse(saved)); } catch (e) {}
+    }
+    const fresh = this.defaults();
+    // Preserve the original local library as the guest library once, rather
+    // than implicitly copying it into whichever account logs in first.
+    if (scope === 'guest') {
+      try {
+        fresh.favorites = JSON.parse(localStorage.getItem('melo_favorites') || '{}');
+        fresh.playlists = { ...fresh.playlists, ...JSON.parse(localStorage.getItem('melo_playlists') || '{}') };
+        fresh.history = JSON.parse(localStorage.getItem('melo_history') || '[]');
+        fresh.preferences.quality = localStorage.getItem('melo_quality') || '320';
+      } catch (e) {}
+    }
+    return this.normalize(fresh);
+  }
+
+  normalize(state) {
+    const defaults = this.defaults();
+    const normalized = { ...defaults, ...state };
+    normalized.favorites = normalized.favorites || {};
+    normalized.playlists = { ...defaults.playlists, ...(normalized.playlists || {}) };
+    normalized.history = Array.isArray(normalized.history) ? normalized.history : [];
+    normalized.searchHistory = Array.isArray(normalized.searchHistory) ? normalized.searchHistory : [];
+    normalized.preferences = { ...defaults.preferences, ...(normalized.preferences || {}) };
+    normalized.queue = { ...defaults.queue, ...(normalized.queue || {}) };
+    return normalized;
+  }
+
+  persist() {
+    localStorage.setItem(this.scopeKey(), JSON.stringify(this.state));
+    this.lastPersisted = this.clone(this.state);
+  }
+
+  readPending() {
+    try { return JSON.parse(localStorage.getItem(this.pendingKey()) || '[]'); } catch (e) { return []; }
+  }
+
+  persistPending() { localStorage.setItem(this.pendingKey(), JSON.stringify(this.pending)); }
+  id() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+
+  getFavorites() { return this.state.favorites; }
+  getPlaylists() { return this.state.playlists; }
+  getHistory() { return this.state.history; }
+  getSearchHistory() { return this.state.searchHistory; }
+  getQuality() { return this.state.preferences.quality || '320'; }
+
+  restoreGlobals() {
+    favorites = this.state.favorites;
+    playlists = this.state.playlists;
+    playHistory = this.state.history;
+    selectedQuality = this.getQuality();
+  }
+
+  async switchProfile(user) {
+    this.scope = user ? `account_${user.id}` : 'guest';
+    this.state = this.readScope(this.scope);
+    this.lastPersisted = this.clone(this.state);
+    this.pending = this.readPending();
+    this.restoreGlobals();
+    if (typeof currentIndex !== 'undefined' && currentIndex === -1 && this.state.queue.tracks.length) {
+      playlist = this.state.queue.tracks;
+      currentIndex = this.state.queue.currentIndex;
+      currentPlaylistContextId = this.state.queue.context;
+    }
+    if (user) await this.pullFromCloud();
+  }
+
+  enqueue(operation, payload) {
+    if (!currentUser) return;
+    this.pending.push({ id: this.id(), operation, payload });
+    this.persistPending();
+    this.scheduleSync();
+  }
+
+  saveFavorites(favs) {
+    const previous = this.lastPersisted.favorites || {};
+    this.state.favorites = favs;
+    Object.keys(favs).forEach((trackId) => {
+      if (JSON.stringify(previous[trackId]) !== JSON.stringify(favs[trackId])) {
+        this.enqueue('favorite', { track: favs[trackId], loved: true });
+      }
+    });
+    Object.keys(previous).forEach((trackId) => {
+      if (!favs[trackId]) this.enqueue('favorite', { track_id: trackId, loved: false });
+    });
+    this.persist();
+  }
+
+  savePlaylists(playlistsToSave) {
+    const previous = this.lastPersisted.playlists || {};
+    this.state.playlists = playlistsToSave;
+    Object.entries(playlistsToSave).forEach(([playlistId, playlistData]) => {
+      if (playlistId === 'pl-favorites' || playlistId === 'pl-downloads') return;
+      if (JSON.stringify(previous[playlistId]) !== JSON.stringify(playlistData)) {
+        const priorTracks = previous[playlistId]?.tracks || [];
+        const priorIds = new Set(priorTracks.map((track) => String(track.id)));
+        const nextTracks = playlistData.tracks || [];
+        const additions = nextTracks.filter((track) => !priorIds.has(String(track.id)));
+        // Metadata and new tracks are merged; removals and order are independent
+        // mutations so another device's additions are never overwritten.
+        this.enqueue('playlist_upsert', { playlist: { ...playlistData, tracks: additions } });
+        priorTracks.filter((track) => !nextTracks.some((next) => String(next.id) === String(track.id))).forEach((track) => {
+          this.enqueue('playlist_track_remove', { playlist_id: playlistId, track_id: track.id, updated_at: playlistData.updated_at });
+        });
+        const oldOrder = priorTracks.map((track) => String(track.id)).join('|');
+        const newOrder = nextTracks.map((track) => String(track.id)).join('|');
+        if (oldOrder !== newOrder && nextTracks.length) {
+          this.enqueue('playlist_track_order', { playlist_id: playlistId, track_ids: nextTracks.map((track) => String(track.id)), updated_at: playlistData.updated_at });
+        }
+      }
+    });
+    Object.keys(previous).forEach((playlistId) => {
+      if (!playlistsToSave[playlistId] && !['pl-favorites', 'pl-downloads'].includes(playlistId)) {
+        this.enqueue('playlist_delete', { playlist_id: playlistId });
+      }
+    });
+    this.persist();
+  }
+
+  saveHistory(history) {
+    this.state.history = history.slice(-100);
+    this.persist();
+  }
+
+  saveQuality(quality) {
+    this.state.preferences.quality = quality;
+    this.persist();
+    this.enqueue('preferences', { values: { quality } });
+  }
+
+  setFavorite(track, loved = !this.state.favorites[track.id]) {
+    if (loved) this.state.favorites[track.id] = { ...track, added_at: this.state.favorites[track.id]?.added_at || new Date().toISOString() };
+    else delete this.state.favorites[track.id];
+    this.persist();
+    this.enqueue('favorite', loved ? { track: this.state.favorites[track.id], loved: true } : { track_id: track.id, loved: false });
+  }
+
+  recordListening(track) {
+    const last = this.state.history[this.state.history.length - 1];
+    if (last && last.track && String(last.track.id) === String(track.id)) return;
+    const entry = { id: this.id(), track, played_at: new Date().toISOString() };
+    this.state.history = [...this.state.history, entry].slice(-100);
+    this.persist();
+    this.enqueue('history_add', { entry });
+  }
+
+  removeHistory(entryId) {
+    this.state.history = this.state.history.filter((entry) => entry.id !== entryId);
+    this.persist();
+    this.enqueue('history_remove', { entry_id: entryId });
+  }
+
+  rememberSearch(query) {
+    const clean = query.trim();
+    if (!clean) return;
+    this.state.searchHistory = [
+      { query: clean, searched_at: new Date().toISOString() },
+      ...this.state.searchHistory.filter((item) => item.query.toLowerCase() !== clean.toLowerCase())
+    ].slice(0, 12);
+    this.persist();
+    this.enqueue('search_history', { query: clean, searched_at: new Date().toISOString() });
+  }
+
+  removeSearch(query) {
+    this.state.searchHistory = this.state.searchHistory.filter((item) => item.query !== query);
+    this.persist();
+    this.enqueue('search_history_remove', { query });
+  }
+
+  clearSearches() {
+    this.state.searchHistory = [];
+    this.persist();
+    this.enqueue('search_history_clear', {});
+  }
+
+  saveQueue(queue) {
+    this.state.queue = queue;
+    this.persist();
+  }
+
+  scheduleSync() {
+    if (!currentUser) return;
+    clearTimeout(this.syncTimer);
+    setSyncState('queued');
+    this.syncTimer = setTimeout(() => this.pushToCloud(), 1200);
+  }
+
+  applyMutation(operation, payload) {
+    const playlists = this.state.playlists;
+    if (operation === 'favorite') {
+      const track = payload.track || {};
+      const id = String(track.id || payload.track_id || '');
+      if (payload.loved !== false && id) this.state.favorites[id] = track;
+      else delete this.state.favorites[id];
+    } else if (operation === 'playlist_upsert' && payload.playlist?.id) {
+      const incoming = payload.playlist;
+      const old = playlists[incoming.id] || {};
+      const tracks = [...(old.tracks || []), ...(incoming.tracks || [])];
+      const seen = new Set();
+      playlists[incoming.id] = { ...old, ...incoming, tracks: tracks.filter((track) => track.id && !seen.has(String(track.id)) && seen.add(String(track.id))) };
+    } else if (operation === 'playlist_delete') {
+      delete playlists[payload.playlist_id];
+    } else if (operation === 'playlist_track_add' && playlists[payload.playlist_id]) {
+      const tracks = playlists[payload.playlist_id].tracks || [];
+      if (!tracks.some((track) => String(track.id) === String(payload.track?.id))) tracks.push(payload.track);
+    } else if (operation === 'playlist_track_remove' && playlists[payload.playlist_id]) {
+      playlists[payload.playlist_id].tracks = (playlists[payload.playlist_id].tracks || []).filter((track) => String(track.id) !== String(payload.track_id));
+    } else if (operation === 'playlist_track_order' && playlists[payload.playlist_id]) {
+      const tracks = playlists[payload.playlist_id].tracks || [];
+      const byId = Object.fromEntries(tracks.map((track) => [String(track.id), track]));
+      const ordered = (payload.track_ids || []).map((id) => byId[String(id)]).filter(Boolean);
+      playlists[payload.playlist_id].tracks = [...ordered, ...tracks.filter((track) => !payload.track_ids.includes(String(track.id)))];
+    } else if (operation === 'history_add' && payload.entry?.id) {
+      if (!this.state.history.some((entry) => entry.id === payload.entry.id)) this.state.history.push(payload.entry);
+      this.state.history = this.state.history.slice(-100);
+    } else if (operation === 'history_remove') {
+      this.state.history = this.state.history.filter((entry) => entry.id !== payload.entry_id);
+    } else if (operation === 'search_history') {
+      this.state.searchHistory = [{ query: payload.query, searched_at: payload.searched_at }, ...this.state.searchHistory.filter((item) => item.query.toLowerCase() !== payload.query.toLowerCase())].slice(0, 12);
+    } else if (operation === 'search_history_remove') {
+      this.state.searchHistory = this.state.searchHistory.filter((item) => item.query !== payload.query);
+    } else if (operation === 'search_history_clear') {
+      this.state.searchHistory = [];
+    } else if (operation === 'preferences') {
+      Object.assign(this.state.preferences, payload.values || {});
+    }
+  }
+
+  applySnapshot(snapshot) {
+    const downloaded = this.state.playlists['pl-downloads'];
+    this.state = this.normalize({
+      ...this.state,
+      favorites: snapshot.favorites || {},
+      playlists: { ...(snapshot.playlists || {}), ...(downloaded ? { 'pl-downloads': downloaded } : {}) },
+      history: snapshot.history || [],
+      searchHistory: snapshot.search_history || [],
+      preferences: { ...this.state.preferences, ...(snapshot.preferences || {}) },
+      revision: snapshot.revision || 0
+    });
+  }
+
+  async pushToCloud() {
+    if (!currentUser || this.syncing) return false;
+    if (navigator.onLine === false) { setSyncState('paused'); return false; }
+    this.syncing = true;
+    setSyncState('syncing');
+    try {
+      const sent = this.pending.slice(0, 100);
+      const res = await fetch('/api/auth/library/sync', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base_revision: this.state.revision || 0, mutations: sent })
+      });
+      if (!res.ok) throw new Error(`Sync failed (${res.status})`);
+      const data = await res.json();
+      if (data.snapshot && (this.state.revision || 0) === 0) this.applySnapshot(data.snapshot);
+      const sentIds = new Set(data.acknowledged_ids || []);
+      this.pending = this.pending.filter((mutation) => !sentIds.has(mutation.id));
+      (data.changes || []).forEach((change) => {
+        if (!sentIds.has(change.id)) this.applyMutation(change.operation, change.payload || {});
+      });
+      this.state.revision = data.revision || this.state.revision;
+      this.persist();
+      this.persistPending();
+      this.restoreGlobals();
+      recordSuccessfulSync('saved');
+      return true;
+    } catch (error) {
+      setSyncState('paused');
+      return false;
+    } finally {
+      this.syncing = false;
+      if (activeView === 'account') window.renderAccountView();
+    }
+  }
+
+  async pullFromCloud() { return this.pushToCloud(); }
+}
+
+const store = new MeloDataLayer();
 
 let playlist = [];
 let forYouTracks = [];
 let categoryData = {};
 let currentIndex = -1;
-let currentPlaylistContextId = null; // Strictly locks queue when playing custom playlists
-let favorites = JSON.parse(localStorage.getItem('melo_favorites') || '{}');
-let playlists = JSON.parse(localStorage.getItem('melo_playlists') || '{"pl-favorites":{"id":"pl-favorites","name":"Favorites","tracks":[],"customCover":null}}');
-let playHistory = JSON.parse(localStorage.getItem('melo_history') || '[]');
+let currentPlaylistContextId = null; 
+let favorites = store.getFavorites();
+let playlists = store.getPlaylists();
+let playHistory = store.getHistory();
+let selectedQuality = store.getQuality();
+
 let parsedLyrics = [];
 let isSynced = false;
 let activeView = 'home';
@@ -19,7 +433,6 @@ let repeatMode = 'none';
 let sleepTimerId = null;
 let currentPrimaryHex = '#fa2d48';
 let activePlayToken = 0;
-let selectedQuality = localStorage.getItem('melo_quality') || '320';
 let currentVibe = 'Flow';
 let pendingTrackForPlaylist = null;
 let newPlaylistTempCover = null;
@@ -27,14 +440,40 @@ let currentEditingPlId = null;
 let editPlTempCover = null;
 let isFetchingInfiniteQueue = false;
 let isRemoveSongsMode = false;
-let downloadedTrackIds = new Set(); // Globally tracks offline songs
+let downloadedTrackIds = new Set();
+let currentUser = null;
+let lastSyncedAt = null;
+let syncState = 'idle';
+let listeningCandidate = null;
+let contextTrack = null;
 
-// Keep Render.com active by pinging the backend periodically
-setInterval(() => {
-  fetch('/api/ping').catch(() => {});
-}, 10 * 60 * 1000);
+function syncTimestampKey() {
+  return currentUser ? `melo_last_synced_at_${currentUser.id}` : null;
+}
 
-// IndexedDB Helper for Storing Song Blobs
+function loadLastSyncedAt() {
+  const key = syncTimestampKey();
+  const value = key ? localStorage.getItem(key) : null;
+  const date = value ? new Date(value) : null;
+  lastSyncedAt = date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function setSyncState(state) {
+  syncState = state;
+  if (activeView === 'account') window.renderAccountView();
+}
+
+function recordSuccessfulSync(state) {
+  lastSyncedAt = new Date();
+  const key = syncTimestampKey();
+  if (key) localStorage.setItem(key, lastSyncedAt.toISOString());
+  syncState = state;
+}
+
+// Keep Render.com active
+setInterval(() => { fetch('/api/ping').catch(() => {}); }, 10 * 60 * 1000);
+
+// IndexedDB Helper
 const IDB_NAME = 'melo_offline_db';
 const IDB_STORE = 'downloaded_tracks';
 
@@ -56,8 +495,8 @@ async function saveTrackToOfflineDB(trackObj, blobData) {
   const db = await openMeloDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
-    const store = tx.objectStore(IDB_STORE);
-    store.put({
+    const dbStore = tx.objectStore(IDB_STORE);
+    dbStore.put({
       id: String(trackObj.id),
       metadata: trackObj,
       blob: blobData,
@@ -73,8 +512,8 @@ async function getTrackFromOfflineDB(trackId) {
     const db = await openMeloDB();
     return new Promise((resolve) => {
       const tx = db.transaction(IDB_STORE, 'readonly');
-      const store = tx.objectStore(IDB_STORE);
-      const req = store.get(String(trackId));
+      const dbStore = tx.objectStore(IDB_STORE);
+      const req = dbStore.get(String(trackId));
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
     });
@@ -87,27 +526,381 @@ async function syncDownloadedPlaylist() {
   try {
     const db = await openMeloDB();
     const tx = db.transaction(IDB_STORE, 'readonly');
-    const store = tx.objectStore(IDB_STORE);
-    const req = store.getAll();
+    const dbStore = tx.objectStore(IDB_STORE);
+    const req = dbStore.getAll();
     req.onsuccess = () => {
       const records = req.result || [];
       if (!playlists['pl-downloads']) {
-        playlists['pl-downloads'] = {
-          id: 'pl-downloads',
-          name: 'Downloaded Songs',
-          tracks: [],
-          customCover: null
-        };
+        playlists['pl-downloads'] = { id: 'pl-downloads', name: 'Downloaded Songs', tracks: [], customCover: null };
       }
       playlists['pl-downloads'].tracks = records.map(r => r.metadata);
       downloadedTrackIds = new Set(records.map(r => String(r.id)));
-      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      store.savePlaylists(playlists);
       if (activeView === 'favorites') renderFavoritesView();
     };
   } catch (e) {}
 }
 
-// Toast Utility
+// ==========================================
+// AUTHENTICATION & ACCOUNT UI
+// ==========================================
+let isRegisterMode = false;
+
+window.openAuthModal = function() {
+  window.closeSettingsModal();
+  document.getElementById('authModal')?.classList.add('open');
+};
+
+window.closeAuthModal = function(e) {
+  if (!e || e.target.id === 'authModal' || e.target.classList.contains('drag-handle')) {
+    document.getElementById('authModal')?.classList.remove('open');
+  }
+};
+
+window.toggleAuthMode = function() {
+  isRegisterMode = !isRegisterMode;
+  document.getElementById('authTitle').innerText = isRegisterMode ? 'Create Account' : 'Welcome to MELO';
+  document.getElementById('authSubtitle').innerText = isRegisterMode ? 'Join to sync your library anywhere.' : 'Sign in to sync your library across devices.';
+  document.getElementById('authName').style.display = isRegisterMode ? 'block' : 'none';
+  document.getElementById('authSubmitBtn').innerText = isRegisterMode ? 'Sign Up' : 'Log In';
+  document.getElementById('authToggleLink').innerText = isRegisterMode ? 'Already have an account? Log In' : "Don't have an account? Sign up";
+};
+
+window.handleAuthSubmit = async function() {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const name = document.getElementById('authName').value.trim();
+  const btn = document.getElementById('authSubmitBtn');
+  
+  if (!email || !password || (isRegisterMode && !name)) {
+    showToast("Please fill in all fields.");
+    return;
+  }
+  
+  btn.disabled = true;
+  btn.innerText = "Please wait...";
+  
+  const endpoint = isRegisterMode ? '/api/auth/register' : '/api/auth/login';
+  const payload = isRegisterMode ? { email, password, display_name: name } : { email, password };
+  
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    
+    if (res.ok) {
+      // Update immediately, then verify the HttpOnly session cookie was accepted.
+      currentUser = data;
+      await store.switchProfile(currentUser);
+      loadLastSyncedAt();
+      updateAccountUI();
+      showToast(isRegisterMode ? "Account created! Signed in." : "Logged in successfully!");
+      window.closeAuthModal();
+      await window.checkAuthStatus();
+      
+      const hasLocalFavorites = Object.keys(favorites).length > 0;
+      const hasLocalPlaylists = Object.keys(playlists).filter(k => k !== 'pl-downloads' && k !== 'pl-favorites').length > 0;
+      
+      if (hasLocalFavorites || hasLocalPlaylists) {
+        document.getElementById('migrationModal').classList.add('open');
+      } else {
+        await store.pullFromCloud();
+      }
+    } else {
+      showToast(data.detail || "Authentication failed.");
+    }
+  } catch (err) {
+    showToast("Network error. Please try again.");
+  } finally {
+    btn.disabled = false;
+    btn.innerText = isRegisterMode ? 'Sign Up' : 'Log In';
+  }
+};
+
+window.checkAuthStatus = async function() {
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    if (res.ok) {
+      currentUser = await res.json();
+      if (store.scope !== `account_${currentUser.id}`) await store.switchProfile(currentUser);
+      loadLastSyncedAt();
+      updateAccountUI();
+      return true;
+    } else {
+      currentUser = null;
+      updateAccountUI();
+      return false;
+    }
+  } catch (e) {
+    currentUser = null;
+    updateAccountUI();
+    return false;
+  }
+};
+
+function updateAccountUI() {
+  const btn = document.getElementById('navAccountBtn');
+  if (!btn) return;
+  if (currentUser) {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:#fff;stroke-width:2;"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>${currentUser.display_name}</span>`;
+    btn.onclick = () => window.openAccountView();
+  } else {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:#fff;stroke-width:2;"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg><span>Sign In</span>`;
+    btn.onclick = () => window.openAuthModal();
+  }
+}
+
+window.openAccountView = function () {
+  if (!currentUser) {
+    window.openAuthModal();
+    return;
+  }
+  window.switchView('account');
+};
+
+window.renderAccountView = function () {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer || !currentUser) return;
+
+  const syncTimeStr = lastSyncedAt 
+    ? `${Math.max(0, Math.round((Date.now() - lastSyncedAt.getTime()) / 60000))} min ago`
+    : 'Just now';
+
+  viewContainer.innerHTML = `
+    <div class="stage-content" style="max-width: 680px; margin: 0 auto; padding-bottom: 140px;">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1 style="font-size: 1.45rem; font-weight: 800; letter-spacing: -0.02em;">Account & Cloud Sync</h1>
+      </div>
+
+      <div class="hub-vault-card" style="margin-bottom: 24px; padding: 22px;">
+        <div class="hub-vault-badge" style="background: linear-gradient(135deg, var(--accent), #9333ea); width: 62px; height: 62px;">
+          <span style="font-size: 1.6rem; font-weight: 800; color: #fff;">${currentUser.display_name.charAt(0).toUpperCase()}</span>
+        </div>
+        <div style="flex: 1;">
+          <div style="font-size: 1.25rem; font-weight: 800; color: #fff;">${currentUser.display_name}</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">${currentUser.email}</div>
+          <span class="pl-meta-tag" style="margin-top: 8px; font-size: 0.65rem;">MELO Cloud Active</span>
+        </div>
+      </div>
+
+      <div class="section-heading"><h2>Cloud Sync Status</h2></div>
+      <div class="create-pl-drawer" style="margin-bottom: 26px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">☁️ Status: Synced</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 3px;">Last backed up: ${syncTimeStr}</div>
+        </div>
+        <button class="pill-action-btn" onclick="store.pushToCloud(); showToast('Syncing with Cloud...');" style="padding: 8px 18px; font-size: 0.82rem;">
+          Sync Now
+        </button>
+      </div>
+
+      <div class="section-heading"><h2>Security</h2></div>
+      <div class="create-pl-drawer" style="margin-bottom: 26px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="font-weight: 700; color: #fff; font-size: 0.9rem;">Change Password</div>
+        <input type="password" id="oldPassInput" class="themed-pl-input" placeholder="Current Password" />
+        <input type="password" id="newPassInput" class="themed-pl-input" placeholder="New Password" />
+        <button class="pill-action-btn" onclick="executeChangePassword()" style="width: 100%; justify-content: center; margin-top: 4px;">
+          Update Password
+        </button>
+      </div>
+
+      <div class="section-heading"><h2>Danger Zone</h2></div>
+      <div class="create-pl-drawer" style="border-color: rgba(250, 45, 72, 0.25);">
+        <button class="pill-action-btn" onclick="executeLogout()" style="width: 100%; justify-content: center; margin-bottom: 10px; background: rgba(255,255,255,0.08); color: #fff;">
+          Log Out
+        </button>
+        <button class="filter-chip" onclick="executeDeleteAccount()" style="width: 100%; text-align: center; color: #ff4d6d; border-color: rgba(250, 45, 72, 0.3);">
+          Delete MELO Account
+        </button>
+      </div>
+    </div>
+  `;
+};
+
+// Account view overrides: status is derived only from real sync requests.
+window.openAccountView = async function () {
+  if (!currentUser) await window.checkAuthStatus();
+  if (!currentUser) return window.openAuthModal();
+  window.switchView('account');
+};
+
+function accountText(value) {
+  const node = document.createElement('span');
+  node.textContent = value || '';
+  return node.innerHTML;
+}
+
+function lastSyncedLabel() {
+  if (!lastSyncedAt) return 'Last synced: not yet';
+  const minutes = Math.max(0, Math.floor((Date.now() - lastSyncedAt.getTime()) / 60000));
+  if (minutes === 0) return 'Last synced: just now';
+  return `Last synced: ${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+}
+
+function getSyncPresentation() {
+  const states = {
+    idle: { icon: '&#9729;', label: 'Ready to sync', detail: lastSyncedLabel() },
+    queued: { icon: '&#8635;', label: 'Sync queued', detail: 'Changes will be saved shortly.' },
+    syncing: { icon: '&#8635;', label: 'Syncing…', detail: 'Saving your library to MELO Cloud.' },
+    synced: { icon: '&#9729;', label: 'Synced', detail: lastSyncedLabel() },
+    saved: { icon: '&#10003;', label: 'Saved', detail: lastSyncedLabel() },
+    paused: { icon: '&#9888;', label: 'Sync paused', detail: 'Unable to reach MELO Cloud. Your local library is safe.' }
+  };
+  return states[syncState] || states.idle;
+}
+
+window.renderAccountView = function () {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer || !currentUser) return;
+
+  const name = accountText(currentUser.display_name);
+  const email = accountText(currentUser.email);
+  const initial = accountText((currentUser.display_name || currentUser.email || 'M').trim().charAt(0).toUpperCase());
+  const favoriteCount = Object.keys(favorites).length;
+  const historyCount = playHistory.length;
+  const playlistCount = Object.values(playlists).filter(p => p.id !== 'pl-favorites' && p.id !== 'pl-downloads').length;
+  const sync = getSyncPresentation();
+
+  viewContainer.innerHTML = `
+    <div class="stage-content account-stage">
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
+        <h1>MELO Account</h1>
+      </div>
+
+      <section class="account-profile-card">
+        <div class="account-avatar" aria-hidden="true">${initial}</div>
+        <div class="account-identity"><div class="account-name">${name}</div><div class="account-email">${email}</div></div>
+      </section>
+
+      <section class="account-section">
+        <div class="section-heading"><h2>Your Library</h2></div>
+        <div class="account-list">
+          <button class="account-row" onclick="switchView('favorites')"><span class="account-row-icon">&#9825;</span><span><strong>Favorites</strong><small>${favoriteCount} saved ${favoriteCount === 1 ? 'track' : 'tracks'}</small></span><span class="account-row-arrow">›</span></button>
+          <div class="account-row"><span class="account-row-icon">&#9719;</span><span><strong>Listening History</strong><small>${historyCount} ${historyCount === 1 ? 'play' : 'plays'} on this device</small></span></div>
+          <button class="account-row" onclick="switchView('favorites')"><span class="account-row-icon">&#9835;</span><span><strong>Playlists</strong><small>${playlistCount} ${playlistCount === 1 ? 'playlist' : 'playlists'}</small></span><span class="account-row-arrow">›</span></button>
+        </div>
+      </section>
+
+      <section class="account-section">
+        <div class="section-heading"><h2>Sync</h2></div>
+        <div class="sync-card sync-${syncState}">
+          <div class="sync-status"><span class="sync-icon">${sync.icon}</span><span><strong>${sync.label}</strong><small>${sync.detail}</small></span></div>
+          <button class="pill-action-btn account-sync-button" onclick="store.pushToCloud()" ${syncState === 'syncing' ? 'disabled' : ''}>${syncState === 'syncing' ? 'Syncing…' : 'Sync now'}</button>
+        </div>
+      </section>
+
+      <section class="account-section">
+        <div class="section-heading"><h2>Settings</h2></div>
+        <div class="account-list">
+          <button class="account-row" onclick="promptQualitySelection()"><span class="account-row-icon">&#9834;</span><span><strong>Streaming Quality</strong><small>${selectedQuality} kbps</small></span><span class="account-row-arrow">›</span></button>
+          <div class="account-row"><span class="account-row-icon">&#9654;</span><span><strong>Playback</strong><small>Controls are available in the player</small></span></div>
+          <button class="account-row" onclick="switchView('favorites')"><span class="account-row-icon">&#8595;</span><span><strong>Downloads</strong><small>Manage offline tracks in Music Hub</small></span><span class="account-row-arrow">›</span></button>
+          <div class="account-row"><span class="account-row-icon">&#9681;</span><span><strong>Appearance</strong><small>MELO dark theme</small></span></div>
+        </div>
+      </section>
+
+      <section class="account-section">
+        <div class="section-heading"><h2>Account</h2></div>
+        <div class="account-list">
+          <button class="account-row" onclick="togglePasswordPanel()"><span class="account-row-icon">&#128274;</span><span><strong>Change Password</strong><small>Update your account password</small></span><span class="account-row-arrow">›</span></button>
+          <div id="passwordPanel" class="account-password-panel" hidden><input type="password" id="oldPassInput" class="themed-pl-input" placeholder="Current password" autocomplete="current-password" /><input type="password" id="newPassInput" class="themed-pl-input" placeholder="New password" autocomplete="new-password" /><button class="pill-action-btn" onclick="executeChangePassword()">Update password</button></div>
+          <button class="account-row" onclick="executeLogout()"><span class="account-row-icon">&#8594;</span><span><strong>Log Out</strong><small>Sign out of this device</small></span><span class="account-row-arrow">›</span></button>
+          <button class="account-row account-row-danger" onclick="executeDeleteAccount()"><span class="account-row-icon">&#215;</span><span><strong>Delete Account</strong><small>Permanently remove cloud data</small></span><span class="account-row-arrow">›</span></button>
+        </div>
+      </section>
+    </div>
+  `;
+};
+
+window.togglePasswordPanel = function () {
+  const panel = document.getElementById('passwordPanel');
+  if (panel) panel.hidden = !panel.hidden;
+};
+
+window.executeChangePassword = async function () {
+  const old_password = document.getElementById('oldPassInput').value;
+  const new_password = document.getElementById('newPassInput').value;
+  if (!old_password || !new_password) {
+    showToast("Please fill both password fields.");
+    return;
+  }
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ old_password, new_password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast("Password updated successfully!");
+      document.getElementById('oldPassInput').value = '';
+      document.getElementById('newPassInput').value = '';
+    } else {
+      showToast(data.detail || "Failed to update password.");
+    }
+  } catch (err) {
+    showToast("Network error.");
+  }
+};
+
+window.executeLogout = async function () {
+  await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  currentUser = null;
+  await store.switchProfile(null);
+  updateAccountUI();
+  window.switchView('home');
+  showToast("Logged out.");
+};
+
+window.executeDeleteAccount = async function (confirmed = false) {
+  if (!confirmed) {
+    window.showMeloConfirmation({
+      title: 'Delete MELO Account?',
+      message: 'Your cloud library and account will be permanently removed. Offline downloads remain on this device.',
+      actionLabel: 'Delete account', danger: true,
+      action: () => window.executeDeleteAccount(true)
+    });
+    return;
+  }
+  try {
+    const res = await fetch('/api/auth/delete-account', { method: 'POST', credentials: 'same-origin' });
+    if (res.ok) {
+      currentUser = null;
+      await store.switchProfile(null);
+      updateAccountUI();
+      window.switchView('home');
+      showToast("Account deleted.");
+    }
+  } catch (e) {
+    showToast("Failed to delete account.");
+  }
+};
+
+window.closeMigrationModal = function(e) {
+  if (!e || e.target.id === 'migrationModal' || e.target.classList.contains('drag-handle')) {
+    document.getElementById('migrationModal')?.classList.remove('open');
+  }
+};
+
+window.executeLocalToCloudMigration = async function() {
+  showToast("Syncing local library to cloud...");
+  window.closeMigrationModal();
+  const synced = await store.pushToCloud();
+  showToast(synced ? "Library synced to your account!" : "Sync paused. Please try again.");
+};
+
+// ==========================================
+// UTILITIES & NAVIGATION
+// ==========================================
 function showToast(msg) {
   const t = document.getElementById('meloToast');
   if (!t) return;
@@ -116,7 +909,6 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-// Format Seconds to MM:SS
 function fmtTime(s) {
   if (isNaN(s) || s === null || s === undefined) return "0:00";
   const m = Math.floor(s / 60);
@@ -124,7 +916,6 @@ function fmtTime(s) {
   return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-// Global Navigation
 window.switchView = function (view, pushState = true) {
   if (pushState && activeView !== view) {
     navigationHistory.push(view);
@@ -145,6 +936,8 @@ window.switchView = function (view, pushState = true) {
     document.getElementById('navFavs')?.classList.add('active');
     document.getElementById('mNavFavs')?.classList.add('active');
     renderFavoritesView();
+  } else if (view === 'account') {
+    renderAccountView();
   }
   const vp = document.getElementById('mainViewport');
   if (vp) vp.scrollTop = 0;
@@ -165,7 +958,6 @@ window.scrollToCategory = function (id) {
   if (el) el.scrollIntoView({ behavior: 'smooth' });
 };
 
-// Quality Modal
 window.promptQualitySelection = function () {
   window.closeSettingsModal();
   document.getElementById('qualityModal')?.classList.add('open');
@@ -184,7 +976,7 @@ window.selectQualityOption = function (val) {
 
 window.changeQuality = function (val) {
   selectedQuality = val;
-  localStorage.setItem('melo_quality', val);
+  store.saveQuality(val);
   const qLabel = document.getElementById('currentQualityLabel');
   if (qLabel) qLabel.innerText = `Audio Quality: ${val} kbps`;
   const deskSelect = document.getElementById('desktopQualitySelect');
@@ -199,7 +991,6 @@ window.changeQuality = function (val) {
   }
 };
 
-// Fullscreen Player Controls
 window.openFullscreenPlayer = function () {
   const overlay = document.getElementById('fullscreenPlayerOverlay');
   if (!overlay) return;
@@ -223,9 +1014,10 @@ window.closeSettingsModal = function () {
   document.getElementById('settingsModal')?.classList.remove('open');
 };
 
-window.openContextMenu = function () {
-  if (currentIndex === -1 || !playlist[currentIndex]) return;
-  const track = playlist[currentIndex];
+window.openContextMenu = function (trackOverride = null) {
+  const track = trackOverride || (currentIndex !== -1 ? playlist[currentIndex] : null);
+  if (!track) return;
+  contextTrack = track;
   
   const titleEl = document.getElementById('ctxModalSongTitle');
   if (titleEl) titleEl.innerText = track.title;
@@ -257,16 +1049,17 @@ window.closeContextMenu = function () {
   document.getElementById('contextModal')?.classList.remove('open');
 };
 
-// ====================================================
-// 2. OFFLINE DOWNLOAD WITH INDEXEDDB & SPINNER
-// ====================================================
+// OFFLINE DOWNLOAD WITH INDEXEDDB & SPINNER
 window.actionDownloadSong = async function () {
-  if (currentIndex === -1 || !playlist[currentIndex]) return;
-  const track = playlist[currentIndex];
+  const track = contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
+  if (!track) return;
+  if (downloadedTrackIds.has(String(track.id))) {
+    showToast('Available offline');
+    window.closeContextMenu();
+    return;
+  }
 
   const dlRow = document.getElementById('ctxDownloadRow');
-  const originalHtml = dlRow ? dlRow.innerHTML : null;
-
   if (dlRow) {
     dlRow.innerHTML = `
       <svg class="download-spinner" viewBox="0 0 24 24">
@@ -285,13 +1078,24 @@ window.actionDownloadSong = async function () {
 
     if (!resp.ok) throw new Error("Stream fetch failed");
 
-    const blob = await resp.blob();
+    const total = Number(resp.headers.get('content-length')) || 0;
+    let received = 0;
+    const chunks = [];
+    if (resp.body?.getReader) {
+      const reader = resp.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        if (dlRow && total) dlRow.querySelector('span').textContent = `Downloading ${Math.round((received / total) * 100)}%`;
+      }
+    }
+    const blob = chunks.length ? new Blob(chunks, { type: 'audio/mp4' }) : await resp.blob();
 
-    // Save locally
     await saveTrackToOfflineDB(track, blob);
     await syncDownloadedPlaylist();
 
-    // Trigger file download
     const objectUrl = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = objectUrl;
@@ -302,7 +1106,7 @@ window.actionDownloadSong = async function () {
 
     showToast(`Offline track saved!`);
   } catch (err) {
-    showToast("Download failed. Check your network.");
+    showToast("Download failed. Check network.");
   } finally {
     window.closeContextMenu();
   }
@@ -320,7 +1124,7 @@ window.closeImportModal = function (e) {
 };
 
 // ==========================================
-// 3. PLAYLIST IMPORT ENGINE
+// PLAYLIST IMPORT ENGINE
 // ==========================================
 window.executePlaylistImport = async function () {
   const input = document.getElementById('importPlaylistUrlInput');
@@ -351,15 +1155,18 @@ window.executePlaylistImport = async function () {
         id: plId,
         name: data.name || "Imported Playlist",
         tracks: data.tracks,
-        customCover: null
+        customCover: null,
+        description: '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       };
-      localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+      store.savePlaylists(playlists);
       window.closeImportModal();
       showToast(`Imported "${data.name}" (${data.tracks.length} tracks)!`);
       if (activeView === 'favorites') renderFavoritesView();
       else window.switchView('favorites');
     } else {
-      showToast(data.detail || "Unable to import playlist. Please check the URL.");
+      showToast(data.detail || "Unable to import playlist.");
     }
   } catch (err) {
     showToast("Network error importing playlist.");
@@ -372,7 +1179,7 @@ window.executePlaylistImport = async function () {
 };
 
 // ==========================================
-// 4. 2X2 COLLAGE & COVER HELPERS
+// 2X2 COLLAGE & COVER HELPERS
 // ==========================================
 function renderPlaylistCoverHTML(pl) {
   if (pl.customCover) {
@@ -402,7 +1209,7 @@ function getPlaylistHeroCoverURL(pl) {
 
 window.actionOpenAddToPlaylist = function (trackObj = null) {
   window.closeContextMenu();
-  pendingTrackForPlaylist = trackObj || (currentIndex !== -1 ? playlist[currentIndex] : null);
+  pendingTrackForPlaylist = trackObj || contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
   if (!pendingTrackForPlaylist) return;
 
   const modal = document.getElementById('addToPlaylistModal');
@@ -411,7 +1218,7 @@ window.actionOpenAddToPlaylist = function (trackObj = null) {
 
   listEl.innerHTML = '';
   Object.values(playlists).forEach(pl => {
-    if (pl.id === 'pl-downloads') return; // Do not manually add to downloads
+    if (pl.id === 'pl-downloads') return;
     const card = document.createElement('div');
     card.className = 'themed-pl-card';
     card.innerHTML = `
@@ -446,7 +1253,7 @@ window.addTrackToSpecificPlaylist = async function (plId) {
       const blob = await resp.blob();
       await saveTrackToOfflineDB(trackToSave, blob);
       await syncDownloadedPlaylist();
-      showToast(`Saved & Added to Downloaded Songs!`);
+      showToast(`Saved to Downloaded Songs!`);
     } catch (e) {
       showToast("Failed to download track offline.");
     }
@@ -454,7 +1261,7 @@ window.addTrackToSpecificPlaylist = async function (plId) {
   }
 
   playlists[plId].tracks.push(trackToSave);
-  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+  store.savePlaylists(playlists);
   showToast(`Added to "${playlists[plId].name}"!`);
   window.closeAddToPlaylistModal();
   if (activeView === 'favorites') renderFavoritesView();
@@ -486,16 +1293,23 @@ window.confirmCreateAndAddToPlaylist = function () {
   }
 
   const id = 'pl-' + Date.now();
+  const description = document.getElementById('newPlDescriptionInput')?.value.trim() || '';
+  const now = new Date().toISOString();
   playlists[id] = {
     id,
     name: title,
+    description,
     tracks: pendingTrackForPlaylist ? [pendingTrackForPlaylist] : [],
-    customCover: newPlaylistTempCover || null
+    customCover: newPlaylistTempCover || null,
+    created_at: now,
+    updated_at: now
   };
-  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+  store.savePlaylists(playlists);
 
   showToast(`Created & Saved to "${title}"!`);
   if (input) input.value = '';
+  const descriptionInput = document.getElementById('newPlDescriptionInput');
+  if (descriptionInput) descriptionInput.value = '';
   newPlaylistTempCover = null;
   const prev = document.getElementById('coverUploadPreview');
   if (prev) prev.style.display = 'none';
@@ -506,9 +1320,9 @@ window.confirmCreateAndAddToPlaylist = function () {
   if (activeView === 'favorites') renderFavoritesView();
 };
 
-// ====================================================
-// 5. UNIFIED PLAYLIST EDIT & ACTION MODALS
-// ====================================================
+// ==========================================
+// UNIFIED PLAYLIST ACTION MENUS
+// ==========================================
 window.openPlaylistActionMenu = function (plId) {
   currentEditingPlId = plId;
   const pl = playlists[plId];
@@ -601,7 +1415,7 @@ window.actionFromMenuAddSongs = function () {
                 }
               } else if (playlists[currentEditingPlId]) {
                 playlists[currentEditingPlId].tracks.push(track);
-                localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+                store.savePlaylists(playlists);
                 showToast(`Added to "${playlists[currentEditingPlId].name}"!`);
                 openPlaylistDetails(currentEditingPlId);
               }
@@ -636,7 +1450,7 @@ window.removeTrackFromPlaylistDirect = function (plId, trackIndex) {
 
   const trackTitle = pl.tracks[trackIndex].title;
   pl.tracks.splice(trackIndex, 1);
-  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
+  store.savePlaylists(playlists);
   showToast(`Removed "${trackTitle}"`);
   openPlaylistDetails(plId);
 };
@@ -646,7 +1460,16 @@ window.actionFromMenuDeletePlaylist = function () {
   if (currentEditingPlId) window.deleteCustomPlaylist(currentEditingPlId);
 };
 
-// Unified Playlist Edit Modal (Single Edit Flow)
+window.deleteCustomPlaylist = function (playlistId) {
+  const playlistToDelete = playlists[playlistId];
+  if (!playlistToDelete || ['pl-favorites', 'pl-downloads'].includes(playlistId)) return;
+  window.showMeloConfirmation({
+    title: `Delete “${playlistToDelete.name}”?`, message: 'This removes the playlist, not the songs in your library.',
+    actionLabel: 'Delete playlist', danger: true,
+    action: () => { delete playlists[playlistId]; store.savePlaylists(playlists); window.switchView('favorites'); showToast('Playlist deleted.'); }
+  });
+};
+
 window.openPlaylistEditor = function (plId) {
   currentEditingPlId = plId;
   editPlTempCover = null;
@@ -655,10 +1478,12 @@ window.openPlaylistEditor = function (plId) {
 
   const modal = document.getElementById('playlistEditModal');
   const nameInput = document.getElementById('editPlNameInput');
+  const descriptionInput = document.getElementById('editPlDescriptionInput');
   const preview = document.getElementById('editCoverUploadPreview');
   const labelText = document.getElementById('editCoverUploadText');
 
   if (nameInput) nameInput.value = pl.name;
+  if (descriptionInput) descriptionInput.value = pl.description || '';
   if (labelText) labelText.innerText = "Change Photo Cover (Optional)";
   if (preview) {
     if (pl.customCover) {
@@ -702,13 +1527,16 @@ window.confirmPlaylistEdit = function () {
   const nameInput = document.getElementById('editPlNameInput');
   const newName = nameInput ? nameInput.value.trim() : '';
   if (newName) pl.name = newName;
+  const descriptionInput = document.getElementById('editPlDescriptionInput');
+  if (descriptionInput) pl.description = descriptionInput.value.trim();
 
   if (editPlTempCover) {
     pl.customCover = editPlTempCover;
   }
+  pl.updated_at = new Date().toISOString();
 
-  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
-  showToast("Playlist updated successfully!");
+  store.savePlaylists(playlists);
+  showToast("Playlist updated!");
   window.closePlaylistEditModal();
   openPlaylistDetails(currentEditingPlId);
 };
@@ -716,13 +1544,15 @@ window.confirmPlaylistEdit = function () {
 window.resetPlaylistCoverToCollage = function (plId) {
   if (!playlists[plId]) return;
   playlists[plId].customCover = null;
-  localStorage.setItem('melo_playlists', JSON.stringify(playlists));
-  showToast("Reverted cover to automatic collage!");
+  store.savePlaylists(playlists);
+  showToast("Reverted to automatic collage!");
   window.closePlaylistEditModal();
   openPlaylistDetails(plId);
 };
 
-// Transport Modes
+// ==========================================
+// TRANSPORT & QUEUE LOGIC
+// ==========================================
 window.toggleRepeatMode = function () {
   const rBtn = document.getElementById('sheetRepeatBtn');
   const badge = document.getElementById('loopBadge');
@@ -770,9 +1600,6 @@ window.togglePlay = function () {
   }
 };
 
-// ====================================================
-// 6. QUEUE ENGINE (STRICT PURITY: NO RANDOM INJECTIONS IN PLAYLISTS)
-// ====================================================
 async function checkAndExpandInfiniteQueue() {
   if (currentPlaylistContextId !== null) return;
   if (isFetchingInfiniteQueue || playlist.length === 0) return;
@@ -790,6 +1617,7 @@ async function checkAndExpandInfiniteQueue() {
         const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
         if (newTracks.length > 0) {
           playlist.push(...newTracks);
+          persistPlaybackQueue();
           if (document.getElementById('tabQueue')?.classList.contains('active')) {
             renderSheetQueueList();
           }
@@ -868,16 +1696,69 @@ window.switchPlayerSheetTab = function (tab) {
 };
 
 window.toggleCurrentTrackFavorite = function () {
-  if (currentIndex === -1 || !playlist[currentIndex]) return;
-  const track = playlist[currentIndex];
-  if (favorites[track.id]) delete favorites[track.id];
-  else favorites[track.id] = track;
-  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+  const track = contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
+  if (!track) return;
+  store.setFavorite(track);
   syncSheetTrackInfo();
 };
 
 window.actionAddToFavorites = function () {
   window.toggleCurrentTrackFavorite();
+  window.closeContextMenu();
+};
+
+function persistPlaybackQueue() {
+  store.saveQueue({ tracks: playlist, currentIndex, context: currentPlaylistContextId });
+}
+
+let meloConfirmationAction = null;
+window.showMeloConfirmation = function ({ title, message, actionLabel = 'Continue', danger = false, action }) {
+  document.getElementById('meloConfirmTitle').textContent = title;
+  document.getElementById('meloConfirmMessage').textContent = message;
+  const button = document.getElementById('meloConfirmButton');
+  button.textContent = actionLabel;
+  button.style.background = danger ? '#fa2d48' : 'var(--accent)';
+  meloConfirmationAction = action;
+  document.getElementById('meloConfirmModal')?.classList.add('open');
+};
+window.closeMeloConfirmation = function (event) {
+  if (!event || event.target?.id === 'meloConfirmModal' || event.target?.classList.contains('drag-handle')) {
+    document.getElementById('meloConfirmModal')?.classList.remove('open');
+    meloConfirmationAction = null;
+  }
+};
+window.confirmMeloAction = async function () {
+  const action = meloConfirmationAction;
+  window.closeMeloConfirmation();
+  if (action) await action();
+};
+
+window.actionPlayContextTrack = function () {
+  const track = contextTrack;
+  if (!track) return;
+  playlist = [track, ...playlist.filter((item) => String(item.id) !== String(track.id))];
+  currentPlaylistContextId = null;
+  window.playIndex(0);
+  window.closeContextMenu();
+};
+
+window.actionPlayNext = function () {
+  const track = contextTrack;
+  if (!track) return;
+  const existing = playlist.findIndex((item, index) => index > currentIndex && String(item.id) === String(track.id));
+  if (existing >= 0) playlist.splice(existing, 1);
+  playlist.splice(Math.max(0, currentIndex + 1), 0, track);
+  persistPlaybackQueue();
+  showToast('Playing next');
+  window.closeContextMenu();
+};
+
+window.actionAddToQueue = function () {
+  const track = contextTrack;
+  if (!track) return;
+  playlist.push(track);
+  persistPlaybackQueue();
+  showToast('Added to queue');
   window.closeContextMenu();
 };
 
@@ -900,34 +1781,22 @@ window.actionShareSong = function () {
 
 window.actionSleepTimerPrompt = function () {
   window.closeContextMenu();
-  const minutes = prompt("Enter sleep timer in minutes (15, 30, 45, 60 or 0 to turn off):", "30");
-  if (minutes !== null) {
-    const min = parseInt(minutes);
+  window.showMeloConfirmation({ title: 'Start sleep timer?', message: 'Playback will pause in 30 minutes.', actionLabel: 'Start timer', action: () => {
     if (sleepTimerId) clearTimeout(sleepTimerId);
-    if (!isNaN(min) && min > 0) {
-      sleepTimerId = setTimeout(() => {
-        const audio = document.getElementById('audio');
-        if (audio) audio.pause();
-        setPlayState(false);
-        showToast("Sleep timer reached. Good night!");
-      }, min * 60 * 1000);
-      showToast(`Sleep timer set for ${min} minutes.`);
-    } else {
-      sleepTimerId = null;
-      showToast("Sleep timer turned off.");
-    }
-  }
+    sleepTimerId = setTimeout(() => { const audio = document.getElementById('audio'); if (audio) audio.pause(); setPlayState(false); showToast('Sleep timer reached. Good night!'); }, 30 * 60 * 1000);
+    showToast('Sleep timer set for 30 minutes.');
+  }});
 };
 
 window.actionViewCredits = function () {
   window.closeContextMenu();
   if (currentIndex === -1 || !playlist[currentIndex]) return;
   const track = playlist[currentIndex];
-  alert(`Title: ${track.title}\nArtist: ${track.artist}\nAlbum: ${track.album || 'Single'}\nDuration: ${track.duration}\nTrack ID: ${track.id}`);
+  window.showMeloConfirmation({ title: track.title, message: `${track.artist || 'Unknown artist'} · ${track.album || 'Single'} · ${track.duration || '—'}`, actionLabel: 'Close', action: () => {} });
 };
 
 // ==========================================
-// 7. PLAYBACK & VIVID COLOR HARMONY
+// COLOR SYSTEM WITH PROXY-FALLBACK SAMPLING
 // ==========================================
 function generateVibrantColors(seedStr) {
   let hash = 0;
@@ -955,7 +1824,7 @@ function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
   const g0 = Math.abs((hash * 29) % 130) + 40;
   const b0 = Math.abs((hash * 61) % 170) + 60;
   
-  document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r0}, ${g0}, ${b0}, 0.7)`);
+  document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r0}, ${g0}, ${b0}, 0.72)`);
   document.documentElement.style.setProperty('--pl-dynamic-bg-dark', `rgba(${r0}, ${g0}, ${b0}, 0.15)`);
 
   if (!imgUrl) return;
@@ -1094,10 +1963,8 @@ window.playIndex = async function (idx) {
   currentIndex = idx;
   const track = playlist[currentIndex];
   const audio = document.getElementById('audio');
-
-  playHistory.push(track.id);
-  if (playHistory.length > 50) playHistory.shift();
-  localStorage.setItem('melo_history', JSON.stringify(playHistory));
+  listeningCandidate = { track, queueToken: activePlayToken, recorded: false };
+  store.saveQueue({ tracks: playlist, currentIndex, context: currentPlaylistContextId });
 
   const dockTitle = document.getElementById('dockTitle');
   const dockArtist = document.getElementById('dockArtist');
@@ -1109,7 +1976,6 @@ window.playIndex = async function (idx) {
 
   syncSheetTrackInfo();
 
-  // Reveal miniplayer with active spring animation
   const miniplayer = document.getElementById('dockPlayerBar');
   if (miniplayer) miniplayer.classList.add('active');
 
@@ -1252,7 +2118,7 @@ async function fetchLyrics(track, token) {
 }
 
 // ====================================================
-// 8. CLEAN FULL-WIDTH QUEUE VIEW
+// CLEAN FULL-WIDTH QUEUE VIEW
 // ====================================================
 function renderSheetQueueList() {
   const qView = document.getElementById('sheetViewQueue');
@@ -1308,11 +2174,11 @@ window.toggleFavTrackDirect = function (trackId, btn) {
     btn.innerText = '♥';
     btn.style.color = 'var(--accent)';
   }
-  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
+  store.saveFavorites(favorites);
 };
 
 // ==========================================
-// 9. HOME, SEARCH & CLEAN MUSIC HUB
+// HOME, SEARCH & CLEAN MUSIC HUB
 // ==========================================
 function renderHomeView() {
   const viewContainer = document.getElementById('viewContainer');
@@ -1421,7 +2287,7 @@ function renderGridContainer(containerId, items) {
     const item = document.createElement('div');
     item.className = 'poster-item';
     item.onclick = () => {
-      currentPlaylistContextId = null; // Radio / Discovery allows recommendations
+      currentPlaylistContextId = null;
       if (containerId === 'searchGrid') {
         playlist = [track];
         window.playIndex(0);
@@ -1465,6 +2331,8 @@ function renderSearchView() {
         </div>
       </div>
 
+      <div id="recentSearchesPanel"></div>
+
       <div class="section-heading" id="searchResultsHeading">
         <h2 id="searchResultsTitle">Trending Recommendations</h2>
       </div>
@@ -1498,6 +2366,7 @@ function renderSearchView() {
   const clearBtn = document.getElementById('searchClearBtn');
   const stage = document.getElementById('searchStageContent');
   let searchTimer = null;
+  window.renderRecentSearches();
 
   if (input) {
     input.addEventListener('focus', () => {
@@ -1517,6 +2386,8 @@ function renderSearchView() {
 
       stage?.classList.add('is-searching');
       searchTimer = setTimeout(() => {
+        store.rememberSearch(q);
+        window.renderRecentSearches();
         const title = document.getElementById('searchResultsTitle');
         if (title) title.innerText = `Results for "${q}"`;
         loadSearchShelf(q, 'searchGrid', 24);
@@ -1542,6 +2413,7 @@ window.clearSearchInput = function () {
 };
 
 window.quickSearch = function (query) {
+  store.rememberSearch(query);
   const input = document.getElementById('dedicatedSearchInput');
   const clearBtn = document.getElementById('searchClearBtn');
   const stage = document.getElementById('searchStageContent');
@@ -1555,6 +2427,13 @@ window.quickSearch = function (query) {
   loadSearchShelf(query, 'searchGrid', 24);
   const grid = document.getElementById('searchGrid');
   if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+};
+
+window.renderRecentSearches = function () {
+  const panel = document.getElementById('recentSearchesPanel');
+  if (!panel) return;
+  const searches = store.getSearchHistory();
+  panel.innerHTML = searches.length ? `<div class="section-heading recent-search-heading"><h2>Recent Searches</h2><a onclick="store.clearSearches(); renderRecentSearches()">Clear all</a></div><div class="recent-search-list">${searches.map((item) => `<button class="recent-search-chip" onclick="quickSearch(${JSON.stringify(item.query)})">${accountText(item.query)}<span onclick="event.stopPropagation(); store.removeSearch(${JSON.stringify(item.query)}); renderRecentSearches()">×</span></button>`).join('')}</div>` : '';
 };
 
 async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
@@ -1674,17 +2553,11 @@ function renderFavoritesView() {
   }
 }
 
-window.removeFavoriteItem = function (e, trackId) {
-  e.stopPropagation();
-  delete favorites[trackId];
-  localStorage.setItem('melo_favorites', JSON.stringify(favorites));
-  renderFavoritesView();
-};
-
 // ----------------------------------------------------
-// 10. MASSIVE IMMERSIVE PLAYLIST WITH COLOR FADE TO SONG LIST
+// MASSIVE IMMERSIVE PLAYLIST WITH COLOR FADE TO SONG LIST
 // ----------------------------------------------------
 function openPlaylistDetails(plId) {
+  activeView = 'playlist-detail';
   if (plId === 'pl-favorites') {
     playlists['pl-favorites'].tracks = Object.values(favorites);
   }
@@ -1697,13 +2570,10 @@ function openPlaylistDetails(plId) {
   applyPlaylistDynamicColors(leadImage, pl.name);
 
   const bgStyle = leadImage ? `style="background-image: url('${leadImage}');"` : '';
-  const isProtected = plId === 'pl-favorites' || plId === 'pl-downloads';
 
   viewContainer.innerHTML = `
     <div class="playlist-immersive-view">
-      <!-- Massive Immersive Hero Cover Header -->
       <div class="playlist-immersive-hero" ${bgStyle}>
-        <!-- Top Navigation Row -->
         <div style="position:absolute; top:28px; left:28px; right:28px; display:flex; justify-content:space-between; align-items:center; z-index:10;">
           <button class="circle-back-btn" onclick="goBack()" aria-label="Go Back" title="Back">
             <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -1723,7 +2593,7 @@ function openPlaylistDetails(plId) {
           <div class="playlist-immersive-title-row">
             <h1 class="playlist-immersive-title">${pl.name}</h1>
           </div>
-          <div class="playlist-immersive-stats">${pl.tracks.length} Songs • High Fidelity Lossless Audio</div>
+          <div class="playlist-immersive-stats">${pl.tracks.length} tracks${pl.description ? ` · ${accountText(pl.description)}` : ''}</div>
 
           <div class="playlist-immersive-actions">
             ${pl.tracks.length > 0 ? `
@@ -1731,6 +2601,7 @@ function openPlaylistDetails(plId) {
                 <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
                 <span>Play All</span>
               </button>
+              <button class="filter-chip" onclick="playPlaylistContext('${plId}', true)">Shuffle</button>
             ` : ''}
             ${isRemoveSongsMode ? `
               <button class="filter-chip" style="background:#fa2d48; color:#fff; border-color:#fa2d48;" onclick="actionToggleRemoveSongsMode()">
@@ -1741,7 +2612,6 @@ function openPlaylistDetails(plId) {
         </div>
       </div>
 
-      <!-- Color Fades Directly Down Into Tracklist -->
       <div class="playlist-tracks-section">
         <div id="playlistTracksBox"></div>
       </div>
@@ -1755,7 +2625,11 @@ function openPlaylistDetails(plId) {
   } else {
     pl.tracks.forEach((track, i) => {
       const row = document.createElement('div');
-      row.className = 'track-row';
+      row.className = 'track-row playlist-track-row';
+      row.draggable = plId !== 'pl-favorites' && plId !== 'pl-downloads';
+      row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', String(i)));
+      row.addEventListener('dragover', (event) => event.preventDefault());
+      row.addEventListener('drop', (event) => { event.preventDefault(); reorderPlaylistTrack(plId, Number(event.dataTransfer.getData('text/plain')), i); });
       row.onclick = () => {
         if (isRemoveSongsMode) return;
         currentPlaylistContextId = plId;
@@ -1768,7 +2642,7 @@ function openPlaylistDetails(plId) {
         : '';
 
       row.innerHTML = `
-        <div class="tr-num">${i + 1}</div>
+        <div class="tr-num"><span class="playlist-drag-handle">&#8801;</span>${i + 1}</div>
         <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
         <div class="tr-info">
           <div class="tr-title" style="display:flex;align-items:center;">
@@ -1784,6 +2658,7 @@ function openPlaylistDetails(plId) {
           </button>
         ` : `
           <button class="tr-fav ${favorites[track.id] ? 'active' : ''}" onclick="event.stopPropagation(); toggleFavTrackDirect('${track.id}', this)">♥</button>
+          <button class="library-more-btn" onclick="event.stopPropagation(); openContextMenu(${JSON.stringify(track).replace(/"/g, '&quot;')})">⋮</button>
         `}
       `;
       box.appendChild(row);
@@ -1791,25 +2666,259 @@ function openPlaylistDetails(plId) {
   }
 }
 
-window.playPlaylistContext = function (plId) {
-  const pl = playlists[plId];
-  if (pl && pl.tracks.length > 0) {
-    currentPlaylistContextId = plId; // Strict playlist isolation
-    playlist = [...pl.tracks];
-    window.playIndex(0);
-  }
+// ==========================================
+// PHASE 2 LIBRARY VIEWS
+// ==========================================
+function libraryTrackRow(track, index, options = {}) {
+  const loved = Boolean(favorites[track.id]);
+  const menuAction = options.removeHistory
+    ? `removeHistoryItem('${options.removeHistory}')`
+    : `openContextMenu(${JSON.stringify(track).replace(/"/g, '&quot;')})`;
+  return `<div class="track-row library-track-row" onclick="playLibraryTrack(${index}, '${options.source || 'loved'}')">
+    <div class="tr-num">${index + 1}</div><img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+    <div class="tr-info"><div class="tr-title">${accountText(track.title || 'Unknown track')}</div><div class="tr-artist">${accountText(track.artist || 'Unknown artist')}</div></div>
+    <div class="tr-time">${options.meta || track.duration || ''}</div>
+    <button class="tr-fav ${loved ? 'active' : ''}" onclick="event.stopPropagation(); toggleLibraryFavorite('${track.id}', '${options.source || 'loved'}')">${loved ? '♥' : '♡'}</button>
+    <button class="library-more-btn" onclick="event.stopPropagation(); ${menuAction}" aria-label="Track options">⋮</button>
+  </div>`;
+}
+
+window.playLibraryTrack = function (index, source) {
+  const tracks = source === 'history'
+    ? (window.__historyTracks || store.getHistory().filter((entry) => entry.track).map((entry) => entry.track))
+    : (window.__lovedTracks || Object.values(favorites));
+  playlist = tracks;
+  currentPlaylistContextId = source === 'loved' ? 'pl-favorites' : null;
+  window.playIndex(index);
 };
 
-window.deleteCustomPlaylist = function (plId) {
-  if (confirm("Are you sure you want to delete this playlist?")) {
-    delete playlists[plId];
-    localStorage.setItem('melo_playlists', JSON.stringify(playlists));
-    renderFavoritesView();
+window.toggleLibraryFavorite = function (trackId, source) {
+  const track = source === 'history'
+    ? store.getHistory().find((entry) => entry.track?.id === trackId)?.track
+    : favorites[trackId];
+  if (track) store.setFavorite(track, !favorites[trackId]);
+  if (activeView === 'loved') window.renderLovedTracks();
+  if (activeView === 'history') window.renderHistoryView();
+};
+
+window.removeFavoriteItem = function (event, trackId) {
+  event.stopPropagation();
+  const track = favorites[trackId];
+  if (track) store.setFavorite(track, false);
+  if (activeView === 'loved' || activeView === 'favorites') window.renderLovedTracks();
+};
+
+window.playPlaylistContext = function (playlistId, shuffle = false) {
+  const target = playlistId === 'pl-favorites' ? { tracks: Object.values(favorites) } : playlists[playlistId];
+  if (!target?.tracks?.length) return;
+  playlist = [...target.tracks];
+  if (shuffle) playlist.sort(() => Math.random() - 0.5);
+  currentPlaylistContextId = playlistId;
+  window.playIndex(0);
+};
+
+window.renderFavoritesView = function () {
+  const viewContainer = document.getElementById('viewContainer');
+  if (!viewContainer) return;
+  const lovedCount = Object.keys(favorites).length;
+  const historyCount = store.getHistory().length;
+  const downloadedCount = playlists['pl-downloads']?.tracks?.length || 0;
+  const personalPlaylists = Object.values(playlists).filter((pl) => !['pl-favorites', 'pl-downloads'].includes(pl.id));
+  viewContainer.innerHTML = `<div class="stage-content library-stage"><div class="top-action-bar"><button class="circle-back-btn" onclick="goBack()"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Music Hub</h1></div>
+    <div class="section-heading"><h2>Your Library</h2></div>
+    <div class="hub-vault-grid library-hub-grid">
+      <button class="hub-vault-card" onclick="renderLovedTracks()"><div class="hub-vault-badge library-badge-loved">♡</div><div><div class="hub-vault-title">Loved Tracks</div><div class="hub-vault-count">${lovedCount} songs</div></div></button>
+      <button class="hub-vault-card" onclick="renderHistoryView()"><div class="hub-vault-badge library-badge-history">◷</div><div><div class="hub-vault-title">Recently Played</div><div class="hub-vault-count">${historyCount} listens</div></div></button>
+      <button class="hub-vault-card" onclick="renderOfflineVault()"><div class="hub-vault-badge library-badge-download">↓</div><div><div class="hub-vault-title">Downloaded</div><div class="hub-vault-count">${downloadedCount} available offline</div></div></button>
+      <button class="hub-vault-card" onclick="renderPlaylistsView()"><div class="hub-vault-badge library-badge-playlist">♫</div><div><div class="hub-vault-title">Playlists</div><div class="hub-vault-count">${personalPlaylists.length} collections</div></div></button>
+    </div>
+    <div class="section-heading"><h2>Recently Loved</h2><a onclick="renderLovedTracks()">View all</a></div>
+    <div id="libraryRecentLoved"></div></div>`;
+  const recent = Object.values(favorites).slice(-5).reverse();
+  document.getElementById('libraryRecentLoved').innerHTML = recent.length
+    ? recent.map((track, index) => libraryTrackRow(track, index, { source: 'loved' })).join('')
+    : `<div class="library-empty"><strong>Your favorites belong here.</strong><span>Tap the heart on any song you love.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`;
+};
+
+window.renderLovedTracks = function () {
+  activeView = 'loved';
+  const viewContainer = document.getElementById('viewContainer');
+  const tracks = Object.values(favorites);
+  viewContainer.innerHTML = `<div class="stage-content library-stage"><div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Loved Tracks</h1></div>
+  ${tracks.length ? `<div class="library-toolbar"><input id="lovedSearchInput" class="themed-pl-input" placeholder="Search loved tracks"/><select id="lovedSort" class="capsule-select"><option value="recent">Recently added</option><option value="title">Alphabetically</option><option value="artist">Artist</option></select><button class="pill-action-btn" onclick="playLovedTracks(false)">Play all</button><button class="filter-chip" onclick="playLovedTracks(true)">Shuffle</button></div><div id="lovedTrackList"></div>` : `<div class="library-empty"><strong>No loved tracks yet</strong><span>Songs you fall for will live here.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`}</div>`;
+  if (!tracks.length) return;
+  const draw = () => {
+    const query = document.getElementById('lovedSearchInput').value.trim().toLowerCase();
+    const sort = document.getElementById('lovedSort').value;
+    const filtered = tracks.filter((track) => `${track.title} ${track.artist}`.toLowerCase().includes(query));
+    filtered.sort((a, b) => sort === 'artist' ? String(a.artist).localeCompare(String(b.artist)) : sort === 'title' ? String(a.title).localeCompare(String(b.title)) : String(b.added_at || '').localeCompare(String(a.added_at || '')));
+    window.__lovedTracks = filtered;
+    document.getElementById('lovedTrackList').innerHTML = filtered.length ? filtered.map((track, index) => libraryTrackRow(track, index, { source: 'loved' })).join('') : '<div class="library-empty compact">No loved tracks match that search.</div>';
+  };
+  document.getElementById('lovedSearchInput').addEventListener('input', draw);
+  document.getElementById('lovedSort').addEventListener('change', draw);
+  draw();
+};
+
+window.playLovedTracks = function (shuffle) {
+  const tracks = window.__lovedTracks || Object.values(favorites);
+  if (!tracks.length) return;
+  playlist = [...tracks];
+  if (shuffle) playlist.sort(() => Math.random() - 0.5);
+  currentPlaylistContextId = 'pl-favorites';
+  window.playIndex(0);
+};
+
+function historyGroup(dateValue) {
+  const date = new Date(dateValue);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (date >= today) return 'Today';
+  if (date >= yesterday) return 'Yesterday';
+  const week = new Date(today); week.setDate(today.getDate() - 7);
+  return date >= week ? 'Earlier this week' : 'Earlier';
+}
+
+window.renderHistoryView = function () {
+  activeView = 'history';
+  const entries = store.getHistory().filter((entry) => entry.track).slice().reverse();
+  const viewContainer = document.getElementById('viewContainer');
+  viewContainer.innerHTML = `<div class="stage-content library-stage"><div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Recently Played</h1></div><div id="historyTrackList"></div></div>`;
+  if (!entries.length) { document.getElementById('historyTrackList').innerHTML = `<div class="library-empty"><strong>Nothing played yet.</strong><span>Your listening journey starts here.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`; return; }
+  const groups = {};
+  entries.forEach((entry) => { const group = historyGroup(entry.played_at); (groups[group] ||= []).push(entry); });
+  window.__historyTracks = entries.map((entry) => entry.track);
+  let globalIndex = 0;
+  document.getElementById('historyTrackList').innerHTML = Object.entries(groups).map(([label, group]) => `<div class="section-heading history-heading"><h2>${label}</h2></div>${group.map((entry) => libraryTrackRow(entry.track, globalIndex++, { source: 'history', removeHistory: entry.id, meta: new Date(entry.played_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) })).join('')}`).join('');
+};
+
+window.removeHistoryItem = function (entryId) { store.removeHistory(entryId); window.renderHistoryView(); };
+
+window.renderPlaylistsView = function () {
+  activeView = 'playlists';
+  const items = Object.values(playlists).filter((pl) => !['pl-favorites', 'pl-downloads'].includes(pl.id));
+  const viewContainer = document.getElementById('viewContainer');
+  viewContainer.innerHTML = `<div class="stage-content library-stage"><div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Playlists</h1><button class="pill-action-btn" onclick="actionOpenAddToPlaylist(null)">+ Create</button></div><div id="playlistLibraryGrid" class="capsule-grid"></div></div>`;
+  const grid = document.getElementById('playlistLibraryGrid');
+  grid.innerHTML = items.length ? items.map((pl) => `<button class="poster-item playlist-library-card" onclick="openPlaylistDetails('${pl.id}')"><div class="poster-wrap">${renderPlaylistCoverHTML(pl)}</div><div class="poster-title">${accountText(pl.name)}</div><div class="poster-subtitle">${pl.tracks?.length || 0} tracks${pl.description ? ` · ${accountText(pl.description)}` : ''}</div></button>`).join('') : `<div class="library-empty"><strong>Create your first playlist.</strong><span>Collect the songs that belong together.</span><button class="pill-action-btn" onclick="actionOpenAddToPlaylist(null)">Create playlist</button></div>`;
+};
+
+async function getOfflineRecords() {
+  try {
+    const db = await openMeloDB();
+    return await new Promise((resolve) => {
+      const request = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => resolve([]);
+    });
+  } catch (e) { return []; }
+}
+
+function formatStorage(bytes) {
+  if (!bytes) return '0 MB';
+  const units = ['B', 'KB', 'MB', 'GB']; let value = bytes; let index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+  return `${value.toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
+}
+
+window.renderOfflineVault = async function () {
+  activeView = 'offline';
+  const viewContainer = document.getElementById('viewContainer');
+  viewContainer.innerHTML = `<div class="stage-content library-stage"><div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Offline Vault</h1></div><div id="offlineVaultContent" class="library-loading">Loading your downloads…</div></div>`;
+  const records = await getOfflineRecords();
+  const usage = records.reduce((sum, record) => sum + (record.blob?.size || 0), 0);
+  let available = 'Unavailable';
+  try { const estimate = await navigator.storage?.estimate?.(); if (estimate?.quota) available = formatStorage(Math.max(0, estimate.quota - (estimate.usage || 0))); } catch (e) {}
+  const content = document.getElementById('offlineVaultContent');
+  if (!content || activeView !== 'offline') return;
+  const rows = records.map((record, index) => `<div class="track-row library-track-row" onclick="playlist=[${JSON.stringify(record.metadata).replace(/"/g, '&quot;')}];currentPlaylistContextId='pl-downloads';playIndex(0)"><div class="tr-num">${index + 1}</div><img class="tr-thumb" src="${record.metadata.thumbnail || ''}" loading="lazy"/><div class="tr-info"><div class="tr-title">${accountText(record.metadata.title)}</div><div class="tr-artist">${accountText(record.metadata.artist)}</div></div><div class="tr-time">Available offline</div><button class="library-more-btn" onclick="event.stopPropagation(); removeOfflineDownload('${record.id}')" aria-label="Remove download">×</button></div>`).join('');
+  content.innerHTML = `<section class="offline-storage-card"><span>MELO Offline Storage</span><strong>Used: ${formatStorage(usage)}</strong><small>Available: ${available} · Downloads: ${records.length} tracks</small>${records.length ? '<button class="filter-chip offline-clear-btn" onclick="clearOfflineDownloads()">Clear Downloads</button>' : ''}</section>${records.length ? `<div class="section-heading"><h2>Available Offline</h2></div>${rows}` : `<div class="library-empty"><strong>Nothing saved offline.</strong><span>Download music for listening without internet.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`}`;
+};
+
+window.removeOfflineDownload = async function (trackId) {
+  const db = await openMeloDB();
+  await new Promise((resolve, reject) => { const request = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).delete(String(trackId)); request.onsuccess = resolve; request.onerror = reject; });
+  await syncDownloadedPlaylist();
+  window.renderOfflineVault();
+};
+
+window.clearOfflineDownloads = async function () {
+  const db = await openMeloDB();
+  await new Promise((resolve, reject) => { const request = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).clear(); request.onsuccess = resolve; request.onerror = reject; });
+  await syncDownloadedPlaylist();
+  window.renderOfflineVault();
+  showToast('Offline downloads cleared');
+};
+
+// Phase 2 queue: the playback array is durable and can be edited without
+// resetting the current song or the navigation view.
+window.removeFromQueue = function (index) {
+  if (index <= currentIndex || index >= playlist.length) return;
+  playlist.splice(index, 1);
+  persistPlaybackQueue();
+  renderSheetQueueList();
+};
+
+window.moveQueueTrack = function (from, to) {
+  if (from <= currentIndex || to <= currentIndex || from === to) return;
+  const [track] = playlist.splice(from, 1);
+  playlist.splice(to, 0, track);
+  persistPlaybackQueue();
+  renderSheetQueueList();
+};
+
+window.clearQueue = function () {
+  playlist = playlist.slice(0, Math.max(0, currentIndex + 1));
+  persistPlaybackQueue();
+  renderSheetQueueList();
+  showToast('Up next cleared');
+};
+
+window.reorderPlaylistTrack = function (playlistId, from, to) {
+  const target = playlists[playlistId];
+  if (!target || from === to || from < 0 || to < 0) return;
+  const [track] = target.tracks.splice(from, 1);
+  target.tracks.splice(to, 0, track);
+  target.updated_at = new Date().toISOString();
+  store.savePlaylists(playlists);
+  if (activeView === 'playlist-detail') openPlaylistDetails(playlistId);
+};
+
+renderSheetQueueList = function () {
+  const qView = document.getElementById('sheetViewQueue');
+  if (!qView) return;
+  qView.innerHTML = '';
+  const now = currentIndex >= 0 ? playlist[currentIndex] : null;
+  if (now) {
+    qView.insertAdjacentHTML('beforeend', `<div class="queue-section-header"><span>Now Playing</span></div>`);
+    const current = document.createElement('div');
+    current.className = 'queue-row queue-now-playing';
+    current.innerHTML = `<div class="queue-left-block"><img class="queue-thumb" src="${now.thumbnail || ''}" loading="lazy"/><div class="queue-info"><div class="queue-title">${now.title}</div><div class="queue-artist">${now.artist}</div></div></div><span class="queue-now-label">NOW</span>`;
+    qView.appendChild(current);
   }
+  const remaining = playlist.slice(Math.max(0, currentIndex + 1));
+  qView.insertAdjacentHTML('beforeend', `<div class="queue-section-header queue-up-next-header"><span>Up Next</span>${remaining.length ? '<button class="queue-clear-btn" onclick="clearQueue()">Clear</button>' : ''}</div>`);
+  if (!remaining.length) {
+    qView.insertAdjacentHTML('beforeend', '<p class="queue-empty-state">Your queue is clear. Add a song to keep listening.</p>');
+    return;
+  }
+  remaining.forEach((track, offset) => {
+    const index = currentIndex + 1 + offset;
+    const row = document.createElement('div');
+    row.className = 'queue-row queue-draggable';
+    row.draggable = true;
+    row.dataset.index = index;
+    row.innerHTML = `<span class="queue-drag" aria-label="Drag to reorder">&#8801;</span><div class="queue-left-block"><img class="queue-thumb" src="${track.thumbnail || ''}" loading="lazy"/><div class="queue-info"><div class="queue-title">${track.title}</div><div class="queue-artist">${track.artist}</div></div></div><div class="queue-actions-cluster"><button class="queue-action-btn" title="Play next" onclick="event.stopPropagation(); moveQueueTrack(${index}, ${currentIndex + 1})">&#9197;</button><button class="queue-action-btn" title="Remove" onclick="event.stopPropagation(); removeFromQueue(${index})">&#215;</button></div>`;
+    row.onclick = () => window.playIndex(index);
+    row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', String(index)));
+    row.addEventListener('dragover', (event) => event.preventDefault());
+    row.addEventListener('drop', (event) => { event.preventDefault(); window.moveQueueTrack(Number(event.dataTransfer.getData('text/plain')), index); });
+    qView.appendChild(row);
+  });
 };
 
 // ==========================================
-// 11. DOM READY & CANVASES
+// DOM READY & CANVASES
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
   const audio = document.getElementById('audio');
@@ -1825,6 +2934,27 @@ document.addEventListener('DOMContentLoaded', () => {
   const scrubberWaveCanvas = document.getElementById('scrubberWaveCanvas');
 
   syncDownloadedPlaylist();
+  window.checkAuthStatus();
+
+  if (currentIndex === -1 && store.state.queue.tracks.length) {
+    playlist = store.state.queue.tracks;
+    currentIndex = store.state.queue.currentIndex;
+    currentPlaylistContextId = store.state.queue.context;
+  }
+  window.addEventListener('online', () => { if (currentUser) store.pushToCloud(); });
+  window.addEventListener('offline', () => { if (currentUser) setSyncState('paused'); });
+
+  if (audio) {
+    audio.addEventListener('timeupdate', () => {
+      if (!listeningCandidate || listeningCandidate.recorded || audio.paused) return;
+      // A track is counted only after 30 seconds (or half of a short track).
+      const threshold = Number.isFinite(audio.duration) && audio.duration > 0 ? Math.min(30, audio.duration * 0.5) : 30;
+      if (audio.currentTime >= threshold) {
+        listeningCandidate.recorded = true;
+        store.recordListening(listeningCandidate.track);
+      }
+    });
+  }
 
   // Multi-Thread Luminous Tidal Wave
   const miniWaveCtx = miniWaveCanvas ? miniWaveCanvas.getContext('2d') : null;
@@ -1985,146 +3115,25 @@ document.addEventListener('DOMContentLoaded', () => {
       fCtx.clearRect(0, 0, w, h);
 
       const cx1 = w * (0.35 + 0.25 * Math.sin(fluidTime));
-      const cy1 = h * (0.35 + 0.25 * Math.cos(fluidTime * 0.8));
-      const g1 = fCtx.createRadialGradient(cx1, cy1, 0, cx1, cy1, w * 0.95);
-      g1.addColorStop(0, color1);
-      g1.addColorStop(1, 'transparent');
-      fCtx.fillStyle = g1;
-      fCtx.fillRect(0, 0, w, h);
+      const cy1 = h * (0.35 + 0.25 * Math.cos(fluidTime));
 
-      const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
-      const cy2 = h * (0.65 + 0.25 * Math.sin(fluidTime * 0.7));
-      const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
-      g2.addColorStop(0, color2);
-      g2.addColorStop(1, 'transparent');
-      fCtx.fillStyle = g2;
-      fCtx.fillRect(0, 0, w, h);
+      // Draw fluid mesh
+      fCtx.fillStyle = color1;
+      fCtx.globalAlpha = 0.6;
+      fCtx.beginPath();
+      fCtx.arc(cx1, cy1, 120, 0, Math.PI * 2);
+      fCtx.fill();
+
+      fCtx.fillStyle = color2;
+      fCtx.globalAlpha = 0.5;
+      const cx2 = w * (0.65 + 0.2 * Math.cos(fluidTime * 0.7));
+      const cy2 = h * (0.65 + 0.2 * Math.sin(fluidTime * 0.7));
+      fCtx.beginPath();
+      fCtx.arc(cx2, cy2, 100, 0, Math.PI * 2);
+      fCtx.fill();
+      fCtx.globalAlpha = 1;
     });
-
     requestAnimationFrame(renderLiveFluidMesh);
   }
-  setTimeout(renderLiveFluidMesh, 100);
-
-  // Audio Updates
-  if (audio) {
-    audio.ontimeupdate = () => {
-      if (audio.duration) {
-        const pct = (audio.currentTime / audio.duration) * 100;
-        if (dockScrubber) dockScrubber.value = pct;
-
-        if (scrubberPlayedZone) scrubberPlayedZone.style.setProperty('--scrubber-pct', `${pct}%`);
-        if (scrubberThumbIndicator) scrubberThumbIndicator.style.setProperty('--scrubber-pct', `${pct}%`);
-
-        const cur = fmtTime(audio.currentTime);
-        const dur = fmtTime(audio.duration);
-
-        if (timeCurrent) timeCurrent.innerText = cur;
-        if (timeDuration) timeDuration.innerText = dur;
-        if (sheetTimeCur) sheetTimeCur.innerText = cur;
-        if (sheetTimeDur) sheetTimeDur.innerText = dur;
-      }
-
-      if (isSynced && parsedLyrics.length > 0) {
-        const curTime = audio.currentTime;
-        let activeIdx = -1;
-        for (let i = 0; i < parsedLyrics.length; i++) {
-          if (curTime >= parsedLyrics[i].time - 0.2) activeIdx = i;
-          else break;
-        }
-
-        if (activeIdx !== -1) {
-          const lines = document.querySelectorAll('#sheetViewLyrics .lyrics-line');
-          lines.forEach((el, idx) => {
-            if (idx === activeIdx) {
-              if (!el.classList.contains('active')) {
-                el.classList.add('active');
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }
-            } else {
-              el.classList.remove('active');
-            }
-          });
-        }
-      }
-    };
-
-    audio.onended = () => window.nextTrack();
-
-    if (dockScrubber) {
-      dockScrubber.oninput = (e) => {
-        if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration;
-      };
-    }
-
-    const dockVol = document.getElementById('dockVol');
-    if (dockVol) {
-      dockVol.oninput = (e) => { audio.volume = e.target.value; };
-    }
-  }
-
-  // Smooth Swipe-Down Dismissal Fix
-  const overlay = document.getElementById('fullscreenPlayerOverlay');
-  let touchStartY = 0;
-  let currentTouchY = 0;
-  let isDraggingOverlay = false;
-
-  if (overlay) {
-    overlay.addEventListener('touchstart', (e) => {
-      const scrollableLyrics = document.getElementById('sheetViewLyrics');
-      const scrollableQueue = document.getElementById('sheetViewQueue');
-      const atTop = (window.getComputedStyle(scrollableLyrics).display === 'none' && window.getComputedStyle(scrollableQueue).display === 'none') ||
-                    (scrollableLyrics.scrollTop <= 0 && scrollableQueue.scrollTop <= 0);
-
-      if (atTop || e.target.closest('.drag-handle') || e.target.closest('.player-sheet-header')) {
-        touchStartY = e.touches[0].clientY;
-        currentTouchY = touchStartY;
-        isDraggingOverlay = true;
-      }
-    }, { passive: true });
-
-    overlay.addEventListener('touchmove', (e) => {
-      if (!isDraggingOverlay) return;
-      currentTouchY = e.touches[0].clientY;
-      const deltaY = currentTouchY - touchStartY;
-
-      if (deltaY > 0) {
-        e.preventDefault(); // STOPS browser native scrolling conflict, making drag perfectly smooth
-        overlay.classList.add('dragging');
-        overlay.style.transform = `translate3d(0, ${deltaY}px, 0)`;
-      }
-    }, { passive: false });
-
-    overlay.addEventListener('touchend', () => {
-      if (!isDraggingOverlay) return;
-      isDraggingOverlay = false;
-      overlay.classList.remove('dragging');
-      const deltaY = currentTouchY - touchStartY;
-
-      if (deltaY > 90) {
-        window.closeFullscreenPlayer();
-      } else {
-        overlay.style.transform = 'translate3d(0, 0, 0)';
-      }
-      touchStartY = 0;
-      currentTouchY = 0;
-    });
-  }
-
-  window.addEventListener('keydown', (e) => {
-    if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-    if (e.code === 'Space') {
-      e.preventDefault();
-      window.togglePlay();
-    } else if (e.key === 'Escape') {
-      window.closeFullscreenPlayer();
-      window.closeContextMenu();
-      window.closeSettingsModal();
-      window.closeAddToPlaylistModal();
-      window.closePlaylistEditModal();
-      window.closePlaylistActionMenu();
-      window.closePlaylistSearchAddModal();
-    }
-  });
-
-  renderHomeView();
+  renderLiveFluidMesh();
 });
