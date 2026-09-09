@@ -685,14 +685,15 @@ main.main-viewport {
 
 /* Dock Mini-Player */
 footer.dock-player {
-  width: 85%;
-  max-width: 900px;
-  margin: 0 auto 16px auto;
-  border-radius: 16px;
-  background: rgba(14, 16, 22, 0.94);
-  backdrop-filter: blur(40px) saturate(200%);
-  -webkit-backdrop-filter: blur(40px) saturate(200%);
-  border: 1px solid var(--border-subtle);
+  grid-column: 1 / -1;
+  background: 
+    radial-gradient(circle at 15% 20%, rgba(250, 45, 72, 0.18), transparent 50%),
+    radial-gradient(circle at 85% 80%, rgba(192, 38, 211, 0.12), transparent 50%),
+    linear-gradient(180deg, rgba(20, 22, 30, 0.85) 0%, rgba(10, 12, 17, 0.95) 100%) !important;
+  backdrop-filter: blur(60px) saturate(240%) !important;
+  -webkit-backdrop-filter: blur(60px) saturate(240%) !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.5) !important;
   display: grid;
   grid-template-columns: minmax(120px, 150px) minmax(180px, 1fr) minmax(100px, 140px);
   align-items: center;
@@ -735,7 +736,7 @@ footer.dock-player.active {
   width: 36px;
   height: 36px;
   aspect-ratio: 1 / 1;
-  border-radius: 8px;
+  border-radius: 50% !important;
   object-fit: cover;
   background: #18181f;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
@@ -1975,4 +1976,10 @@ footer.dock-player input {
 
 footer.dock-player.is-playing .miniplayer-canvas-waveform {
   opacity: 1;
+}
+
+/* Dynamic active breathing neon border when playing */
+footer.dock-player.is-playing {
+  border-top: 1px solid var(--play-accent-color, rgba(250, 45, 72, 0.6)) !important;
+  box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.75), 0 -4px 20px var(--play-accent-color, rgba(250, 45, 72, 0.25)), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
 }
