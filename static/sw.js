@@ -1,22 +1,23 @@
-const CACHE_NAME = 'melo-cache-v8';
+const CACHE_NAME = 'melo-cache-v2.4.7';
 
-// Only precache files guaranteed to exist
+// Assets must match the exact versioned URLs requested in index.html
 const PRECACHE_ASSETS = [
   '/',
   '/static/manifest.json',
-  '/static/css/app.css',
-  '/static/js/app.js',
-  '/static/images/melo-text.png'
+  '/static/css/app.css?v=2.4.7',
+  '/static/js/app.js?v=2.4.7',
+  '/static/images/melo-text.png',
+  '/static/images/logo.png?v=2.4.7'
 ];
 
-// 1. Install & Cache Shell Assets Safely
+// 1. Install & Cache Shell Assets (Bypassing HTTP disk cache with reload)
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      // Individual cache fetches prevent one 404 from crashing the entire install
       for (const asset of PRECACHE_ASSETS) {
         try {
-          await cache.add(asset);
+          const res = await fetch(asset, { cache: 'reload' });
+          if (res.ok) await cache.put(asset, res);
         } catch (err) {
           console.warn(`[MELO:SW] Precache skipped for ${asset}:`, err);
         }
@@ -43,7 +44,7 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// 3. Fetch Strategy: Network-First for HTML/APIs, Cache-First for Static Assets
+// 3. Fetch Strategy
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
@@ -58,7 +59,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // B. Network-first for dynamic API routes (search, auth, lyrics, recommendations, sync)
+  // B. Network-first for dynamic API routes
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(req).catch(() => caches.match(req))
@@ -66,7 +67,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // C. Network-first for root HTML navigation to ensure updates reflect immediately
+  // C. Network-first for HTML navigation so page structure updates immediately
   if (req.mode === 'navigate' || url.pathname === '/') {
     event.respondWith(
       fetch(req)
@@ -82,7 +83,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // D. Stale-While-Revalidate for static assets (CSS, JS, images, fonts)
+  // D. Static Assets: Network-first for versioned bundles (?v=), fallback to cache
+  if (url.searchParams.has('v')) {
+    event.respondWith(
+      fetch(req)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, responseClone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // E. Stale-While-Revalidate for other static assets (fonts, unversioned icons)
   event.respondWith(
     caches.match(req).then((cachedResponse) => {
       const fetchPromise = fetch(req)
