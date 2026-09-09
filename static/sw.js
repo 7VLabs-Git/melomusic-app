@@ -11,37 +11,39 @@ const PRECACHE_ASSETS = [
 ];
 
 // 1. Install & Cache Shell Assets (Bypassing HTTP disk cache with reload)
+// 1. Install & Precache Assets
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       for (const asset of PRECACHE_ASSETS) {
         try {
           const res = await fetch(asset, { cache: 'reload' });
-          if (res.ok) await cache.put(asset, res);
+          if (res.ok) {
+            await cache.put(asset, res);
+          }
         } catch (err) {
           console.warn(`[MELO:SW] Precache skipped for ${asset}:`, err);
         }
       }
     })
   );
-  self.skipWaiting();
 });
 
-// 2. Clean Up Outdated Caches on Version Bump
+// 2. Purge Old Caches and Claim Clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
+    caches.keys().then((keys) => {
+      return Promise.all(
         keys
           .filter((k) => k !== CACHE_NAME)
           .map((k) => {
             console.log('[MELO:SW] Purging old cache:', k);
             return caches.delete(k);
           })
-      )
-    )
+      );
+    }).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 // 3. Fetch Strategy

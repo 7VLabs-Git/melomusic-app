@@ -373,7 +373,17 @@ function switchView(view, pushState = true) {
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!reduceMotion && document.startViewTransition) {
-    document.startViewTransition(run);
+    try {
+      const transition = document.startViewTransition(run);
+      transition.catch((err) => {
+        // Suppress benign transition aborts from rapid clicks or tab switches
+        if (err.name !== 'InvalidStateError' && err.name !== 'AbortError') {
+          console.warn('ViewTransition failed:', err);
+        }
+      });
+    } catch (e) {
+      run();
+    }
   } else {
     run();
   }
@@ -626,6 +636,7 @@ function restorePlaybackSession() {
         }
         syncSheetTrackInfo();
         syncPlaybackControlsUI();
+        fetchLyrics(track, activePlayToken);
       }
     }
   } catch (e) {}
@@ -2385,31 +2396,66 @@ async function actionDownloadSong() {
     closeContextMenu();
     return;
   }
+
+  const CIRCUMFERENCE = 56.55; // 2 * Math.PI * 9
   const dlRow = $id('ctxDownloadRow');
+
   if (dlRow) {
-    dlRow.innerHTML = `<svg class="download-spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="32" stroke-dashoffset="12" stroke-linecap="round"></circle></svg><span>Downloading Track...</span>`;
+    dlRow.innerHTML = `
+      <svg class="download-spinner is-spinning" viewBox="0 0 24 24">
+        <circle class="spinner-bg" cx="12" cy="12" r="9"></circle>
+        <circle class="spinner-bar" cx="12" cy="12" r="9" 
+          stroke-dasharray="${CIRCUMFERENCE}" 
+          stroke-dashoffset="${CIRCUMFERENCE}"></circle>
+      </svg>
+      <span class="dl-status-text" style="font-weight:600; color:#fff; margin-left:10px;">Starting download...</span>
+    `;
     dlRow.onclick = null;
   }
+
   showToast(`Downloading "${track.title}"...`);
+
   try {
     const streamUrl = `/api/download/${track.id}?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}&quality=${selectedQuality}`;
     const resp = await fetch(streamUrl);
     if (!resp.ok) throw new Error("Stream fetch failed");
+
     const total = Number(resp.headers.get('content-length')) || 0;
+    const spinnerSvg = dlRow?.querySelector('.download-spinner');
+    const spinnerBar = dlRow?.querySelector('.spinner-bar');
+    const statusText = dlRow?.querySelector('.dl-status-text');
+
+    // If total length is known, switch from spinning to precise radial progress
+    if (total > 0 && spinnerSvg) {
+      spinnerSvg.classList.remove('is-spinning');
+    }
+
     let received = 0;
     const chunks = [];
+
     if (resp.body?.getReader) {
       const reader = resp.body.getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
         chunks.push(value);
         received += value.byteLength;
-        if (dlRow && total) dlRow.querySelector('span').textContent = `Downloading ${Math.round((received / total) * 100)}%`;
+
+        if (total > 0) {
+          const pct = Math.min(1, received / total);
+          const offset = CIRCUMFERENCE * (1 - pct);
+          if (spinnerBar) spinnerBar.style.strokeDashoffset = offset;
+          if (statusText) statusText.textContent = `Downloading ${Math.round(pct * 100)}%`;
+        } else {
+          // Fallback if Content-Length header is omitted by server
+          const mb = (received / (1024 * 1024)).toFixed(1);
+          if (statusText) statusText.textContent = `Downloading (${mb} MB)...`;
+        }
       }
     }
+
     const blob = chunks.length ? new Blob(chunks, { type: 'audio/mp4' }) : await resp.blob();
-    // Save cleanly to IndexedDB and update player state without triggering browser external file downloads
     await saveTrackToOfflineDB(track, blob);
     await syncDownloadedPlaylist();
     showToast(`"${track.title}" saved offline!`);
@@ -2454,15 +2500,14 @@ function openFullscreenPlayer() {
     fsOverlay.style.display = 'flex';
   }
 
-  // Ensure current song lyrics sync immediately upon opening
   const current = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : window.currentTrack;
   if (current) {
     window.currentTrack = current;
-    if (typeof loadLyrics === 'function') {
-      loadLyrics(current);
-    } else if (typeof renderLyrics === 'function') {
-      renderLyrics(current.id || current);
-    } else if (typeof updateLyricsSync === 'function') {
+    
+    // If lyrics haven't been fetched for this session yet, fetch them now
+    if (!parsedLyrics || parsedLyrics.length === 0) {
+      fetchLyrics(current, activePlayToken);
+    } else {
       updateLyricsSync();
     }
   }
@@ -3188,6 +3233,59 @@ async function closeCinematicMode() {
   } catch (err) {}
 }
 
+// Current App Build Version (bump this string whenever you deploy updates)
+const CURRENT_APP_VERSION = '2.4.7';
+
+async function autoUpdateCache() {
+  const savedVersion = localStorage.getItem('melo_app_version');
+
+  // If the app version bumped or hasn't been set yet
+  if (savedVersion !== CURRENT_APP_VERSION) {
+    console.log(`[MELO] Upgrading from ${savedVersion || 'legacy'} to ${CURRENT_APP_VERSION}...`);
+
+    // 1. Clear Cache Storage ONLY (Leaves IndexedDB & localStorage intact)
+    if ('caches' in window) {
+      try {
+        const cacheKeys = await caches.keys();
+        await Promise.all(cacheKeys.map(key => caches.delete(key)));
+        console.log('[MELO] Stale service worker cache storage cleared.');
+      } catch (err) {
+        console.warn('[MELO] Error purging caches:', err);
+      }
+    }
+
+    // 2. Force Service Worker to update from server
+    if ('serviceWorker' in navigator) {
+      try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (registration) {
+          await registration.update();
+        }
+      } catch (err) {
+        console.warn('[MELO] Service worker update check skipped:', err);
+      }
+    }
+
+    // 3. Save new version and reload
+    localStorage.setItem('melo_app_version', CURRENT_APP_VERSION);
+    window.location.reload();
+    return;
+  }
+
+  // Guarded listener for background Service Worker activation to prevent reload loops
+  if ('serviceWorker' in navigator) {
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    });
+  }
+}
+
+// Run update check immediately
+autoUpdateCache();
+
 // ==========================================
 // 17. RUNTIME INITIALIZATION & CANVAS RENDERERS
 // ==========================================
@@ -3225,14 +3323,40 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
- // ==========================================
-  // MINI PLAYER CONTROLS & FULLSCREEN DELEGATION
+  // ==========================================
+  // MINI PLAYER CONTROLS & SWIPE-SAFE DELEGATION
   // ==========================================
   const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
 
   if (dockPlayer) {
+    let startY = 0;
+    let startX = 0;
+    let isTouchMove = false;
+
+    // Track touch coordinates to differentiate between scroll/swipe and a real tap
+    dockPlayer.addEventListener('touchstart', (e) => {
+      const t = e.touches[0];
+      startY = t.clientY;
+      startX = t.clientX;
+      isTouchMove = false;
+    }, { passive: true });
+
+    dockPlayer.addEventListener('touchmove', (e) => {
+      const t = e.touches[0];
+      // If user dragged finger more than 8px vertically or horizontally, flag as scrolling
+      if (Math.abs(t.clientY - startY) > 8 || Math.abs(t.clientX - startX) > 8) {
+        isTouchMove = true;
+      }
+    }, { passive: true });
+
     dockPlayer.addEventListener('click', (e) => {
-      // 1. Did the user click Play / Pause?
+      // 1. If user was fast-swiping or scrolling, abort completely
+      if (isTouchMove) {
+        isTouchMove = false;
+        return;
+      }
+
+      // 2. Play / Pause Button handling
       const playBtn = e.target.closest('#dockPlayBtn, #mDockPlayBtn');
       if (playBtn) {
         e.preventDefault();
@@ -3241,15 +3365,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // 2. Did the user tap any other control buttons, scrubbers, or wave canvas?
-      const isControl = e.target.closest(
-        'button, .control-btn, input, .dock-controls, #miniWaveCanvas'
-      );
+      // 3. Ignore control clicks, scrubber inputs, or wave visualizer
+      const isControl = e.target.closest('button, .control-btn, input, .dock-controls, #miniWaveCanvas');
       if (isControl) {
         return;
       }
 
-      // 3. Tapping background / song title expands fullscreen
+      // 4. Legitimate single tap opens fullscreen
       openFullscreenPlayer();
     });
   }
