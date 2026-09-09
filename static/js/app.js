@@ -328,35 +328,46 @@ function switchView(view, pushState = true) {
 
   document.querySelectorAll('.capsule-btn, .pill-nav-item').forEach(btn => btn.classList.remove('active'));
 
-  if (view === 'home') {
-    $id('navHome')?.classList.add('active');
-    $id('mNavHome')?.classList.add('active');
-    renderHomeView();
-  } else if (view === 'search') {
-    $id('navSearch')?.classList.add('active');
-    $id('mNavSearch')?.classList.add('active');
-    renderSearchView();
-  } else if (view === 'favorites') {
-    $id('navFavs')?.classList.add('active');
-    $id('mNavFavs')?.classList.add('active');
-    renderFavoritesView();
-  } else if (view === 'loved') {
-    $id('navFavs')?.classList.add('active');
-    $id('mNavFavs')?.classList.add('active');
-    renderLovedTracks();
-  } else if (view === 'history') {
-    $id('navFavs')?.classList.add('active');
-    $id('mNavFavs')?.classList.add('active');
-    renderHistoryView();
-  } else if (view === 'offline') {
-    $id('navFavs')?.classList.add('active');
-    $id('mNavFavs')?.classList.add('active');
-    renderOfflineVault();
-  } else if (view === 'account') {
-    renderAccountView();
+  // Encapsulate the DOM update so it can run instantly or with smooth view transitions
+  const run = () => {
+    if (view === 'home') {
+      $id('navHome')?.classList.add('active');
+      $id('mNavHome')?.classList.add('active');
+      renderHomeView();
+    } else if (view === 'search') {
+      $id('navSearch')?.classList.add('active');
+      $id('mNavSearch')?.classList.add('active');
+      renderSearchView();
+    } else if (view === 'favorites') {
+      $id('navFavs')?.classList.add('active');
+      $id('mNavFavs')?.classList.add('active');
+      renderFavoritesView();
+    } else if (view === 'loved') {
+      $id('navFavs')?.classList.add('active');
+      $id('mNavFavs')?.classList.add('active');
+      renderLovedTracks();
+    } else if (view === 'history') {
+      $id('navFavs')?.classList.add('active');
+      $id('mNavFavs')?.classList.add('active');
+      renderHistoryView();
+    } else if (view === 'offline') {
+      $id('navFavs')?.classList.add('active');
+      $id('mNavFavs')?.classList.add('active');
+      renderOfflineVault();
+    } else if (view === 'account') {
+      renderAccountView();
+    }
+    // Smooth scroll reset to top of viewport to prevent jank
+    const vp = $id('mainViewport');
+    if (vp) vp.scrollTop = 0;
+  };
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceMotion && document.startViewTransition) {
+    document.startViewTransition(run);
+  } else {
+    run();
   }
-  const vp = $id('mainViewport');
-  if (vp) vp.scrollTop = 0;
 }
 
 function goBack() {
@@ -3205,10 +3216,12 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(renderScrubberLiveWave, 80);
 
   // =========================================================
-  // FULL SCREEN LIVE FLUID BLOB MESH BACKGROUND
+  // FULL SCREEN LIVE FLUID BLOB MESH BACKGROUND (Throttled 30FPS)
   // =========================================================
   const fluidCanvases = [$id('fluidMeshCanvas')];
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   let fluidTime = 0;
+  let lastFluidFrame = 0;
 
   function resizeFluidCanvases() {
     fluidCanvases.forEach(canv => {
@@ -3220,12 +3233,17 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('resize', resizeFluidCanvases);
   setTimeout(resizeFluidCanvases, 40);
 
-  function renderLiveFluidMesh() {
+  function renderLiveFluidMesh(timestamp) {
     const isSheetOpen = $id('fullscreenPlayerOverlay')?.classList.contains('open');
-    if (!isSheetOpen) {
-      requestAnimationFrame(renderLiveFluidMesh);
-      return;
+    if (!isSheetOpen || prefersReducedMotion || document.hidden) {
+      return requestAnimationFrame(renderLiveFluidMesh);
     }
+
+    // Frame-skipping throttle: run only once every 33ms (~30 FPS) for battery optimization
+    if (timestamp - lastFluidFrame < 33) {
+      return requestAnimationFrame(renderLiveFluidMesh);
+    }
+    lastFluidFrame = timestamp;
 
     fluidTime += 0.008;
     const computedStyle = getComputedStyle(document.documentElement);
@@ -3248,7 +3266,7 @@ document.addEventListener('DOMContentLoaded', () => {
       fCtx.fillRect(0, 0, w, h);
 
       const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
-      const cy2 = h * (0.65 + 0.25 * Math.sin(fluidTime * 0.7));
+      const cy2 = h * (0.65 + 0.2 * Math.sin(fluidTime * 0.7));
       const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
       g2.addColorStop(0, color2);
       g2.addColorStop(1, 'transparent');
@@ -3258,7 +3276,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     requestAnimationFrame(renderLiveFluidMesh);
   }
-  setTimeout(renderLiveFluidMesh, 100);
+  requestAnimationFrame(renderLiveFluidMesh);
 
   // Initialize Home View
   switchView('home', false);
