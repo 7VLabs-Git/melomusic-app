@@ -4,14 +4,26 @@
 venv/
 env/
 
-# Python Cache
+# Python Cache & Bytecode
 __pycache__/
 *.py[cod]
+*$py.class
 
-# Sensitive credentials & keys
+# Local Databases & State
+*.db
+*.sqlite3
+melo_cloud.db
+
+# Sensitive Credentials & Session Tokens
 cookies.txt
 .env
+.env.*
 
-# OS Files
+# VS Code (Keeps configuration, ignores personal editor state)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Operating System Files
 .DS_Store
 Thumbs.db
