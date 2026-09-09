@@ -6,7 +6,8 @@ aiofiles
 pyDes
 ytmusicapi
 sqlalchemy
-passlib[bcrypt]
+passlib[argon2,bcrypt]
 bcrypt==4.0.1
+argon2-cffi
 python-multipart
 psycopg2-binary
