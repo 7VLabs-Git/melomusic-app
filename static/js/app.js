@@ -2347,6 +2347,118 @@ if (document.readyState === 'loading') {
 window.addEventListener('offline', updateOfflinePlayerVisibility);
 window.addEventListener('online', updateOfflinePlayerVisibility);
 
+// ==========================================
+// FULLSCREEN PLAYER FLUID DISMISSAL ENGINE
+// ==========================================
+function initFullscreenSwipeDown() {
+  const sheet = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
+  if (!sheet) return;
+
+  let startY = 0;
+  let startX = 0;
+  let currentY = 0;
+  let isDragging = false;
+  let isGestureLocked = false;
+  let startTime = 0;
+
+  sheet.addEventListener('touchstart', (e) => {
+    if (!sheet.classList.contains('open')) return;
+    if (e.target.closest('#scrubberTrackBase, input[type="range"]')) return;
+
+    const scrollableParent = e.target.closest('.lyrics-scroll-container, #sheetViewLyrics, #sheetViewQueue');
+    if (scrollableParent && scrollableParent.scrollTop > 0) return;
+
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    currentY = startY;
+    startTime = Date.now();
+    isDragging = false;
+    isGestureLocked = false;
+  }, { passive: true });
+
+  sheet.addEventListener('touchmove', (e) => {
+    if (!startY) return;
+
+    const touchY = e.touches[0].clientY;
+    const touchX = e.touches[0].clientX;
+    const deltaY = touchY - startY;
+    const deltaX = Math.abs(touchX - startX);
+
+    if (!isGestureLocked) {
+      if (Math.abs(deltaY) > 8 && Math.abs(deltaY) > deltaX) {
+        if (deltaY > 0) {
+          isGestureLocked = true;
+          isDragging = true;
+          sheet.classList.add('is-dragging');
+        } else {
+          startY = 0;
+          return;
+        }
+      } else if (deltaX > 10) {
+        startY = 0;
+        return;
+      }
+    }
+
+    if (!isDragging) return;
+
+    currentY = touchY;
+    const travel = Math.max(0, deltaY);
+    const progress = Math.min(travel / (window.innerHeight * 0.7), 1);
+
+    // 1:1 physical tracking
+    sheet.style.transform = `translateY(${travel}px) scale(${1 - progress * 0.08})`;
+    sheet.style.borderRadius = `${progress * 28}px`;
+    sheet.style.opacity = `${1 - progress * 0.25}`;
+  }, { passive: false });
+
+  const finishGesture = () => {
+    if (!isDragging) {
+      startY = 0;
+      return;
+    }
+
+    sheet.classList.remove('is-dragging');
+    const travel = currentY - startY;
+    const duration = Date.now() - startTime;
+    const velocity = travel / (duration || 1);
+
+    const shouldClose = travel > 120 || (velocity > 0.45 && travel > 30);
+
+    if (shouldClose) {
+      // Smoothly animate the rest of the way down from where the finger was released
+      sheet.style.transition = 'transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.24s ease, border-radius 0.28s ease';
+      sheet.style.transform = 'translateY(100%) scale(0.92)';
+      sheet.style.opacity = '0';
+      sheet.style.borderRadius = '32px';
+
+      setTimeout(() => {
+        closeFullscreenPlayer();
+      }, 280);
+    } else {
+      // Snap back up to fullscreen
+      sheet.style.transition = 'transform 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.15), opacity 0.2s ease, border-radius 0.32s ease';
+      sheet.style.transform = 'translateY(0px) scale(1)';
+      sheet.style.opacity = '1';
+      sheet.style.borderRadius = '0px';
+
+      setTimeout(() => {
+        sheet.style.transform = '';
+        sheet.style.opacity = '';
+        sheet.style.borderRadius = '';
+        sheet.style.transition = '';
+      }, 320);
+    }
+
+    startY = 0;
+    isDragging = false;
+    isGestureLocked = false;
+  };
+
+  sheet.addEventListener('touchend', finishGesture, { passive: true });
+  sheet.addEventListener('touchcancel', finishGesture, { passive: true });
+}
+
 function renderHomeView() {
   // If offline, redirect directly to the offline view
   if (!navigator.onLine) return renderHomeOfflineView();
@@ -2371,9 +2483,9 @@ function renderHomeView() {
           <span class="qp-subtext">${validHistory.length > 0 ? 'Because you listened to' : 'Recommended For You'}</span>
           <h2 class="qp-artist-name" title="${accountText(seedArtist)}">${accountText(seedArtist)}</h2>
         </div>
-        <a onclick="loadShelfCategory('${artistEsc}', 'quickPicksGrid')" title="Refresh" class="shelf-refresh-btn">
+        <button type="button" onclick="refreshQuickPicks('${artistEsc}')" title="Refresh" class="shelf-refresh-btn" aria-label="Refresh Quick Picks">
           <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-        </a>
+        </button>
       </div>
       <div class="capsule-grid" id="quickPicksGrid" onscroll="updateQuickPicksDots()" style="margin-bottom:0;"></div>
       <div class="qp-dots-container" id="quickPicksDots"></div>
@@ -2609,6 +2721,35 @@ async function loadShelfCategory(query, containerId) {
     if (c) c.innerHTML = '';
   }
 }
+
+async function refreshQuickPicks(artist) {
+  const grid = $id('quickPicksGrid');
+  const btn = document.querySelector('.quick-picks-spotlight .shelf-refresh-btn');
+  if (!grid) return;
+
+  // Add smooth spin to button without clearing container contents
+  if (btn) btn.classList.add('is-spinning');
+  grid.style.opacity = '0.45';
+  grid.style.transition = 'opacity 0.2s ease';
+
+  try {
+    const res = await fetch(`/api/search?query=${encodeURIComponent(artist)}`);
+    const data = await res.json();
+    let items = (data.results || []).map(normalizeTrackData);
+    items.sort(() => Math.random() - 0.5);
+    categoryData['quickPicksGrid'] = items;
+    renderGridContainer('quickPicksGrid', items.slice(0, 6));
+    grid.scrollTo({ left: 0, behavior: 'smooth' });
+    if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
+  } catch (e) {
+  } finally {
+    grid.style.opacity = '1';
+    if (btn) {
+      setTimeout(() => btn.classList.remove('is-spinning'), 400);
+    }
+  }
+}
+window.refreshQuickPicks = refreshQuickPicks;
 
 function renderGridContainer(containerId, items) {
   const c = $id(containerId);
@@ -3275,18 +3416,26 @@ async function executePlaylistImport() {
 }
 
 function openFullscreenPlayer() {
-  const fsOverlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
-  if (fsOverlay) {
-    fsOverlay.classList.add('open');
-    fsOverlay.classList.add('active');
-    fsOverlay.style.display = 'flex';
+  const overlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
+  if (!overlay) return;
+
+  if (overlay._animTimer) {
+    clearTimeout(overlay._animTimer);
+    overlay._animTimer = null;
   }
+
+  // Clear any residual inline drag styles so CSS classes take over cleanly
+  overlay.style.transform = '';
+  overlay.style.opacity = '';
+  overlay.style.borderRadius = '';
+  overlay.style.transition = '';
+
+  // Trigger CSS-driven upward slide
+  overlay.classList.add('open', 'active');
 
   const current = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : window.currentTrack;
   if (current) {
     window.currentTrack = current;
-    
-    // If lyrics haven't been fetched for this session yet, fetch them now
     if (!parsedLyrics || parsedLyrics.length === 0) {
       fetchLyrics(current, activePlayToken);
     } else {
@@ -3294,13 +3443,27 @@ function openFullscreenPlayer() {
     }
   }
 }
+window.openFullscreenPlayer = openFullscreenPlayer;
 
 function closeFullscreenPlayer() {
-  const overlay = $id('fullscreenPlayerOverlay');
-  if (!overlay) return;
+  const overlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
+  if (!overlay || !overlay.classList.contains('open')) return;
+
+  if (overlay._animTimer) {
+    clearTimeout(overlay._animTimer);
+    overlay._animTimer = null;
+  }
+
+  // 1. Remove the open class so CSS naturally animates back to translateY(100%) and visibility: hidden
+  overlay.classList.remove('open', 'active');
+  
+  // 2. Clear any dragging inline styles to allow pure CSS transition to play out
   overlay.style.transform = '';
-  overlay.classList.remove('open');
+  overlay.style.opacity = '';
+  overlay.style.borderRadius = '';
+  overlay.style.transition = '';
 }
+window.closeFullscreenPlayer = closeFullscreenPlayer;
 
 function openSettingsModal() { $id('settingsModal')?.classList.add('open'); }
 function closeSettingsModal() { $id('settingsModal')?.classList.remove('open'); }
@@ -4150,6 +4313,7 @@ document.addEventListener('DOMContentLoaded', () => {
   checkAuthStatus();
   initScrubberHandlers();
   initLyricsUserScroll();
+  initFullscreenSwipeDown();
   restorePlaybackSession();
 
   // ==========================================
@@ -4228,14 +4392,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // ANDROID HARDWARE BACK BUTTON SUPPORT
   // ==========================================
   window.addEventListener('popstate', (e) => {
-    if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
-      switchView('home', false);
-    } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
-      goBack();
-    } else {
-      goBack();
-    }
-  });
+  const fsOverlay = $id('fullscreenPlayerOverlay');
+  if (fsOverlay && fsOverlay.classList.contains('open')) {
+    closeFullscreenPlayer();
+    return;
+  }
+  
+  if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
+    switchView('home', false);
+  } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
+    goBack();
+  } else {
+    goBack();
+  }
+});
 
   window.addEventListener('online', () => { 
   if (currentUser) store.pushToCloud();
