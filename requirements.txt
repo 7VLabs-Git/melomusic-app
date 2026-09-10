@@ -13,3 +13,4 @@ python-multipart
 psycopg2-binary
 PyJWT
 email-validator
+python-dotenv
