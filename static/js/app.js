@@ -6,6 +6,20 @@ const $id = id => document.getElementById(id);
 window.__contextTrackMap = {};
 
 // ==========================================
+// PIXEL M3 EXPRESSIVE LOADER GENERATOR
+// ==========================================
+function createMeloLoader() {
+  return `
+    <div class="melo-inline-loader">
+      <div class="m3e-morph-indicator">
+        <div class="m3e-morph-shape"></div>
+      </div>
+    </div>
+  `;
+}
+window.createMeloLoader = createMeloLoader;
+
+// ==========================================
 // 1. DATA STORAGE & SYNC ENGINE
 // ==========================================
 class MeloDataLayer {
@@ -275,6 +289,7 @@ class MeloDataLayer {
 // 2. STATE & VARIABLES
 // ==========================================
 const store = new MeloDataLayer();
+let previousNavView = 'home';
 let playlist = [];
 let forYouTracks = [];
 let categoryData = {};
@@ -322,6 +337,10 @@ let meloConfirmationAction = null;
 // 3. CORE NAVIGATION & HOISTED UTILITIES
 // ==========================================
 function switchView(view, pushState = true) {
+  // At the top of switchView:
+if (activeView !== view && !['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
+  previousNavView = activeView;
+}
   if (pushState && activeView !== view) {
     navigationHistory.push(view);
   }
@@ -361,6 +380,14 @@ function switchView(view, pushState = true) {
       openFullscreenPlayer();
     }
 
+   // Inside switchView(view, pushState = true) in static/js/app.js:
+if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
+  document.documentElement.style.removeProperty('--pl-dynamic-bg');
+  document.documentElement.style.removeProperty('--pl-dynamic-mid');
+  document.documentElement.style.removeProperty('--pl-dynamic-deep');
+  document.documentElement.style.removeProperty('--pl-dynamic-accent');
+}
+
     // Hide fullscreen overlay if switching back to standard navigation tabs
     if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
       closeFullscreenPlayer();
@@ -390,14 +417,25 @@ function switchView(view, pushState = true) {
 }
 
 function goBack() {
-  if (navigationHistory.length > 1) {
-    navigationHistory.pop();
-    const prev = navigationHistory[navigationHistory.length - 1];
-    switchView(prev, false);
+  // Hub sub-views and details must return to Music Hub (favorites)
+  const hubViews = ['favorites', 'loved', 'history', 'offline', 'hub', 'library'];
+  
+  if (['playlist-detail', 'album-detail', 'artist-detail', 'loved', 'history', 'offline'].includes(activeView)) {
+    // If we entered from Search or Home, return there; otherwise return to Music Hub
+    if (previousNavView === 'search') {
+      switchView('search');
+    } else if (previousNavView === 'home') {
+      switchView('home');
+    } else {
+      switchView('favorites');
+    }
+  } else if (window.history.length > 1) {
+    window.history.back();
   } else {
-    switchView('home', false);
+    switchView('favorites');
   }
 }
+window.goBack = goBack;
 
 function scrollToCategory(id) {
   const el = $id(id);
@@ -660,35 +698,54 @@ function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
   let hash = 0;
   const seed = fallbackSeed || 'melo';
   for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
-  const r0 = Math.abs((hash * 47) % 160) + 70, g0 = Math.abs((hash * 29) % 130) + 40, b0 = Math.abs((hash * 61) % 170) + 60;
-  document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r0}, ${g0}, ${b0}, 0.72)`);
-  document.documentElement.style.setProperty('--pl-dynamic-bg-dark', `rgba(${r0}, ${g0}, ${b0}, 0.15)`);
+  const defR = Math.abs((hash * 47) % 160) + 70;
+  const defG = Math.abs((hash * 29) % 130) + 40;
+  const defB = Math.abs((hash * 61) % 170) + 60;
+
+  const setColors = (r, g, b) => {
+    // Rich cover glow at the header
+    document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r}, ${g}, ${b}, 0.65)`);
+    // Calibrated subtle ambient tint for song list (12% alpha)
+    document.documentElement.style.setProperty('--pl-dynamic-mid', `rgba(${r}, ${g}, ${b}, 0.12)`);
+    // Dark floor with matching tone so scroll depth has zero black cutoffs
+    const deepTone = `rgb(${Math.floor(r * 0.06) + 7}, ${Math.floor(g * 0.06) + 8}, ${Math.floor(b * 0.06) + 11})`;
+    document.documentElement.style.setProperty('--pl-dynamic-deep', deepTone);
+  };
+
+  setColors(defR, defG, defB);
   if (!imgUrl) return;
+
   let safeUrl = imgUrl;
   if ((safeUrl.startsWith('http://') || safeUrl.startsWith('https://')) && !safeUrl.includes('/api/proxy-image')) {
     safeUrl = `/api/proxy-image?url=${encodeURIComponent(safeUrl)}`;
   }
+
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.src = safeUrl;
   img.onload = () => {
     try {
-      const cvs = document.createElement("canvas"), ctx = cvs.getContext("2d");
-      cvs.width = 32; cvs.height = 32;
+      const cvs = document.createElement("canvas");
+      const ctx = cvs.getContext("2d");
+      cvs.width = 32; 
+      cvs.height = 32;
       ctx.drawImage(img, 0, 0, 32, 32);
       const data = ctx.getImageData(0, 0, 32, 32).data;
       let r = 0, g = 0, b = 0, count = 0;
       for (let i = 0; i < data.length; i += 4) {
         if (data[i + 3] > 128) {
-          r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+          r += data[i]; 
+          g += data[i + 1]; 
+          b += data[i + 2]; 
+          count++;
         }
       }
       if (count > 0) {
-        r = Math.min(255, Math.round(r / count * 1.15));
-        g = Math.min(255, Math.round(g / count * 1.15));
-        b = Math.min(255, Math.round(b / count * 1.15));
-        document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r}, ${g}, ${b}, 0.72)`);
-        document.documentElement.style.setProperty('--pl-dynamic-bg-dark', `rgba(${r}, ${g}, ${b}, 0.15)`);
+        setColors(
+          Math.min(255, Math.round((r / count) * 1.05)),
+          Math.min(255, Math.round((g / count) * 1.05)),
+          Math.min(255, Math.round((g / count) * 1.05))
+        );
       }
     } catch (e) {}
   };
@@ -736,6 +793,8 @@ async function playIndex(idx) {
   const track = playlist[currentIndex];
   const audio = $id('audio');
 
+  showMeloLoader('STARTING AUDIO...'); // <--- Show Loader
+
   listeningCandidate = { track, queueToken: activePlayToken, recorded: false };
   store.saveQueue({ tracks: playlist, currentIndex, context: currentPlaylistContextId });
 
@@ -751,6 +810,8 @@ async function playIndex(idx) {
 
   if (audio) {
     try {
+      showMeloLoader('STARTING AUDIO...');
+
       const offlineRecord = await getTrackFromOfflineDB(track.id);
       if (offlineRecord && offlineRecord.blob) {
         audio.src = URL.createObjectURL(offlineRecord.blob);
@@ -776,9 +837,15 @@ async function playIndex(idx) {
                 setTimeout(() => nextTrack(), 1500);
               }
             }
+          })
+          .finally(() => {
+            hideMeloLoader();
           });
+      } else {
+        hideMeloLoader();
       }
     } catch (err) {
+      hideMeloLoader();
       showToast("Unable to load audio track.");
     }
   }
@@ -1423,16 +1490,26 @@ function reorderPlaylistTrack(playlistId, from, to) {
 // 12. SEARCH & DISCOVERY ENGINE
 // ==========================================
 async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
+  const el = $id(containerId);
+  if (el) el.innerHTML = createMeloLoader();
+
   try {
     const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
     const data = await res.json();
     const items = (data.results || []).map(normalizeTrackData);
     categoryData[containerId] = items;
     renderGridContainer(containerId, items.slice(0, limit));
-  } catch (err) {}
+  } catch (err) {
+    if (el) el.innerHTML = '';
+  }
 }
 
 function renderSearchView() {
+  // Direct guard: If offline, route to offline search page immediately
+  if (!navigator.onLine) {
+    return renderSearchOfflineView();
+  }
+
   const vc = $id('viewContainer');
   if (!vc) return;
   vc.innerHTML = `
@@ -1466,9 +1543,9 @@ function renderSearchView() {
       <div id="defaultExploreArea" style="display: ${globalSearchState.query ? 'none' : 'block'};">
         <div class="section-heading"><h2>Explore by Mood & Genre</h2></div>
         <div class="search-mood-cards">
-          <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')" style="background-color: #e11d48;"><span>Romance</span><span class="mood-icon">💖</span></div>
-          <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')" style="background-color: #ea580c;"><span>Punjabi Wave</span><span class="mood-icon">🔥</span></div>
-          <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')" style="background-color: #7c3aed;"><span>Desi Rap</span><span class="mood-icon">⚡</span></div>
+          <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')" style="background-color: #e11d48;"><span>Romance</span><span class="mood-icon">🤍</span></div>
+          <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')" style="background-color: #ea580c;"><span>Punjabi Wave</span><span class="mood-icon">🪩</span></div>
+          <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')" style="background-color: #7c3aed;"><span>Desi Rap</span><span class="mood-icon">🎙️</span></div>
           <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')" style="background-color: #2563eb;"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
         </div>
       </div>
@@ -1526,11 +1603,17 @@ async function executeLiveSearch(query) {
   if (!area) return;
   if (currentSearchAbort) currentSearchAbort.abort();
   currentSearchAbort = new AbortController();
-  area.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">Searching...</div>';
+
+  // Only render the loader if the network request takes longer than 200ms
+  const loaderTimer = setTimeout(() => {
+    area.innerHTML = createMeloLoader();
+  }, 200);
 
   try {
     const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`, { signal: currentSearchAbort.signal });
     const data = await res.json();
+    clearTimeout(loaderTimer);
+
     const items = (data.results || []).map(normalizeTrackData);
     if (!items.length) {
       area.innerHTML = `<div class="library-empty compact" style="margin-top:20px;"><strong>No results found</strong><span>Try checking your spelling or using different keywords.</span></div>`;
@@ -1596,6 +1679,7 @@ async function executeLiveSearch(query) {
     if ($id('searchAlbumsGrid')) renderSimulatedGrid('searchAlbumsGrid', uniqueAlbums.slice(0, 6), 'album');
     if ($id('searchArtistsGrid')) renderSimulatedGrid('searchArtistsGrid', uniqueArtists.slice(0, 6), 'artist');
   } catch (err) {
+    clearTimeout(loaderTimer);
     if (err.name !== 'AbortError') {
       area.innerHTML = `<div class="library-empty compact" style="margin-top:20px;"><strong>Connection Error</strong><span>Unable to reach MELO servers. Please try again.</span><button class="pill-action-btn" onclick="executeLiveSearch('${accountText(query)}')" style="margin-top:12px;">Retry</button></div>`;
     }
@@ -1631,23 +1715,25 @@ function openArtistView(artistName, thumb) {
   vc.innerHTML = `
     <div class="playlist-immersive-view">
       <div class="playlist-immersive-hero" style="background-image: url('${thumb}');">
-        <div style="position:absolute; top:28px; left:28px; right:28px; display:flex; justify-content:space-between; align-items:center; z-index:10;">
+        <div class="playlist-top-nav-row">
           <button class="circle-back-btn" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
         </div>
         <div class="playlist-backdrop-content">
           <span class="pl-meta-tag">Artist</span>
           <div class="playlist-immersive-title-row"><h1 class="playlist-immersive-title">${accountText(artistName)}</h1></div>
-          <div class="playlist-immersive-actions">
-            <button class="pill-action-btn" onclick="quickSearch('${accountText(artistName)}')">
-              <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
-              <span>Play Popular</span>
-            </button>
-          </div>
+        </div>
+      </div>
+      <div class="playlist-action-bar-strip">
+        <div class="playlist-immersive-actions">
+          <button class="pill-action-btn pl-play-all-btn" onclick="quickSearch('${accountText(artistName)}')">
+            <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play Popular</span>
+          </button>
         </div>
       </div>
       <div class="playlist-tracks-section">
         <div class="section-heading"><h2>Popular Tracks</h2></div>
-        <div id="artistTracksBox">Loading...</div>
+        <div id="artistTracksBox">${createMeloLoader()}</div>
       </div>
     </div>`;
   applyPlaylistDynamicColors(thumb, artistName);
@@ -1665,24 +1751,26 @@ function openAlbumView(albumName, artistName, thumb) {
   vc.innerHTML = `
     <div class="playlist-immersive-view">
       <div class="playlist-immersive-hero" style="background-image: url('${thumb}');">
-        <div style="position:absolute; top:28px; left:28px; right:28px; display:flex; justify-content:space-between; align-items:center; z-index:10;">
+        <div class="playlist-top-nav-row">
           <button class="circle-back-btn" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
         </div>
         <div class="playlist-backdrop-content">
           <span class="pl-meta-tag">Album</span>
           <div class="playlist-immersive-title-row"><h1 class="playlist-immersive-title">${accountText(albumName)}</h1></div>
           <div class="playlist-immersive-stats">${accountText(artistName)}</div>
-          <div class="playlist-immersive-actions">
-            <button class="pill-action-btn" onclick="quickSearch('${accountText(albumName + ' ' + artistName)}')">
-              <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
-              <span>Play Album</span>
-            </button>
-          </div>
+        </div>
+      </div>
+      <div class="playlist-action-bar-strip">
+        <div class="playlist-immersive-actions">
+          <button class="pill-action-btn pl-play-all-btn" onclick="quickSearch('${accountText(albumName + ' ' + artistName)}')">
+            <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+            <span>Play Album</span>
+          </button>
         </div>
       </div>
       <div class="playlist-tracks-section">
         <div class="section-heading"><h2>Tracklist</h2></div>
-        <div id="albumTracksBox">Loading...</div>
+        <div id="albumTracksBox">${createMeloLoader()}</div>
       </div>
     </div>`;
   applyPlaylistDynamicColors(thumb, albumName);
@@ -1737,25 +1825,560 @@ function renderRecentSearches() {
 }
 
 // ==========================================
-// 13. DISCOVERY HOME
+// MINIMAL OFFLINE HOME VIEW (RESTORED SVG)
 // ==========================================
-function renderHomeView() {
+function renderHomeOfflineView() {
   const vc = $id('viewContainer');
   if (!vc) return;
-  const recentHistory = store.getHistory();
-  let quickPicksHtml = '';
-  const validHistory = recentHistory.filter(e => e && e.track && e.track.artist);
 
-  if (validHistory.length > 0) {
-    const lastPlayed = validHistory[validHistory.length - 1].track;
-    quickPicksHtml = `
-      <div class="section-heading" id="quickPicksShelf">
-        <h2>Because you listened to ${accountText(lastPlayed.artist)}</h2>
-        <a onclick="loadShelfCategory('${accountText(lastPlayed.artist)}', 'quickPicksGrid')">Refresh</a>
+  const count = (typeof playlists !== 'undefined' && playlists?.['pl-downloads']?.tracks?.length) || 0;
+
+  vc.innerHTML = `
+    <div class="stage-content">
+      <!-- Standard Top Brand Bar -->
+      <div class="home-brand-header">
+        <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center;">
+          <img src="/static/images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
+        </div>
+        <button class="sheet-icon-btn" onclick="openSettingsModal()" title="Settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
       </div>
-      <div class="capsule-grid" id="quickPicksGrid"></div>
-    `;
+
+      <!-- Frameless Centered Offline Content -->
+      <div class="melo-offline-minimal">
+        <div class="offline-svg-wrapper">
+          <svg class="melo-offline-illustration" viewBox="0 0 200 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Glow backdrop -->
+            <ellipse cx="100" cy="90" rx="65" ry="50" fill="rgba(250, 45, 72, 0.12)" filter="blur(14px)" />
+            
+            <!-- Broken Signal Waves -->
+            <path class="wave-static wave-1" d="M30 45 C 50 30, 70 30, 90 45" stroke="#fa2d48" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 6" />
+            <path class="wave-static wave-2" d="M110 45 C 130 30, 150 30, 170 45" stroke="#fa2d48" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4 6" />
+            
+            <!-- Cassette Body -->
+            <rect x="35" y="55" width="130" height="82" rx="10" fill="#16181f" stroke="#2a2d3d" stroke-width="2" />
+            <rect x="43" y="63" width="114" height="66" rx="6" fill="#0f1015" />
+
+            <!-- Tape Label -->
+            <path d="M50 70 H150 V100 H50 Z" fill="#fa2d48" fill-opacity="0.15" />
+            <line x1="50" y1="85" x2="150" y2="85" stroke="#fa2d48" stroke-width="1.5" stroke-opacity="0.4" />
+
+            <!-- Spools / Eyes -->
+            <circle cx="75" cy="95" r="14" fill="#1c1e27" stroke="#3b3f54" stroke-width="2" />
+            <circle cx="125" cy="95" r="14" fill="#1c1e27" stroke="#3b3f54" stroke-width="2" />
+            
+            <!-- Dizzy Spool Teeth -->
+            <path class="spool-x" d="M70 90 L80 100 M80 90 L70 100" stroke="#fa2d48" stroke-width="2.2" stroke-linecap="round" />
+            <path class="spool-x" d="M120 90 L130 100 M130 90 L120 100" stroke="#fa2d48" stroke-width="2.2" stroke-linecap="round" />
+
+            <!-- Tangled Ribbon Tongue -->
+            <path class="tape-tongue" d="M85 116 C 90 125, 110 125, 115 116" stroke="#fa2d48" stroke-width="2.5" stroke-linecap="round" fill="none" />
+            <path class="tangled-thread" d="M96 122 C 90 140, 115 145, 100 160 C 95 166, 85 158, 80 168" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round" fill="none" />
+
+            <!-- Loose Plug & Floating Sparks -->
+            <circle class="sparkle sp-1" cx="38" cy="135" r="2" fill="#fa2d48" />
+            <circle class="sparkle sp-2" cx="162" cy="70" r="2.5" fill="#ff4d6d" />
+            <path class="plug-loose" d="M165 140 L175 148 M172 138 L180 144" stroke="#5a5e73" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </div>
+
+        <div class="melo-offline-info">
+          <span class="offline-badge">SIGNAL LOST</span>
+          <h2 class="melo-offline-title">Tape’s Tangled.</h2>
+          <p class="melo-offline-desc">Internet ghosted us, but your vault didn’t.</p>
+        </div>
+
+        <button class="melo-offline-btn" onclick="switchView('offline')">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Downloaded Songs</span>
+          <span class="melo-offline-count">${count}</span>
+        </button>
+      </div>
+    </div>
+  `;
+
+  setupBottomGlowWatcher();
+}
+
+window.renderHomeOfflineView = renderHomeOfflineView;
+
+function handleHomeScroll(el) {
+  const glow = $id('homeBottomGlow');
+  if (!glow) return;
+  if (el.scrollTop > 30) {
+    glow.classList.add('visible');
+  } else {
+    glow.classList.remove('visible');
   }
+}
+
+window.renderHomeOfflineView = renderHomeOfflineView;
+window.handleHomeScroll = handleHomeScroll;
+
+// ==========================================
+// 13. DISCOVERY HOME
+// ==========================================
+function checkConnectionAndReload() {
+  if (navigator.onLine) {
+    showToast("Reconnected! Tuning back in...");
+    renderHomeView();
+  } else {
+    showToast("Still offline. Check Wi-Fi or mobile data.");
+  }
+}
+
+window.renderHomeOfflineView = renderHomeOfflineView;
+window.checkConnectionAndReload = checkConnectionAndReload;
+
+function initQuickPicksObserver() {
+  const spotlight = $id('quickPicksSpotlightBox');
+  if (!spotlight || !('IntersectionObserver' in window)) return;
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        spotlight.classList.remove('paused');
+      } else {
+        spotlight.classList.add('paused');
+      }
+    });
+  }, { threshold: 0.1 });
+
+  observer.observe(spotlight);
+}
+
+function initQuickPicksDots(containerId = 'quickPicksGrid', dotsContainerId = 'quickPicksDots') {
+  const grid = $id(containerId);
+  const dotsContainer = $id(dotsContainerId);
+  if (!grid || !dotsContainer) return;
+
+  const items = grid.children;
+  if (!items.length) {
+    dotsContainer.innerHTML = '';
+    return;
+  }
+
+  dotsContainer.innerHTML = Array.from(items).map((_, i) => `<span class="qp-dot ${i === 0 ? 'active' : ''}" onclick="scrollQuickPicksTo(${i})"></span>`).join('');
+}
+
+function scrollQuickPicksTo(index) {
+  const grid = $id('quickPicksGrid');
+  if (!grid) return;
+  const items = grid.children;
+  if (items[index]) {
+    grid.scrollTo({ left: items[index].offsetLeft - grid.offsetLeft, behavior: 'smooth' });
+  }
+}
+
+function updateQuickPicksDots() {
+  const grid = $id('quickPicksGrid');
+  const dotsContainer = $id('quickPicksDots');
+  if (!grid || !dotsContainer) return;
+
+  const items = grid.children;
+  if (!items.length) return;
+
+  const scrollLeft = grid.scrollLeft;
+  let closestIndex = 0;
+  let minDiff = Infinity;
+
+  Array.from(items).forEach((item, i) => {
+    const diff = Math.abs(item.offsetLeft - grid.offsetLeft - scrollLeft);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closestIndex = i;
+    }
+  });
+
+  const dots = dotsContainer.children;
+  Array.from(dots).forEach((dot, i) => {
+    dot.classList.toggle('active', i === closestIndex);
+  });
+}
+window.scrollQuickPicksTo = scrollQuickPicksTo;
+window.updateQuickPicksDots = updateQuickPicksDots;
+window.initQuickPicksObserver = initQuickPicksObserver;
+
+function loadForYouCatalog(query = 'Flow') {
+  return loadPersonalizedForYou(typeof query === 'string' ? query : 'Flow');
+}
+window.loadForYouCatalog = loadForYouCatalog;
+
+// ==========================================
+// BOTTOM SCROLL RED GLOW ENGINE
+// ==========================================
+function setupBottomGlowWatcher() {
+  let glow = document.getElementById('homeBottomGlow');
+  if (!glow) {
+    glow = document.createElement('div');
+    glow.id = 'homeBottomGlow';
+    document.body.appendChild(glow);
+  }
+
+  const updateGlow = () => {
+    const vc = document.getElementById('viewContainer');
+    const scrollPositions = [
+      window.scrollY || 0,
+      document.documentElement.scrollTop || 0,
+      document.body.scrollTop || 0,
+      vc ? vc.scrollTop : 0
+    ];
+    const maxScroll = Math.max(...scrollPositions);
+
+    if (maxScroll > 20) {
+      glow.classList.add('visible');
+    } else {
+      glow.classList.remove('visible');
+    }
+  };
+
+  // The 'true' capture flag catches scrolling inside viewContainer or any nested div
+  window.removeEventListener('scroll', updateGlow, true);
+  window.addEventListener('scroll', updateGlow, true);
+  updateGlow();
+}
+window.setupBottomGlowWatcher = setupBottomGlowWatcher;
+
+// Global switchView router in case other buttons call it
+// Current view tracker
+let currentView = 'home';
+
+function routeHomeView() {
+  currentView = 'home';
+  if (!navigator.onLine) {
+    if (typeof renderHomeOfflineView === 'function') {
+      renderHomeOfflineView();
+    }
+  } else {
+    if (typeof renderHomeView === 'function') {
+      renderHomeView();
+    }
+  }
+}
+window.routeHomeView = routeHomeView;
+
+// ==========================================
+// 3. CORE NAVIGATION & ROBUST VIEW STACK
+// ==========================================
+
+// Dedicated navigation stack to track where the user actually came from
+let viewStack = ['home'];
+
+function updateNavActiveStates(viewName) {
+  const idMap = {
+    'home': ['navHome', 'mNavHome'],
+    'search': ['navSearch', 'mNavSearch'],
+    'favorites': ['navFavs', 'mNavFavs'],
+    'loved': ['navFavs', 'mNavFavs'],
+    'history': ['navFavs', 'mNavFavs'],
+    'offline': ['navFavs', 'mNavFavs']
+  };
+
+  document.querySelectorAll('.capsule-btn, .pill-nav-item').forEach(btn => btn.classList.remove('active'));
+  const activeIds = idMap[viewName] || [];
+  activeIds.forEach(id => $id(id)?.classList.add('active'));
+}
+
+function switchView(view, pushState = true) {
+  updateOfflinePlayerVisibility();
+
+  // If selecting a root tab from navigation bar, reset the stack
+  if (['home', 'search', 'favorites'].includes(view) && pushState) {
+    viewStack = [view];
+  } else if (pushState && activeView !== view) {
+    viewStack.push(activeView);
+  }
+
+  activeView = view;
+  currentView = view;
+  updateNavActiveStates(view);
+
+  const run = () => {
+    if (view === 'home') {
+      if (!navigator.onLine) {
+        renderHomeOfflineView();
+      } else {
+        renderHomeView();
+      }
+    } else if (view === 'search') {
+      if (!navigator.onLine) {
+        renderSearchOfflineView();
+      } else {
+        renderSearchView();
+      }
+    } else if (view === 'favorites' || view === 'library') {
+      if (!navigator.onLine) {
+        renderHubOfflineView();
+      } else {
+        renderFavoritesView();
+      }
+    } else if (view === 'loved') {
+      renderLovedTracks();
+    } else if (view === 'history') {
+      renderHistoryView();
+    } else if (view === 'offline') {
+      renderOfflineVault();
+    } else if (view === 'account') {
+      renderAccountView();
+    } else if (view === 'player' || view === 'nowplaying' || view === 'fullscreen') {
+      openFullscreenPlayer();
+    }
+
+    if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
+      document.documentElement.style.removeProperty('--pl-dynamic-bg');
+      document.documentElement.style.removeProperty('--pl-dynamic-mid');
+      document.documentElement.style.removeProperty('--pl-dynamic-deep');
+      document.documentElement.style.removeProperty('--pl-dynamic-accent');
+    }
+
+    if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
+      closeFullscreenPlayer();
+    }
+
+    const vp = $id('mainViewport');
+    if (vp) vp.scrollTop = 0;
+  };
+
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduceMotion && document.startViewTransition) {
+    try {
+      const transition = document.startViewTransition(run);
+      transition.catch((err) => {
+        if (err.name !== 'InvalidStateError' && err.name !== 'AbortError') {
+          console.warn('ViewTransition failed:', err);
+        }
+      });
+    } catch (e) {
+      run();
+    }
+  } else {
+    run();
+  }
+}
+window.switchView = switchView;
+
+function goBack() {
+  // If we are in sub-views of the hub, return directly to Music Hub
+  const hubSubViews = ['loved', 'history', 'offline'];
+  if (hubSubViews.includes(activeView)) {
+    switchView('favorites', false);
+    return;
+  }
+
+  // Pop from our internal view stack
+  if (viewStack.length > 0) {
+    let prev = viewStack.pop();
+    
+    // Avoid routing to self
+    while (prev === activeView && viewStack.length > 0) {
+      prev = viewStack.pop();
+    }
+
+    if (prev && prev !== activeView) {
+      switchView(prev, false);
+      return;
+    }
+  }
+
+  // Fallback: Default to Music Hub if playlist, otherwise Home
+  if (['playlist-detail', 'album-detail', 'artist-detail'].includes(activeView)) {
+    switchView('favorites', false);
+  } else {
+    switchView('home', false);
+  }
+}
+window.goBack = goBack;
+
+// Listen for network state drops/restores across all primary tabs
+window.addEventListener('offline', () => {
+  if (currentView === 'home') {
+    if (typeof renderHomeOfflineView === 'function') renderHomeOfflineView();
+  } else if (currentView === 'search') {
+    if (typeof renderSearchOfflineView === 'function') renderSearchOfflineView();
+  } else if (currentView === 'favorites' || currentView === 'library') {
+    if (typeof renderHubOfflineView === 'function') renderHubOfflineView();
+  }
+});
+
+window.addEventListener('online', () => {
+  if (currentView === 'home') {
+    if (typeof renderHomeView === 'function') renderHomeView();
+  } else if (currentView === 'search') {
+    if (typeof renderSearchView === 'function') renderSearchView();
+  } else if (currentView === 'favorites' || currentView === 'library') {
+    if (typeof renderFavoritesView === 'function') {
+      renderFavoritesView();
+    } else if (typeof renderLibraryView === 'function') {
+      renderLibraryView();
+    }
+  }
+});
+
+function renderHubOfflineView() {
+  const vc = $id('viewContainer');
+  if (!vc) return;
+
+  const count = (typeof playlists !== 'undefined' && playlists?.['pl-downloads']?.tracks?.length) || 0;
+
+  vc.innerHTML = `
+    <div class="stage-content">
+      <!-- Clean Melo Hub Header -->
+      <div class="hub-clean-header">
+        <div class="hub-header-top">
+          <h1 class="hub-clean-title">Music Hub</h1>
+          <span class="hub-status-chip">Offline</span>
+        </div>
+      </div>
+
+      <!-- Minimal Ambient Hub Section -->
+      <div class="hub-hero-container">
+        <!-- Frameless Cute White Puppy Artwork -->
+        <div class="hub-puppy-wrap">
+          <svg viewBox="0 0 160 140" class="hub-puppy-svg" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Ambient Underglow -->
+            <ellipse cx="80" cy="80" rx="55" ry="38" fill="rgba(250, 45, 72, 0.12)" filter="blur(16px)" />
+
+            <!-- Headphone Band -->
+            <path d="M42 55 C 42 22, 118 22, 118 55" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <rect x="34" y="52" width="9" height="18" rx="4.5" fill="#ffffff"/>
+            <rect x="117" y="52" width="9" height="18" rx="4.5" fill="#ffffff"/>
+
+            <!-- Floppy Puppy Ears -->
+            <path d="M50 48 C 30 46, 20 68, 25 90 C 28 100, 39 104, 46 95 C 52 87, 50 68, 50 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+            <path d="M110 48 C 130 46, 140 68, 135 90 C 132 100, 121 104, 114 95 C 108 87, 110 68, 110 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+
+            <!-- Puppy Head Contour -->
+            <path d="M52 54 C 52 40, 108 40, 108 54 C 114 65, 116 82, 110 98 C 102 114, 58 114, 50 98 C 44 82, 46 65, 52 54 Z" fill="#0f1117" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round"/>
+
+            <!-- Cute Curved Happy Eyes -->
+            <path d="M60 70 C 64 64, 70 64, 73 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <path d="M87 70 C 90 64, 96 64, 100 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+
+            <!-- Heart-Shaped Puppy Nose -->
+            <path d="M75 80 C 75 77, 85 77, 85 80 C 85 85, 80 88, 80 88 C 80 88, 75 85, 75 80 Z" fill="#ffffff"/>
+
+            <!-- Puppy Smile & Tongue -->
+            <path d="M74 88 C 74 93, 80 95, 80 95 C 80 95, 86 93, 86 88" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+            <path d="M76 94 C 76 102, 84 102, 84 94 Z" fill="#fa2d48"/>
+
+            <!-- Rosy Blush Marks -->
+            <ellipse cx="53" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+            <ellipse cx="107" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+
+            <!-- Little Musical Sparkle -->
+            <path d="M126 36 Q 130 36 130 32 Q 130 36 134 36 Q 130 36 130 40 Q 130 36 126 36 Z" fill="#ffffff"/>
+          </svg>
+        </div>
+
+        <h2 class="hub-hero-headline">Enjoy Your Downloads</h2>
+        <p class="hub-hero-caption">Stored locally on your device for instant playback.</p>
+
+        <!-- Immersive Vault Launcher Card -->
+        <div class="hub-vault-card" onclick="switchView('offline')">
+          <div class="vault-card-body">
+            <div class="vault-card-icon-wrap">
+              <svg viewBox="0 0 24 24" class="vault-card-svg">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                <polyline points="7 10 12 15 17 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                <line x1="12" y1="15" x2="12" y2="3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="vault-card-meta">
+              <span class="vault-card-title">Downloaded Vault</span>
+              <span class="vault-card-sub">${count} songs ready to play</span>
+            </div>
+            <div class="vault-card-arrow">
+              <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;">
+                <path d="M5 12h14M12 5l7 7-7 7"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+window.renderHubOfflineView = renderHubOfflineView;
+
+function playOfflineHubTrack(index) {
+  const dlTracks = (typeof playlists !== 'undefined' && playlists?.['pl-downloads']?.tracks) || [];
+  if (!dlTracks[index]) return;
+  currentPlaylistContextId = 'pl-downloads';
+  playlist = [...dlTracks];
+  playIndex(index);
+}
+
+function playOfflineHubAll(shuffle = false) {
+  const dlTracks = (typeof playlists !== 'undefined' && playlists?.['pl-downloads']?.tracks) || [];
+  if (dlTracks.length === 0) return;
+  currentPlaylistContextId = 'pl-downloads';
+  playlist = [...dlTracks];
+  if (shuffle) {
+    for (let i = playlist.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [playlist[i], playlist[j]] = [playlist[j], playlist[i]];
+    }
+  }
+  playIndex(0);
+}
+
+window.renderHubOfflineView = renderHubOfflineView;
+window.playOfflineHubTrack = playOfflineHubTrack;
+window.playOfflineHubAll = playOfflineHubAll;
+
+// Syncs player visibility with network connectivity
+function updateOfflinePlayerVisibility() {
+  if (!navigator.onLine) {
+    document.body.classList.add('is-offline');
+  } else {
+    document.body.classList.remove('is-offline');
+  }
+}
+
+// Initial check on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', updateOfflinePlayerVisibility);
+} else {
+  updateOfflinePlayerVisibility();
+}
+
+// Real-time network transitions
+window.addEventListener('offline', updateOfflinePlayerVisibility);
+window.addEventListener('online', updateOfflinePlayerVisibility);
+
+function renderHomeView() {
+  // If offline, redirect directly to the offline view
+  if (!navigator.onLine) return renderHomeOfflineView();
+
+  const vc = $id('viewContainer');
+  if (!vc) return;
+  // ... rest of your code ...
+
+  const recentHistory = store.getHistory();
+  const validHistory = recentHistory.filter(e => e && e.track && e.track.artist);
+  
+  let seedArtist = "Top Bollywood Hits";
+  if (validHistory.length > 0) {
+    seedArtist = validHistory[validHistory.length - 1].track.artist;
+  }
+  const artistEsc = accountText(seedArtist).replace(/'/g, "\\'");
+
+  const quickPicksHtml = `
+    <div class="quick-picks-spotlight" id="quickPicksSpotlightBox">
+      <div class="quick-picks-header-wrap">
+        <div class="quick-picks-titles">
+          <span class="qp-subtext">${validHistory.length > 0 ? 'Because you listened to' : 'Recommended For You'}</span>
+          <h2 class="qp-artist-name" title="${accountText(seedArtist)}">${accountText(seedArtist)}</h2>
+        </div>
+        <a onclick="loadShelfCategory('${artistEsc}', 'quickPicksGrid')" title="Refresh" class="shelf-refresh-btn">
+          <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </a>
+      </div>
+      <div class="capsule-grid" id="quickPicksGrid" onscroll="updateQuickPicksDots()" style="margin-bottom:0;"></div>
+      <div class="qp-dots-container" id="quickPicksDots"></div>
+    </div>
+  `;
 
   vc.innerHTML = `
     <div class="stage-content">
@@ -1770,25 +2393,20 @@ function renderHomeView() {
       <div class="for-you-spotlight">
         <div class="for-you-header">
           <div class="for-you-title">Made For You</div>
-          <button class="pill-action-btn" onclick="playForYouAll()" style="padding: 8px 18px; font-size: 0.85rem;">
-            <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+          <button class="pill-action-btn" onclick="playForYouAll()" style="padding: 5px 12px; font-size: 0.76rem;">
+            <svg viewBox="0 0 24 24" style="width: 12px; height: 12px; fill:#000;"><path d="M8 5v14l11-7z"/></svg>
             <span>Play Mix</span>
           </button>
         </div>
-        <div class="vibe-chips-row">
-          <button class="vibe-chip active" onclick="switchVibePreset('Flow', this)">🌊 Flow</button>
-          <button class="vibe-chip" onclick="switchVibePreset('Acoustic Chill', this)">☕ Acoustic</button>
-          <button class="vibe-chip" onclick="switchVibePreset('Workout High Energy', this)">⚡ Energy</button>
-          <button class="vibe-chip" onclick="switchVibePreset('Late Night Soul', this)">🌙 Velvet</button>
-        </div>
         <div class="capsule-grid" id="forYouGrid" style="margin-bottom:0;"></div>
       </div>
-      <div id="homePlaylistsWrapper" style="display: none;">
-        <div class="section-heading" id="playlistsShelf"><h2>Your Playlists</h2><a onclick="actionOpenAddToPlaylist(null)">+ Create</a></div>
-        <div class="capsule-grid" id="homePlaylistsGrid" style="margin-bottom: 24px;"></div>
-      </div>
       ${quickPicksHtml}
-      <div class="section-heading" id="trendingShelf"><h2>Trending Across India</h2><a onclick="loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid')">Refresh</a></div>
+      <div class="section-heading" id="trendingShelf">
+        <h2>Trending Across India</h2>
+        <a onclick="loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid')" title="Refresh" class="shelf-refresh-btn" style="display:inline-flex;align-items:center;cursor:pointer;color:var(--text-muted);padding:4px;flex-shrink:0;">
+          <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </a>
+      </div>
       <div class="capsule-grid" id="trendingGrid"></div>
       <div class="section-heading" id="bollywoodShelf"><h2>Bollywood Chartbusters</h2></div>
       <div class="capsule-grid" id="bollywoodGrid"></div>
@@ -1796,16 +2414,75 @@ function renderHomeView() {
       <div class="capsule-grid" id="punjabiGrid"></div>
       <div class="section-heading" id="indieShelf"><h2>Desi Indie & Acoustic Chill</h2></div>
       <div class="capsule-grid" id="indieGrid"></div>
-    </div>`;
+    </div>
+    <div class="home-bottom-glow" id="homeBottomGlow"></div>
+  `;
 
-  loadForYouCatalog('Acoustic Bollywood Indie Hits');
-  renderHomePagePlaylists();
+  // Attach dynamic scroll watcher to viewContainer and window
+  const glowEl = $id('homeBottomGlow');
+  const checkGlow = () => {
+    const top = vc.scrollTop || window.scrollY || document.documentElement.scrollTop || 0;
+    if (glowEl) {
+      if (top > 25) {
+        glowEl.classList.add('visible');
+      } else {
+        glowEl.classList.remove('visible');
+      }
+    }
+  };
+
+  vc.onscroll = checkGlow;
+  window.onscroll = checkGlow;
+
+  loadPersonalizedForYou('Flow');
   loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
   loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
   loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
   loadShelfCategory('Indian Indie Songs', 'indieGrid');
-  if (validHistory.length > 0) loadShelfCategory(validHistory[validHistory.length - 1].track.artist, 'quickPicksGrid');
+  loadShelfCategory(seedArtist, 'quickPicksGrid').then(() => {
+    if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
+    if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
+  });
+  setupBottomGlowWatcher();
 }
+
+function renderSearchOfflineView() {
+  const vc = $id('viewContainer');
+  if (!vc) return;
+
+  const count = (typeof playlists !== 'undefined' && playlists?.['pl-downloads']?.tracks?.length) || 0;
+
+  vc.innerHTML = `
+    <div class="stage-content">
+      <!-- Search Header Bar -->
+      <div class="search-header-wrap" style="padding: 10px 0 20px 0;">
+        <h1 style="font-size: 1.6rem; font-weight: 800; color: #fff; margin: 0 0 6px 0;">Search</h1>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin: 0;">Explore songs, artists, and playlists</p>
+      </div>
+
+      <!-- Static Minimal Offline Card -->
+      <div class="melo-offline-minimal">
+        <div class="offline-static-icon-box">
+          <svg viewBox="0 0 24 24" class="offline-search-icon">
+            <path d="M1 1l22 22M16.72 11.06A7 7 0 005.27 5.27M10.5 17.5a7 7 0 006.22-3.8M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </div>
+
+        <div class="melo-offline-info">
+          <h2 class="melo-offline-title">Search is Offline.</h2>
+          <p class="melo-offline-desc">Cloud lookup needs an active internet connection. You can still play anything saved in your offline vault.</p>
+        </div>
+
+        <button class="melo-offline-btn" onclick="switchView('offline')">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Downloaded Songs</span>
+          <span class="melo-offline-count">${count}</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+window.renderSearchOfflineView = renderSearchOfflineView;
 
 function renderHomePagePlaylists() {
   const plGrid = $id('homePlaylistsGrid');
@@ -1831,21 +2508,42 @@ function renderHomePagePlaylists() {
   }
 }
 
-async function loadForYouCatalog(query = 'Acoustic Bollywood Indie Hits') {
-  try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
-    const data = await res.json();
-    forYouTracks = (data.results || []).slice(0, 6).map(normalizeTrackData);
-    categoryData['forYouGrid'] = forYouTracks;
-    renderGridContainer('forYouGrid', forYouTracks);
-  } catch (err) {}
+function loadPersonalizedForYou() {
+  const history = store.getHistory();
+  const favoritesObj = store.getFavorites();
+  const searchHistory = store.getSearchHistory();
+  
+  let tasteKeywords = [];
+  Object.values(favoritesObj).forEach(t => { if (t.artist) tasteKeywords.push(t.artist.split(',')[0].trim()); });
+  history.forEach(h => { if (h.track?.artist) tasteKeywords.push(h.track.artist.split(',')[0].trim()); });
+  searchHistory.forEach(s => { if (s.query) tasteKeywords.push(s.query); });
+  tasteKeywords = [...new Set(tasteKeywords)];
+
+  let query = 'Acoustic Bollywood Indie Hits';
+  if (tasteKeywords.length > 0) {
+    const seed = tasteKeywords[Math.floor(Math.random() * tasteKeywords.length)];
+    query = `${seed} Hits`;
+  }
+
+  const c = $id('forYouGrid');
+  if (c) c.innerHTML = createMeloLoader();
+
+  fetch(`/api/search?query=${encodeURIComponent(query)}`)
+    .then(res => res.json())
+    .then(data => {
+      forYouTracks = (data.results || []).map(normalizeTrackData);
+      categoryData['forYouGrid'] = forYouTracks.slice(0, 10);
+      renderForYouCompactGrid('forYouGrid', forYouTracks.slice(0, 10));
+    })
+    .catch(() => { if (c) c.innerHTML = ''; });
 }
 
-function switchVibePreset(vibe, btn) {
-  document.querySelectorAll('.vibe-chip').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  currentVibe = vibe;
-  loadForYouCatalog(vibe === 'Flow' ? 'Acoustic Bollywood Indie Hits' : vibe);
+function loadForYouCatalog() {
+  return loadPersonalizedForYou();
+}
+
+function switchVibePreset() {
+  return loadPersonalizedForYou();
 }
 
 function playForYouAll() {
@@ -1856,18 +2554,60 @@ function playForYouAll() {
   }
 }
 
+function renderForYouCompactGrid(containerId, items) {
+  const c = $id(containerId);
+  if (!c) return;
+  c.innerHTML = '';
+  items.forEach((track, i) => {
+    window.__contextTrackMap[track.id] = track;
+    const item = document.createElement('div');
+    item.className = 'for-you-mini-card';
+    item.onclick = () => {
+      currentPlaylistContextId = null;
+      playlist = categoryData[containerId] || items;
+      playIndex(i);
+    };
+    item.innerHTML = `
+      <img class="fym-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+      <div class="fym-info">
+        <div class="fym-title">${accountText(track.title)}</div>
+        <div class="fym-artist">${accountText(track.artist)}</div>
+      </div>
+      <div class="fym-play-icon">▶</div>
+    `;
+    c.appendChild(item);
+  });
+}
+
+window.loadForYouCatalog = loadForYouCatalog;
+window.loadPersonalizedForYou = loadPersonalizedForYou;
+window.switchVibePreset = switchVibePreset;
+window.playForYouAll = playForYouAll;
+window.renderForYouCompactGrid = renderForYouCompactGrid;
+
+function playForYouAll() {
+  if (forYouTracks.length > 0) {
+    currentPlaylistContextId = null;
+    playlist = [...forYouTracks];
+    playIndex(0);
+  }
+}
+
 async function loadShelfCategory(query, containerId) {
+  const c = $id(containerId);
+  if (c) c.innerHTML = createMeloLoader();
+
   try {
     const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
     const data = await res.json();
-    const items = (data.results || []).map(normalizeTrackData);
+    let items = (data.results || []).map(normalizeTrackData);
+    // Shuffle items so refresh gives a fresh selection every time
+    items.sort(() => Math.random() - 0.5);
     categoryData[containerId] = items;
     renderGridContainer(containerId, items.slice(0, 6));
-    if (containerId === 'trendingGrid' && !playlist.length) {
-      currentPlaylistContextId = null;
-      playlist = [...items];
-    }
-  } catch (err) {}
+  } catch (err) {
+    if (c) c.innerHTML = '';
+  }
 }
 
 function renderGridContainer(containerId, items) {
@@ -1898,6 +2638,12 @@ function renderGridContainer(containerId, items) {
     `;
     c.appendChild(item);
   });
+
+  // Automatically initialize slide dots and visibility pause observer for Quick Picks
+  if (containerId === 'quickPicksGrid') {
+    if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
+    if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
+  }
 }
 
 // ==========================================
@@ -1964,10 +2710,15 @@ function renderFavoritesView() {
 }
 
 function openPlaylistDetails(plId) {
+  showMeloLoader('OPENING PLAYLIST...');
+
   activeView = 'playlist-detail';
   if (plId === 'pl-favorites') playlists['pl-favorites'].tracks = Object.values(favorites);
   const pl = playlists[plId], vc = $id('viewContainer');
-  if (!vc || !pl) return;
+  if (!vc || !pl) {
+    hideMeloLoader();
+    return;
+  }
   const leadImage = getPlaylistHeroCoverURL(pl);
   applyPlaylistDynamicColors(leadImage, pl.name);
   const bgStyle = leadImage ? `style="background-image: url('${leadImage}');"` : '';
@@ -1975,7 +2726,7 @@ function openPlaylistDetails(plId) {
   vc.innerHTML = `
     <div class="playlist-immersive-view">
       <div class="playlist-immersive-hero" ${bgStyle}>
-        <div style="position:absolute; top:28px; left:28px; right:28px; display:flex; justify-content:space-between; align-items:center; z-index:10;">
+        <div class="playlist-top-nav-row">
           <button class="circle-back-btn" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
           <button class="circle-back-btn" onclick="openPlaylistActionMenu('${plId}')" title="Playlist Menu"><svg viewBox="0 0 24 24" style="stroke:none; fill:#fff;"><circle cx="12" cy="5" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="19" r="2.2"/></svg></button>
         </div>
@@ -1983,19 +2734,41 @@ function openPlaylistDetails(plId) {
           <span class="pl-meta-tag">${plId === 'pl-downloads' ? 'Offline Vault' : (plId === 'pl-favorites' ? 'Curated Collection' : 'Playlist')}</span>
           <div class="playlist-immersive-title-row"><h1 class="playlist-immersive-title">${accountText(pl.name)}</h1></div>
           <div class="playlist-immersive-stats">${pl.tracks.length} tracks${pl.description ? ` · ${accountText(pl.description)}` : ''}</div>
-          <div class="playlist-immersive-actions">
-            ${pl.tracks.length > 0 ? `<button class="pill-action-btn" onclick="playPlaylistContext('${plId}')"><svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg><span>Play All</span></button><button class="filter-chip" onclick="playPlaylistContext('${plId}', true)">Shuffle</button>` : ''}
-            ${isRemoveSongsMode ? `<button class="filter-chip" style="background:#fa2d48; color:#fff; border-color:#fa2d48;" onclick="actionToggleRemoveSongsMode()">Done Removing</button>` : ''}
-          </div>
         </div>
       </div>
+
+      <!-- Action buttons extracted cleanly outside hero & isolated from tinting -->
+      ${pl.tracks.length > 0 || isRemoveSongsMode ? `
+        <div class="playlist-action-bar-strip">
+          <div class="playlist-immersive-actions">
+            ${pl.tracks.length > 0 ? `
+              <button class="pill-action-btn pl-play-all-btn" onclick="playPlaylistContext('${plId}')">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+                <span>Play All</span>
+              </button>
+              <button class="filter-chip pl-shuffle-btn" onclick="playPlaylistContext('${plId}', true)">
+                <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:#fff;stroke-width:2.2;margin-right:4px;"><polygon points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polygon points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                <span>Shuffle</span>
+              </button>
+            ` : ''}
+            ${isRemoveSongsMode ? `
+              <button class="filter-chip pl-done-remove-btn" onclick="actionToggleRemoveSongsMode()">
+                Done Removing
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      ` : ''}
+
       <div class="playlist-tracks-section"><div id="playlistTracksBox"></div></div>
     </div>`;
 
   const box = $id('playlistTracksBox');
   if (!box) return;
+  box.innerHTML = '';
+
   if (!pl.tracks.length) {
-    box.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:24px 0;">This playlist is currently empty. Tap the menu (⋮) above to search and add songs.</p>`;
+    box.innerHTML = `<p style="color:var(--text-dim);font-size:0.9rem;padding:32px 12px;text-align:center;">This playlist is currently empty. Tap the menu (⋮) above to add songs.</p>`;
   } else {
     pl.tracks.forEach((track, i) => {
       const row = document.createElement('div');
@@ -2003,7 +2776,10 @@ function openPlaylistDetails(plId) {
       row.draggable = plId !== 'pl-favorites' && plId !== 'pl-downloads';
       row.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', String(i)));
       row.addEventListener('dragover', (e) => e.preventDefault());
-      row.addEventListener('drop', (e) => { e.preventDefault(); reorderPlaylistTrack(plId, Number(e.dataTransfer.getData('text/plain')), i); });
+      row.addEventListener('drop', (e) => { 
+        e.preventDefault(); 
+        reorderPlaylistTrack(plId, Number(e.dataTransfer.getData('text/plain')), i); 
+      });
       row.onclick = () => {
         if (isRemoveSongsMode) return;
         currentPlaylistContextId = plId;
@@ -2011,7 +2787,7 @@ function openPlaylistDetails(plId) {
         playIndex(i);
       };
       const downloadedTick = downloadedTrackIds.has(String(track.id))
-        ? `<svg viewBox="0 0 24 24" style="width:14px; height:14px; stroke:#10b981; fill:none; stroke-width:2.5; margin-left:6px;"><path d="M20 6L9 17l-5-5"/></svg>`
+        ? `<svg viewBox="0 0 24 24" style="width:14px; height:14px; stroke:#10b981; fill:none; stroke-width:2.5; margin-left:6px; flex-shrink:0;"><path d="M20 6L9 17l-5-5"/></svg>`
         : '';
       row.innerHTML = `
         <div class="tr-num"><span class="playlist-drag-handle">&#8801;</span>${i + 1}</div>
@@ -2021,7 +2797,7 @@ function openPlaylistDetails(plId) {
           <div class="tr-artist">${accountText(track.artist)}</div>
         </div>
         <div class="tr-album">${accountText(track.album || 'Single')}</div>
-        <div class="tr-time">${track.duration}</div>
+        <div class="tr-time">${track.duration || '--:--'}</div>
         ${isRemoveSongsMode
           ? `<button class="tr-remove-btn" title="Remove Song" onclick="event.stopPropagation(); removeTrackFromPlaylistDirect('${plId}', ${i})">✕</button>`
           : `<button class="tr-fav ${favorites[track.id] ? 'active' : ''}" onclick="event.stopPropagation(); toggleFavTrackDirect('${track.id}', this)">♥</button>`
@@ -2029,6 +2805,7 @@ function openPlaylistDetails(plId) {
       box.appendChild(row);
     });
   }
+  setTimeout(() => hideMeloLoader(), 120);
 }
 
 function libraryTrackRow(track, index, options = {}) {
@@ -2182,12 +2959,17 @@ function actionFromMenuAddSongs() {
       const q = input.value.trim();
       if (!q) { results.innerHTML = '<p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">Type above to find tracks and add directly.</p>'; return; }
       window.plSearchTimer = setTimeout(async () => {
-        results.innerHTML = '<p style="color:var(--text-muted); font-size:0.85rem; text-align:center; padding:20px;">Searching...</p>';
+        results.innerHTML = createMeloLoader('Searching tracks...');
         if (currentSearchAbort) currentSearchAbort.abort();
         currentSearchAbort = new AbortController();
         try {
-          const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`, { signal: currentSearchAbort.signal }), data = await res.json(), items = data.results || [];
-          if (!items.length) return results.innerHTML = '<p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">No tracks found.</p>';
+          const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`, { signal: currentSearchAbort.signal });
+          const data = await res.json();
+          const items = data.results || [];
+          if (!items.length) {
+            results.innerHTML = '<p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">No tracks found.</p>';
+            return;
+          }
           results.innerHTML = '';
           items.forEach(track => {
             const normalizedTrack = normalizeTrackData(track);
@@ -2898,7 +3680,8 @@ async function renderOfflineVault() {
   const vc = $id('viewContainer');
   vc.innerHTML = `
     <div class="stage-content library-stage">
-      <div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Offline Vault</h1></div>
+      <div class="top-action-bar"><button class="circle-back-btn" onclick="goBack()" title="Back">
+  <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Offline Vault</h1></div>
       <div id="offlineVaultContent" class="library-loading">Loading your downloads…</div>
     </div>`;
   const records = await getOfflineRecords();
@@ -2967,27 +3750,73 @@ function playPlaylistContext(playlistId, shuffle = false) {
 
 function renderLovedTracks() {
   activeView = 'loved';
-  const vc = $id('viewContainer'), tracks = Object.values(favorites);
+  const vc = $id('viewContainer');
+  if (!vc) return;
+
+  const tracks = Object.values(favorites);
+
   vc.innerHTML = `
     <div class="stage-content library-stage">
-      <div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Loved Tracks</h1></div>
-      ${tracks.length
-        ? `<div class="library-toolbar"><input id="lovedSearchInput" class="themed-pl-input" placeholder="Search loved tracks"/><select id="lovedSort" class="capsule-select"><option value="recent">Recently added</option><option value="title">Alphabetically</option><option value="artist">Artist</option></select><button class="pill-action-btn" onclick="playLovedTracks(false)">Play all</button><button class="filter-chip" onclick="playLovedTracks(true)">Shuffle</button></div><div id="lovedTrackList"></div>`
-        : `<div class="library-empty"><strong>No loved tracks yet</strong><span>Songs you fall for will live here.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`}
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1>Loved Tracks</h1>
+      </div>
+      ${tracks.length ? `
+        <div class="library-toolbar">
+          <div class="melo-select-wrapper">
+            <select id="lovedSort" class="melo-themed-select">
+              <option value="recent">Recently Added</option>
+              <option value="title">Alphabetical</option>
+              <option value="artist">Artist</option>
+            </select>
+          </div>
+          <div style="display:flex; gap:10px; margin-left:auto;">
+            <button class="pill-action-btn" onclick="playLovedTracks(false)">
+              <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+              <span>Play All</span>
+            </button>
+            <button class="filter-chip" onclick="playLovedTracks(true)">Shuffle</button>
+          </div>
+        </div>
+        <div id="lovedTrackList"></div>
+      ` : `
+        <div class="library-empty">
+          <strong>No loved tracks yet</strong>
+          <span>Songs you fall for will live here.</span>
+          <button class="pill-action-btn" onclick="switchView('search')" style="margin-top:12px;">Explore Music</button>
+        </div>
+      `}
     </div>`;
 
   if (!tracks.length) return;
+
   const draw = () => {
-    const q = $id('lovedSearchInput').value.trim().toLowerCase(), s = $id('lovedSort').value;
-    const filtered = tracks.filter(t => `${t.title} ${t.artist}`.toLowerCase().includes(q));
-    filtered.sort((a, b) => s === 'artist' ? String(a.artist).localeCompare(String(b.artist)) : s === 'title' ? String(a.title).localeCompare(String(b.title)) : String(b.added_at || '').localeCompare(String(a.added_at || '')));
-    window.__lovedTracks = filtered;
-    $id('lovedTrackList').innerHTML = filtered.length ? filtered.map((track, index) => libraryTrackRow(track, index, { source: 'loved' })).join('') : '<div class="library-empty compact">No loved tracks match that search.</div>';
+    const sortVal = $id('lovedSort')?.value || 'recent';
+    const sorted = [...tracks];
+
+    sorted.sort((a, b) => {
+      if (sortVal === 'artist') return String(a.artist || '').localeCompare(String(b.artist || ''));
+      if (sortVal === 'title') return String(a.title || '').localeCompare(String(b.title || ''));
+      return String(b.added_at || '').localeCompare(String(a.added_at || ''));
+    });
+
+    window.__lovedTracks = sorted;
+    const listEl = $id('lovedTrackList');
+    if (listEl) {
+      listEl.innerHTML = sorted.map((track, index) => libraryTrackRow(track, index, { source: 'loved' })).join('');
+    }
   };
-  $id('lovedSearchInput').addEventListener('input', draw);
-  $id('lovedSort').addEventListener('change', draw);
+
+  const sortSelect = $id('lovedSort');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', draw);
+  }
+  
   draw();
 }
+window.renderLovedTracks = renderLovedTracks;
 
 function playLovedTracks(shuffle) {
   const tracks = window.__lovedTracks || Object.values(favorites);
@@ -3013,10 +3842,15 @@ function renderHistoryView() {
   const vc = $id('viewContainer');
   vc.innerHTML = `
     <div class="stage-content library-stage">
-      <div class="top-action-bar"><button class="circle-back-btn" onclick="switchView('favorites', false)"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button><h1>Recently Played</h1></div>
+      <div class="top-action-bar">
+        <button class="circle-back-btn" onclick="goBack()" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1>Recently Played</h1>
+      </div>
       <div id="historyTrackList"></div>
     </div>`;
-
+  
   if (!entries.length) {
     $id('historyTrackList').innerHTML = `<div class="library-empty"><strong>Nothing played yet.</strong><span>Your listening journey starts here.</span><button class="pill-action-btn" onclick="switchView('search')">Explore Music</button></div>`;
     return;
@@ -3234,7 +4068,7 @@ async function closeCinematicMode() {
 }
 
 // Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.4.7';
+const CURRENT_APP_VERSION = '2.5.5';
 
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');
@@ -3287,6 +4121,21 @@ async function autoUpdateCache() {
 autoUpdateCache();
 
 // ==========================================
+// MELO THEMED LOADER CONTROLLER
+// ==========================================
+function showMeloLoader(text = 'TUNING MELO...') {
+  const loader = document.getElementById('meloLoader');
+  const label = document.getElementById('meloLoaderText');
+  if (label) label.textContent = text;
+  if (loader) loader.classList.add('active');
+}
+
+function hideMeloLoader() {
+  const loader = document.getElementById('meloLoader');
+  if (loader) loader.classList.remove('active');
+}
+
+// ==========================================
 // 17. RUNTIME INITIALIZATION & CANVAS RENDERERS
 // ==========================================
 window.actionOpenCinematicMode = actionOpenCinematicMode;
@@ -3312,8 +4161,8 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const playlistId = card.getAttribute('data-playlist-id') || card.dataset.id;
       if (playlistId) {
-        if (typeof openPlaylistDetail === 'function') {
-          openPlaylistDetail(playlistId);
+        if (typeof openPlaylistDetails === 'function') {
+          openPlaylistDetails(playlistId);
         } else if (typeof switchView === 'function') {
           switchView('playlist-detail', true, { id: playlistId });
         } else if (typeof loadPlaylist === 'function') {
@@ -3322,7 +4171,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
-
   // ==========================================
   // MINI PLAYER CONTROLS & SWIPE-SAFE DELEGATION
   // ==========================================
@@ -3389,10 +4237,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  window.addEventListener('online', () => { if (currentUser) store.pushToCloud(); });
-  window.addEventListener('offline', () => { if (currentUser) setSyncState('paused'); });
+  window.addEventListener('online', () => { 
+  if (currentUser) store.pushToCloud();
+  if (activeView === 'home') renderHomeView();
+});
+window.addEventListener('offline', () => { 
+  if (currentUser) setSyncState('paused');
+  if (activeView === 'home') renderHomeOfflineView();
+});
 
   if (audio) {
+    // Show loader when the network is buffering, seeking, or track stalls
+    audio.addEventListener('waiting', () => {
+      showMeloLoader('BUFFERING STREAM...');
+    });
+
+    // Dismiss loader when audio resumes playing or becomes ready
+    audio.addEventListener('playing', () => {
+      hideMeloLoader();
+    });
+
+    audio.addEventListener('canplay', () => {
+      hideMeloLoader();
+    });
+
     audio.addEventListener('timeupdate', () => {
       if (audio.paused || isNaN(audio.duration)) return;
       if (!isDraggingScrubber) {
@@ -3426,6 +4294,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     audio.addEventListener('error', () => {
+      hideMeloLoader();
       showToast("Stream loading error. Skipping forward...");
       setTimeout(() => nextTrack(), 1500);
     });
