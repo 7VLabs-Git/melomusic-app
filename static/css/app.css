@@ -2493,20 +2493,27 @@ select#lovedSort.melo-themed-select option {
 }
 
 /* ==========================================
-   VIBRANT MELO RED QUICK PICKS SPOTLIGHT (CLEAN)
+   VIBRANT CANDY RED QUICK PICKS SPOTLIGHT
+   (MINIMAL DARKNESS, TOP-RIGHT ACCENT ONLY)
    ========================================== */
 .quick-picks-spotlight {
   position: relative;
   margin-bottom: 34px;
   border-radius: 26px;
-  padding: 24px 26px 20px 26px;
+  padding: 18px 20px 16px 20px;
   min-height: 220px;
   background: 
-    radial-gradient(circle at 15% 20%, rgba(250, 45, 72, 0.42) 0%, transparent 55%),
-    radial-gradient(circle at 85% 80%, rgba(192, 38, 211, 0.25) 0%, transparent 55%),
-    linear-gradient(135deg, #18080d 0%, #240a11 50%, #100407 100%);
-  border: 1px solid rgba(250, 45, 72, 0.4);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(250, 45, 72, 0.45);
+    /* Soft dark vignette focused strictly on the top-right refresh corner */
+    radial-gradient(ellipse at 92% 10%, rgba(14, 15, 20, 0.65) 0%, rgba(14, 15, 20, 0.25) 38%, transparent 65%),
+    /* Luminous candy red radial highlights across the content */
+    radial-gradient(circle at 18% 25%, rgba(255, 75, 110, 0.4) 0%, transparent 55%),
+    /* Vibrant non-metallic candy red field */
+    linear-gradient(135deg, #ff1744 0%, #eb0a38 52%, #c9002a 100%);
+  border: 1px solid rgba(255, 120, 145, 0.35);
+  box-shadow: 
+    0 16px 40px rgba(0, 0, 0, 0.5),
+    0 6px 24px rgba(255, 23, 68, 0.28),
+    inset 0 1px 1px rgba(255, 255, 255, 0.35);
   width: 100%;
   box-sizing: border-box;
   overflow: hidden;
@@ -2519,7 +2526,7 @@ select#lovedSort.melo-themed-select option {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   gap: 12px;
 }
 
@@ -2538,7 +2545,7 @@ select#lovedSort.melo-themed-select option {
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .qp-artist-name {
@@ -2549,7 +2556,7 @@ select#lovedSort.melo-themed-select option {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
 .shelf-refresh-btn {
@@ -2557,14 +2564,13 @@ select#lovedSort.melo-themed-select option {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.8);
+  color: #ffffff;
   padding: 6px;
   flex-shrink: 0;
   transition: color 0.2s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .shelf-refresh-btn:hover {
-  color: #ffffff !important;
   transform: rotate(180deg);
 }
 
@@ -2576,8 +2582,8 @@ select#lovedSort.melo-themed-select option {
   overflow-x: auto !important;
   scroll-snap-type: x mandatory;
   gap: 12px !important;
-  padding: 10px 6px 14px 6px !important;
-  margin: -10px -6px 0 -6px !important;
+  padding: 8px 4px 12px 4px !important;
+  margin: -8px -4px 0 -4px !important;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
@@ -2590,10 +2596,10 @@ select#lovedSort.melo-themed-select option {
   flex: 0 0 154px !important;
   max-width: 154px !important;
   scroll-snap-align: start;
-  background: rgba(0, 0, 0, 0.32) !important;
+  background: rgba(14, 15, 20, 0.25) !important;
   padding: 10px !important;
   border-radius: 18px !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, border-color 0.2s ease;
@@ -2601,14 +2607,14 @@ select#lovedSort.melo-themed-select option {
 
 .quick-picks-spotlight .capsule-grid .poster-item:hover {
   transform: translateY(-3px) scale(1.015);
-  background: rgba(0, 0, 0, 0.48) !important;
-  border-color: rgba(250, 45, 72, 0.4) !important;
+  background: rgba(14, 15, 20, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.4) !important;
 }
 
 .quick-picks-spotlight .poster-wrap {
   border-radius: 12px !important;
   overflow: hidden !important;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
   margin-bottom: 8px !important;
   position: relative;
 }
@@ -2631,7 +2637,7 @@ select#lovedSort.melo-themed-select option {
 }
 
 .quick-picks-spotlight .poster-subtitle {
-  color: rgba(255, 255, 255, 0.7) !important;
+  color: rgba(255, 255, 255, 0.8) !important;
   font-size: 0.74rem !important;
 }
 
@@ -2641,7 +2647,7 @@ select#lovedSort.melo-themed-select option {
   justify-content: center;
   align-items: center;
   gap: 6px;
-  margin-top: 14px;
+  margin-top: 12px;
   position: relative;
   z-index: 2;
 }
@@ -2650,7 +2656,7 @@ select#lovedSort.melo-themed-select option {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.35);
   cursor: pointer;
   transition: width 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.25s ease;
 }
