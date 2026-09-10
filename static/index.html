@@ -146,25 +146,71 @@
   </div>
 
   <!-- AUTHENTICATION MODAL -->
-  <div class="context-action-modal" id="authModal" onclick="closeAuthModal(event)">
-    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align: center;">
-      <div class="drag-handle" onclick="closeAuthModal()"></div>
-      <h2 style="font-size: 1.8rem; font-weight: 800; margin-bottom: 8px;" id="authTitle">Welcome to MELO</h2>
-      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px;" id="authSubtitle">Sign in to sync your library across devices.</p>
-      
-      <div style="display:flex; flex-direction:column; gap:14px; text-align: left;">
-        <input type="text" id="authName" class="themed-pl-input" placeholder="Display Name" style="display: none;" />
-        <input type="email" id="authEmail" class="themed-pl-input" placeholder="Email Address" />
-        <input type="password" id="authPassword" class="themed-pl-input" placeholder="Password" />
-        <button class="pill-action-btn" id="authSubmitBtn" onclick="handleAuthSubmit()" style="width:100%; justify-content:center; padding:14px; background:var(--accent); color:#fff; font-size: 1rem; margin-top: 8px;">
-          Log In
-        </button>
-      </div>
-      <div style="margin-top: 24px;">
-        <a href="#" id="authToggleLink" onclick="toggleAuthMode(); return false;" style="color: var(--text-dim); font-size: 0.85rem; text-decoration: none;">Don't have an account? Sign up</a>
+  <!-- AUTH MODAL -->
+  <!-- AUTH MODAL -->
+<div id="authModal" class="context-action-modal" onclick="closeAuthModal(event)">
+  <div class="context-modal-sheet" onclick="event.stopPropagation()">
+    <div class="drag-handle" onclick="closeAuthModal()"></div>
+
+    <!-- 1. LOGIN / REGISTER VIEW -->
+    <div id="authMainView">
+      <h2 id="authTitle" style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Welcome to MELO</h2>
+      <p id="authSubtitle" style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Sign in to sync your library across devices.</p>
+
+      <div class="auth-inputs-wrap">
+        <!-- Name (Sign Up only) -->
+        <input type="text" id="authName" class="themed-pl-input" placeholder="Your Name" style="display:none; margin-bottom:12px;" autocomplete="name" />
+
+        <!-- Email -->
+        <input type="email" id="authEmail" class="themed-pl-input" placeholder="Email Address" style="margin-bottom:12px;" autocomplete="email" />
+
+        <!-- Password -->
+        <div class="auth-input-group" style="position:relative; margin-bottom:12px;">
+          <input type="password" id="authPassword" class="themed-pl-input auth-validated-input" placeholder="Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="current-password" />
+          <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authPassword', this)" title="Show/Hide Password">
+            <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+
+        <!-- Confirm Password (Sign Up only) -->
+        <div id="authConfirmGroup" class="auth-input-group" style="position:relative; margin-bottom:12px; display:none;">
+          <input type="password" id="authConfirmPassword" class="themed-pl-input auth-validated-input" placeholder="Confirm Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="new-password" />
+          <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authConfirmPassword', this)" title="Show/Hide Password">
+            <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+
+        <!-- Forgot Password Link (Login mode only) -->
+        <div id="authForgotRow" style="text-align:right; margin-bottom:14px;">
+          <a onclick="showPasswordRecoveryView()" style="color:var(--text-muted); font-size:0.8rem; cursor:pointer; text-decoration:underline;">Forgot password?</a>
+        </div>
+
+        <!-- Submit Button -->
+        <button type="button" id="authSubmitBtn" class="pill-action-btn" onclick="handleAuthSubmit()" style="width:100%; justify-content:center; padding:12px; margin-top:4px;">Log In</button>
+
+        <!-- Toggle Switch Link -->
+        <a id="authToggleLink" onclick="toggleAuthMode()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
+          Don't have an account? Sign up
+        </a>
       </div>
     </div>
+
+    <!-- 2. RECOVERY VIEW -->
+    <div id="authRecoveryView" style="display:none;">
+      <h2 style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Reset Password</h2>
+      <p style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Enter your account email to receive a password reset link.</p>
+
+      <div class="auth-inputs-wrap">
+        <input type="email" id="recoveryEmail" class="themed-pl-input" placeholder="Enter your email" style="margin-bottom:16px;" autocomplete="email" />
+        <button type="button" id="recoverySubmitBtn" class="pill-action-btn" onclick="handlePasswordRecoverySubmit()" style="width:100%; justify-content:center; padding:12px;">Send Recovery Link</button>
+        <a onclick="hidePasswordRecoveryView()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
+          Back to Login
+        </a>
+      </div>
+    </div>
+
   </div>
+</div>
 
   <div class="context-action-modal" id="meloConfirmModal" onclick="closeMeloConfirmation(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align:center;">

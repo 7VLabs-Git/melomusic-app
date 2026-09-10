@@ -9,19 +9,19 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, Query, Response, Depends
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, status, Cookie, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 import httpx
+http_client = httpx.AsyncClient()
 from pyDes import des, ECB, PAD_PKCS5
 from cachetools import TTLCache
 from ytmusicapi import YTMusic
 
-from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, Column, String, DateTime, Boolean, Integer, ForeignKey, Text
+from sqlalchemy.orm import sessionmaker, declarative_base
 from passlib.context import CryptContext
 
 app = FastAPI(title="MELO Hybrid Engine", version="10.2.1")
@@ -56,7 +56,27 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
     display_name = Column(String)
+    is_verified = Column(Boolean, default=False)               # Added
+    verification_token = Column(String, nullable=True)          # Added
+    reset_token = Column(String, nullable=True)
+    reset_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# ==========================================
+# AUTH / JWT HELPERS
+# ==========================================
+from datetime import datetime, timedelta
+from typing import Optional
+import jwt  # Make sure to run: pip install PyJWT
+
+JWT_SECRET = os.getenv("JWT_SECRET", "melo_super_secret_jwt_key_change_in_prod")
+JWT_ALGORITHM = "HS256"
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(days=7))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 class UserSession(Base):
     __tablename__ = "sessions"
@@ -110,18 +130,40 @@ def get_db():
     finally:
         db.close()
 
-def get_current_user(request: Request, db):
-    session_id = request.cookies.get("melo_session")
-    if not session_id:
-        return None
-    session = db.query(UserSession).filter(UserSession.id == session_id).first()
-    if not session or session.expires_at < datetime.utcnow():
-        return None
-    return db.query(User).filter(User.id == session.user_id).first()
+def get_current_user_obj(
+    request: Request,
+    session_token: Optional[str] = Cookie(None),
+    db=Depends(get_db)
+) -> User:
+    token = session_token or request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Session cookie missing")
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token invalid or expired")
+
+    user = db.query(User).filter(User.id == str(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
 
 # ==========================================
 # 2. AUTHENTICATION & SYNC APIS
 # ==========================================
+from typing import Optional
+from pydantic import BaseModel
+
+class AuthPayload(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
 class UserCreate(BaseModel):
     email: str
     password: str
@@ -133,6 +175,12 @@ class UserLogin(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
+    new_password: str
+class ForgotPasswordPayload(BaseModel):
+    email: str
+
+class ResetPasswordPayload(BaseModel):
+    token: str
     new_password: str
 
 class SyncPayload(BaseModel):
@@ -319,32 +367,119 @@ def register_user(user: UserCreate, response: Response, db=Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/login")
-def login_user(user: UserLogin, response: Response, db=Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if not db_user or not pwd_context.verify(user.password, db_user.password_hash):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-        
-    session = UserSession(user_id=db_user.id, expires_at=datetime.utcnow() + timedelta(days=30))
-    db.add(session)
-    db.commit()
-    
-    is_secure = os.getenv("ENVIRONMENT") == "production" or os.getenv("RENDER") is not None
+def login(payload: AuthPayload, response: Response, db=Depends(get_db)):
+    clean_email = payload.email.lower().strip()
+    user = db.query(User).filter(User.email == clean_email).first()
+
+    if not user or not pwd_context.verify(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email address before logging in. Check your inbox."
+        )
+
+    # 1. Create JWT session token
+    session_token = create_access_token({"sub": str(user.id), "email": user.email})
+
+    # 2. Write cookie for localhost
     response.set_cookie(
-        key="melo_session",
-        value=session.id,
+        key="session_token",
+        value=session_token,
         httponly=True,
+        max_age=60 * 60 * 24 * 7,  # 7 days
+        path="/",
         samesite="lax",
-        secure=is_secure,
-        max_age=30 * 86400
+        secure=False  # Must be False on http://localhost
     )
-    return {"id": db_user.id, "email": db_user.email, "display_name": db_user.display_name}
+
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name
+        }
+    }
+
+@app.get("/api/auth/verify-email")
+def verify_email(token: str, db=Depends(get_db)):
+    user = db.query(User).filter(User.verification_token == token).first()
+
+    if not user:
+        return HTMLResponse(
+            """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+              <meta charset="UTF-8"><title>Invalid Link - MELO</title>
+              <style>
+                body { background: #0a0b0f; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                .card { background: #141622; padding: 32px; border-radius: 14px; text-align: center; border: 1px solid rgba(255,255,255,0.08); }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h2 style="color: #ff334b;">Verification Link Invalid</h2>
+                <p>This link is invalid or has already been used.</p>
+                <a href="/" style="color: #fa2d48; text-decoration: none; font-weight: bold;">Go to MELO</a>
+              </div>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Mark user as verified and clear verification token
+    user.is_verified = True
+    user.verification_token = None
+    db.commit()
+
+    # Generate session and auto-login
+    session_token = create_access_token({"sub": user.id, "email": user.email})
+    
+    redirect_response = RedirectResponse(url="/?verified=1", status_code=302)
+    redirect_response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=60 * 60 * 24 * 7,
+        samesite="lax",
+        secure=False  # Set to True on HTTPS/Production
+    )
+    return redirect_response
 
 @app.get("/api/auth/me")
-def get_me(request: Request, db=Depends(get_db)):
-    user = get_current_user(request, db)
+def get_current_user(
+    request: Request,
+    session_token: Optional[str] = Cookie(None),
+    db=Depends(get_db)
+):
+    # Fallback check if Cookie param missed it
+    token = session_token or request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated: session cookie missing")
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token decode error: {str(e)}")
+
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"id": user.id, "email": user.email, "display_name": user.display_name}
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name or user.email.split("@")[0]
+    }
 
 @app.post("/api/auth/change-password")
 def change_password(req: ChangePasswordRequest, request: Request, db=Depends(get_db)):
@@ -359,20 +494,378 @@ def change_password(req: ChangePasswordRequest, request: Request, db=Depends(get
     db.commit()
     return {"success": True, "message": "Password updated successfully"}
 
-@app.post("/api/auth/delete-account")
-def delete_account(request: Request, response: Response, db=Depends(get_db)):
-    user = get_current_user(request, db)
+# PASSWORD RECOVERY ENDPOINT
+# ==========================================
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordPayload, request: Request, db=Depends(get_db)):
+    clean_email = payload.email.lower().strip()
+    if not clean_email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    user = db.query(User).filter(User.email == clean_email).first()
     if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
-    db.query(LibraryMutation).filter(LibraryMutation.user_id == user.id).delete()
-    db.query(UserLibrary).filter(UserLibrary.user_id == user.id).delete()
-    db.query(User).filter(User.id == user.id).delete()
+        return {"success": True, "message": f"If an account exists for {clean_email}, reset instructions have been sent."}
+
+    # 1. Generate recovery token & 30-minute expiration
+    reset_token = str(uuid.uuid4())
+    user.reset_token = reset_token
+    user.reset_expires_at = datetime.utcnow() + timedelta(minutes=30)
     db.commit()
-    
-    response.delete_cookie("melo_session")
-    return {"success": True, "message": "Account deleted successfully"}
+
+    # 2. Dynamic reset link (uses Render domain when deployed, localhost when local)
+    base_url = os.getenv("RENDER_EXTERNAL_URL", os.getenv("APP_BASE_URL", str(request.base_url).rstrip("/")))
+    reset_link = f"{base_url}/api/auth/reset-password-page?token={reset_token}"
+
+    # 3. Publicly hosted logo URL
+    logo_url = "https://melomusic.onrender.com/static/images/melo-text.png"
+
+    # 4. Dispatch email via Brevo HTTP API
+    try:
+        api_key = os.getenv("BREVO_API_KEY")
+        if not api_key:
+            print("[EMAIL_ERROR] BREVO_API_KEY is missing.")
+            return {"success": True, "message": f"If an account exists for {clean_email}, reset instructions have been sent."}
+
+        sender_email = os.getenv("BREVO_SENDER_EMAIL", "melomusic.team@gmail.com")
+
+        html_content = f"""
+        <div style="background-color:#0a0b0f;padding:40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <div style="background-color:#141622;max-width:480px;margin:0 auto;border-radius:16px;padding:36px 28px;border:1px solid rgba(255,255,255,0.08);text-align:center;box-shadow:0 12px 32px rgba(0,0,0,0.5);">
+                
+                <!-- MELO LOGO -->
+                <div style="margin-bottom:24px;text-align:center;">
+                    <img src="{logo_url}" alt="MELO" width="130" style="width:130px;max-width:130px;height:auto;display:inline-block;border:0;outline:none;" />
+                </div>
+
+                <h2 style="color:#ffffff;font-size:22px;margin:0 0 12px 0;font-weight:700;letter-spacing:-0.3px;">Reset Your Password</h2>
+                <p style="color:rgba(255,255,255,0.7);font-size:15px;line-height:1.5;margin:0 0 28px 0;">
+                    We received a request to reset the password for your MELO account. Tap the button below to set up a new password:
+                </p>
+                
+                <div style="margin:0 0 28px 0;">
+                    <a href="{reset_link}" style="background-color:#fa2d48;color:#ffffff;padding:13px 32px;border-radius:30px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block;box-shadow:0 4px 14px rgba(250,45,72,0.35);">Reset Password</a>
+                </div>
+
+                <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:24px 0 16px 0;" />
+                
+                <p style="color:rgba(255,255,255,0.4);font-size:12px;line-height:1.4;margin:0;">
+                    This link will expire in 30 minutes.<br>
+                    If you didn't request a password reset, you can safely ignore this email.
+                </p>
+            </div>
+        </div>
+        """
+
+        brevo_payload = {
+            "sender": {"name": "MELO Support", "email": sender_email},
+            "to": [{"email": clean_email}],
+            "subject": "Reset Your MELO Password",
+            "htmlContent": html_content
+        }
+
+        headers = {
+            "accept": "application/json",
+            "api-key": api_key,
+            "content-type": "application/json"
+        }
+
+        response = await http_client.post("https://api.brevo.com/v3/smtp/email", json=brevo_payload, headers=headers)
+        if response.status_code in (200, 201):
+            print(f"[BREVO HTTP] Reset email dispatched to {clean_email}")
+        else:
+            print(f"[BREVO_ERROR] Status {response.status_code}: {response.text}")
+
+    except Exception as e:
+        print(f"[EMAIL_ERROR] Failed to send email: {str(e)}")
+
+    return {"success": True, "message": f"If an account exists for {clean_email}, reset instructions have been sent."}
+
+# ==========================================
+# RESET PASSWORD VIEW & SUBMISSION
+# ==========================================
+@app.get("/api/auth/reset-password-page", response_class=HTMLResponse)
+def reset_password_page(token: str, db=Depends(get_db)):
+    # Verify token validity and expiration
+    user = db.query(User).filter(User.reset_token == token).first()
+    if not user or not user.reset_expires_at or user.reset_expires_at < datetime.utcnow():
+        return HTMLResponse(
+            """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+              <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Link Expired - MELO</title>
+              <style>
+                body { background: #0a0b0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+                .card { background: #141622; padding: 32px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); text-align: center; max-width: 380px; width: 90%; }
+                h2 { color: #ff334b; margin-top: 0; }
+                a { color: #fa2d48; text-decoration: none; font-weight: bold; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h2>Invalid or Expired Link</h2>
+                <p style="color: rgba(255,255,255,0.6); font-size: 0.9rem;">This password recovery link is no longer valid. Please request a new one.</p>
+                <a href="/">Back to MELO</a>
+              </div>
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # Render Active Password Reset Form
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Reset Password - MELO</title>
+      <style>
+        body {{ background: #0a0b0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+        .card {{ background: #141622; padding: 32px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); max-width: 400px; width: 100%; box-shadow: 0 16px 36px rgba(0,0,0,0.6); }}
+        h2 {{ margin-top: 0; font-size: 1.4rem; }}
+        p {{ color: rgba(255,255,255,0.6); font-size: 0.88rem; margin-bottom: 20px; }}
+        .input-group {{ position: relative; margin-bottom: 14px; }}
+        input {{ width: 100%; padding: 14px 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; color: #fff; font-size: 0.95rem; box-sizing: border-box; outline: none; transition: border-color 0.25s ease, box-shadow 0.25s ease; }}
+        input:focus {{ border-color: #fa2d48; }}
+        input.is-valid {{ border-color: #10b981 !important; box-shadow: 0 0 0 1px rgba(16,185,129,0.3) !important; }}
+        input.is-invalid {{ border-color: #ff334b !important; box-shadow: 0 0 0 1px rgba(255,51,75,0.3) !important; }}
+        button.submit-btn {{ width: 100%; padding: 14px; background: #fa2d48; border: none; border-radius: 25px; color: #fff; font-size: 1rem; font-weight: 700; cursor: pointer; transition: opacity 0.2s; margin-top: 10px; }}
+        button.submit-btn:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+        .msg {{ font-size: 0.88rem; margin-top: 16px; text-align: center; }}
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h2>Set New Password</h2>
+        <p>Enter your new password for <strong>{user.email}</strong>.</p>
+        
+        <div class="input-group">
+          <input type="password" id="p1" placeholder="New Password (min 6 chars)" oninput="checkPasswordMatch()" />
+        </div>
+        <div class="input-group">
+          <input type="password" id="p2" placeholder="Confirm Password" oninput="checkPasswordMatch()" />
+        </div>
+
+        <button class="submit-btn" id="saveBtn" onclick="handlePasswordReset()" disabled>Update Password</button>
+        <div id="statusMsg" class="msg"></div>
+      </div>
+
+      <script>
+        const resetToken = "{token}";
+        const p1 = document.getElementById('p1');
+        const p2 = document.getElementById('p2');
+        const btn = document.getElementById('saveBtn');
+        const msg = document.getElementById('statusMsg');
+
+        function checkPasswordMatch() {{
+          const v1 = p1.value;
+          const v2 = p2.value;
+          if (!v1 || !v2) {{
+            p1.className = '';
+            p2.className = '';
+            btn.disabled = true;
+            return;
+          }}
+          if (v1 === v2 && v1.length >= 6) {{
+            p1.className = 'is-valid';
+            p2.className = 'is-valid';
+            btn.disabled = false;
+          }} else {{
+            p1.className = 'is-invalid';
+            p2.className = 'is-invalid';
+            btn.disabled = true;
+          }}
+        }}
+
+        async function handlePasswordReset() {{
+          btn.disabled = true;
+          btn.innerText = "Updating...";
+          msg.innerText = "";
+
+          try {{
+            const res = await fetch('/api/auth/reset-password', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{ token: resetToken, new_password: p1.value }})
+            }});
+            const data = await res.json();
+            if (res.ok) {{
+              msg.style.color = '#10b981';
+              msg.innerHTML = 'Password updated successfully! <a href="/" style="color:#fa2d48;margin-left:4px;">Log in now</a>';
+              p1.style.display = 'none';
+              p2.style.display = 'none';
+              btn.style.display = 'none';
+            }} else {{
+              msg.style.color = '#ff334b';
+              msg.innerText = data.detail || 'Reset failed. Please try again.';
+              btn.disabled = false;
+              btn.innerText = "Update Password";
+            }}
+          }} catch (err) {{
+            msg.style.color = '#ff334b';
+            msg.innerText = 'Network error. Please try again.';
+            btn.disabled = false;
+            btn.innerText = "Update Password";
+          }}
+        }}
+      </script>
+    </body>
+    </html>
+    """)
+
+@app.post("/api/auth/reset-password")
+def reset_password(payload: ResetPasswordPayload, db=Depends(get_db)):
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    user = db.query(User).filter(User.reset_token == payload.token).first()
+    if not user or not user.reset_expires_at or user.reset_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Reset link is invalid or has expired")
+
+    # Update password and wipe the used recovery token
+    user.password_hash = pwd_context.hash(payload.new_password)
+    user.reset_token = None
+    user.reset_expires_at = None
+    db.commit()
+
+    return {"success": True, "message": "Password updated successfully"}
+
+@app.post("/api/auth/delete-account")
+def delete_account(
+    response: Response,
+    current_user: User = Depends(get_current_user_obj),
+    db=Depends(get_db)
+):
+    try:
+        user_id = current_user.id
+
+        # 1. Delete associated library mutations
+        db.query(LibraryMutation).filter(LibraryMutation.user_id == user_id).delete()
+
+        # 2. Delete user library record
+        db.query(UserLibrary).filter(UserLibrary.user_id == user_id).delete()
+
+        # 3. Delete active sessions if UserSession table exists
+        if "UserSession" in globals():
+            db.query(UserSession).filter(UserSession.user_id == user_id).delete()
+
+        # 4. Delete the user record
+        db.delete(current_user)
+        db.commit()
+
+        # 5. Clear the authentication cookie
+        response.delete_cookie(
+            key="session_token",
+            path="/"
+        )
+
+        return {"success": True, "message": "Account successfully deleted"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete account: {str(e)}"
+        )
+
+
+
+@app.post("/api/auth/signup")
+async def signup(payload: AuthPayload, request: Request, db=Depends(get_db)):
+    clean_email = payload.email.lower().strip()
+    if not clean_email or not payload.password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+
+    existing_user = db.query(User).filter(User.email == clean_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Generate verification token
+    verification_token = str(uuid.uuid4())
+
+    new_user = User(
+        email=clean_email,
+        password_hash=pwd_context.hash(payload.password),
+        display_name=payload.display_name or clean_email.split("@")[0],
+        is_verified=False,
+        verification_token=verification_token
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    # Base URL handling (Render or Localhost)
+    base_url = os.getenv("RENDER_EXTERNAL_URL", os.getenv("APP_BASE_URL", str(request.base_url).rstrip("/")))
+    verify_link = f"{base_url}/api/auth/verify-email?token={verification_token}"
+
+    logo_url = "https://melomusic.onrender.com/static/images/melo-text.png"
+
+    # Send verification email via Brevo HTTP API
+    try:
+        api_key = os.getenv("BREVO_API_KEY")
+        sender_email = os.getenv("BREVO_SENDER_EMAIL", "melomusic.team@gmail.com")
+
+        if api_key:
+            html_content = f"""
+            <div style="background-color:#0a0b0f;padding:40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                <div style="background-color:#141622;max-width:480px;margin:0 auto;border-radius:16px;padding:36px 28px;border:1px solid rgba(255,255,255,0.08);text-align:center;box-shadow:0 12px 32px rgba(0,0,0,0.5);">
+                    
+                    <!-- ENLARGED MELO LOGO -->
+                    <div style="margin-bottom:24px;text-align:center;">
+                        <img src="{logo_url}" alt="MELO" width="165" style="width:165px;max-width:165px;height:auto;display:inline-block;border:0;outline:none;" />
+                    </div>
+
+                    <h2 style="color:#ffffff;font-size:22px;margin:0 0 12px 0;font-weight:700;">Verify Your Email</h2>
+                    <p style="color:rgba(255,255,255,0.7);font-size:15px;line-height:1.5;margin:0 0 28px 0;">
+                        Welcome to MELO! Tap the button below to verify your email address and start listening immediately:
+                    </p>
+                    
+                    <div style="margin:0 0 28px 0;">
+                        <a href="{verify_link}" style="background-color:#fa2d48;color:#ffffff;padding:13px 34px;border-radius:30px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block;box-shadow:0 4px 14px rgba(250,45,72,0.35);">Verify & Log In</a>
+                    </div>
+
+                    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:24px 0 16px 0;" />
+                    
+                    <p style="color:rgba(255,255,255,0.4);font-size:12px;line-height:1.4;margin:0;">
+                        If you didn't create an account with MELO, you can safely ignore this email.
+                    </p>
+                </div>
+            </div>
+            """
+
+            brevo_payload = {
+                "sender": {"name": "MELO Support", "email": sender_email},
+                "to": [{"email": clean_email}],
+                "subject": "Verify your MELO account",
+                "htmlContent": html_content
+            }
+
+            headers = {
+                "accept": "application/json",
+                "api-key": api_key,
+                "content-type": "application/json"
+            }
+
+            await http_client.post("https://api.brevo.com/v3/smtp/email", json=brevo_payload, headers=headers)
+            print(f"[BREVO] Verification email sent to {clean_email}")
+    except Exception as e:
+        print(f"[VERIFY_EMAIL_ERROR] {e}")
+
+    return {
+        "success": True,
+        "requires_verification": True,
+        "message": "Account created! Please check your email to verify and log in."
+    }
 
 @app.post("/api/auth/logout")
 def logout(request: Request, response: Response, db=Depends(get_db)):
@@ -437,10 +930,24 @@ def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(
     Mutation ids make retries safe. The server stores a revisioned mutation log so
     another device can fetch just the changes it has not seen yet.
     """
-    user = get_current_user(request, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    # 1. Direct Cookie Extraction & JWT Verification
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated: session cookie missing")
 
+    try:
+        token_data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = token_data.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Session expired or token invalid")
+
+    user = db.query(User).filter(User.id == str(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # 2. Retrieve or Initialize User Library
     library = db.query(UserLibrary).filter(UserLibrary.user_id == user.id).first()
     if not library:
         library = UserLibrary(
@@ -455,25 +962,30 @@ def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(
         db.add(library)
         db.flush()
 
+    # 3. Apply Queued Mutations
     snapshot = library_snapshot(library)
     acknowledged_ids = []
     processed_ids = set()
+
     for mutation in payload.mutations[:100]:
         if not mutation.id or len(mutation.id) > 128:
             continue
         if mutation.id in processed_ids:
             acknowledged_ids.append(mutation.id)
             continue
+
         existing = db.query(LibraryMutation).filter(
             LibraryMutation.id == mutation.id,
             LibraryMutation.user_id == user.id,
         ).first()
+
         if existing:
             acknowledged_ids.append(mutation.id)
             continue
 
         apply_library_mutation(snapshot, mutation.operation, mutation.payload)
         library.revision = (library.revision or 0) + 1
+
         db.add(LibraryMutation(
             id=mutation.id,
             user_id=user.id,
@@ -487,6 +999,7 @@ def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(
     save_library_snapshot(library, snapshot)
     db.flush()
 
+    # 4. Fetch Revision Deltas
     changes = db.query(LibraryMutation).filter(
         LibraryMutation.user_id == user.id,
         LibraryMutation.revision > max(0, payload.base_revision),
@@ -496,6 +1009,7 @@ def sync_library_deltas(payload: DeltaSyncPayload, request: Request, db=Depends(
     # later requests are strictly delta based.
     include_snapshot = payload.base_revision == 0
     db.commit()
+
     return {
         "revision": library.revision or 0,
         "acknowledged_ids": acknowledged_ids,

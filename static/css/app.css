@@ -2939,3 +2939,58 @@ body.is-offline .main-viewport {
   cursor: grab;
   flex-shrink: 0;
 }
+
+/* ==========================================
+   AUTH MODAL EYE TOGGLES
+   ========================================== */
+.auth-input-group {
+  position: relative;
+  width: 100%;
+}
+
+.auth-toggle-pass-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.2s ease;
+  z-index: 5;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.auth-toggle-pass-btn:hover {
+  color: #ffffff;
+}
+
+.auth-toggle-pass-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+/* Real-time Match Validation Borders */
+.auth-validated-input {
+  transition: border-color 0.25s ease, box-shadow 0.25s ease !important;
+}
+
+.auth-validated-input.is-valid-match {
+  border-color: #10b981 !important; /* Green */
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35), 0 0 8px rgba(16, 185, 129, 0.25) !important;
+}
+
+.auth-validated-input.is-invalid-match {
+  border-color: #ff334b !important; /* Soft Red */
+  box-shadow: 0 0 0 1px rgba(255, 51, 75, 0.35), 0 0 8px rgba(255, 51, 75, 0.2) !important;
+}

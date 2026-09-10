@@ -2459,6 +2459,8 @@ function initFullscreenSwipeDown() {
   sheet.addEventListener('touchcancel', finishGesture, { passive: true });
 }
 
+
+
 function renderHomeView() {
   // If offline, redirect directly to the offline view
   if (!navigator.onLine) return renderHomeOfflineView();
@@ -3538,23 +3540,187 @@ function openAuthModal() {
 }
 
 function closeAuthModal(e) {
-  if (!e || e.target === $id('authModal') || e.target?.classList.contains('drag-handle')) {
-    $id('authModal')?.classList.remove('open');
+  const modal = $id('authModal');
+  if (!modal) return;
+
+  if (!e || e.target === modal || e.target?.classList.contains('drag-handle')) {
+    modal.classList.remove('open');
+
+    // Reset/clear input fields and validation states when closing
+    const emailInput = $id('authEmail');
+    const passInput = $id('authPassword');
+    const confirmInput = $id('authConfirmPassword');
+    const nameInput = $id('authName');
+    const recoveryEmail = $id('recoveryEmail');
+
+    if (emailInput) emailInput.value = '';
+    if (passInput) {
+      passInput.value = '';
+      passInput.type = 'password';
+      passInput.classList.remove('is-valid-match', 'is-invalid-match');
+    }
+    if (confirmInput) {
+      confirmInput.value = '';
+      confirmInput.type = 'password';
+      confirmInput.classList.remove('is-valid-match', 'is-invalid-match');
+    }
+    if (nameInput) nameInput.value = '';
+    if (recoveryEmail) recoveryEmail.value = '';
+
+    // Always reset view back to main login/signup view if recovery view was left open
+    hidePasswordRecoveryView();
   }
 }
+window.closeAuthModal = closeAuthModal;
+
+// ==========================================
+// LIVE PASSWORD MATCH VALIDATION
+// ==========================================
+function validatePasswordMatch() {
+  if (!isRegisterMode) return;
+
+  const p1 = $id('authPassword');
+  const p2 = $id('authConfirmPassword');
+  if (!p1 || !p2) return;
+
+  const val1 = p1.value;
+  const val2 = p2.value;
+
+  // Clear states if either field is blank
+  if (!val1 || !val2) {
+    p1.classList.remove('is-valid-match', 'is-invalid-match');
+    p2.classList.remove('is-valid-match', 'is-invalid-match');
+    return;
+  }
+
+  if (val1 === val2 && val1.length >= 6) {
+    p1.classList.remove('is-invalid-match');
+    p2.classList.remove('is-invalid-match');
+    p1.classList.add('is-valid-match');
+    p2.classList.add('is-valid-match');
+  } else {
+    p1.classList.remove('is-valid-match');
+    p2.classList.remove('is-valid-match');
+    p1.classList.add('is-invalid-match');
+    p2.classList.add('is-invalid-match');
+  }
+}
+window.validatePasswordMatch = validatePasswordMatch;
+
+// ==========================================
+// PASSWORD VISIBILITY TOGGLE HELPER
+// ==========================================
+function togglePasswordVisibility(inputId, btn) {
+  const input = $id(inputId);
+  if (!input) return;
+
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+
+  if (btn) {
+    if (isPassword) {
+      btn.innerHTML = `
+        <svg class="eye-icon" viewBox="0 0 24 24">
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+        </svg>
+      `;
+      btn.style.color = '#ffffff';
+    } else {
+      btn.innerHTML = `
+        <svg class="eye-icon" viewBox="0 0 24 24">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      `;
+      btn.style.color = 'rgba(255, 255, 255, 0.5)';
+    }
+  }
+}
+window.togglePasswordVisibility = togglePasswordVisibility;
 
 function toggleAuthMode() {
   isRegisterMode = !isRegisterMode;
+
   if ($id('authTitle')) $id('authTitle').innerText = isRegisterMode ? 'Create Account' : 'Welcome to MELO';
   if ($id('authSubtitle')) $id('authSubtitle').innerText = isRegisterMode ? 'Join to sync your library anywhere.' : 'Sign in to sync your library across devices.';
   if ($id('authName')) $id('authName').style.display = isRegisterMode ? 'block' : 'none';
+  if ($id('authConfirmGroup')) $id('authConfirmGroup').style.display = isRegisterMode ? 'block' : 'none';
+  if ($id('authForgotRow')) $id('authForgotRow').style.display = isRegisterMode ? 'none' : 'block';
   if ($id('authSubmitBtn')) $id('authSubmitBtn').innerText = isRegisterMode ? 'Sign Up' : 'Log In';
   if ($id('authToggleLink')) $id('authToggleLink').innerText = isRegisterMode ? 'Already have an account? Log In' : "Don't have an account? Sign up";
+
+  // Reset classes and input types
+  const pass = $id('authPassword');
+  const confirm = $id('authConfirmPassword');
+  if (pass) {
+    pass.type = 'password';
+    pass.classList.remove('is-valid-match', 'is-invalid-match');
+  }
+  if (confirm) {
+    confirm.type = 'password';
+    confirm.classList.remove('is-valid-match', 'is-invalid-match');
+  }
 }
+window.toggleAuthMode = toggleAuthMode;
+
+function showPasswordRecoveryView() {
+  if ($id('authMainView')) $id('authMainView').style.display = 'none';
+  if ($id('authRecoveryView')) $id('authRecoveryView').style.display = 'block';
+  const recEmail = $id('recoveryEmail');
+  const authEmail = $id('authEmail');
+  if (recEmail && authEmail && authEmail.value) {
+    recEmail.value = authEmail.value;
+  }
+}
+window.showPasswordRecoveryView = showPasswordRecoveryView;
+
+function hidePasswordRecoveryView() {
+  if ($id('authRecoveryView')) $id('authRecoveryView').style.display = 'none';
+  if ($id('authMainView')) $id('authMainView').style.display = 'block';
+}
+window.hidePasswordRecoveryView = hidePasswordRecoveryView;
+
+async function handlePasswordRecoverySubmit() {
+  const emailInput = $id('recoveryEmail');
+  const btn = $id('recoverySubmitBtn');
+  const email = emailInput?.value.trim();
+
+  if (!email) {
+    showToast("Please enter your account email.");
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.innerText = "Sending..."; }
+
+  try {
+    const res = await fetch('/api/auth/forgot-password', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+
+    if (res.ok) {
+      showToast("Reset link sent! Please check your inbox.");
+      hidePasswordRecoveryView();
+      closeAuthModal();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.detail || "Unable to send reset email. Verify email address.");
+    }
+  } catch (e) {
+    showToast("Network error. Please try again.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = "Send Recovery Link"; }
+  }
+}
+window.handlePasswordRecoverySubmit = handlePasswordRecoverySubmit;
 
 async function handleAuthSubmit() {
   const email = $id('authEmail')?.value.trim();
   const password = $id('authPassword')?.value;
+  const confirmPassword = $id('authConfirmPassword')?.value;
   const name = $id('authName')?.value.trim();
   const btn = $id('authSubmitBtn');
 
@@ -3563,8 +3729,19 @@ async function handleAuthSubmit() {
     return;
   }
 
+  if (isRegisterMode) {
+    if (password.length < 6) {
+      showToast("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      showToast("Passwords do not match!");
+      return;
+    }
+  }
+
   if (btn) { btn.disabled = true; btn.innerText = "Please wait..."; }
-  const endpoint = isRegisterMode ? '/api/auth/register' : '/api/auth/login';
+  const endpoint = isRegisterMode ? '/api/auth/signup' : '/api/auth/login';
   const payload = isRegisterMode ? { email, password, display_name: name } : { email, password };
 
   try {
@@ -3574,19 +3751,27 @@ async function handleAuthSubmit() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+
     if (res.ok) {
-      showToast(isRegisterMode ? "Account created!" : "Logged in successfully!");
-      closeAuthModal();
-      await checkAuthStatus();
-      const hasLocalFavs = Object.keys(store.readScope('guest').favorites || {}).length > 0;
-      const hasLocalPls = Object.keys(store.readScope('guest').playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
-      if (hasLocalFavs || hasLocalPls) {
-        $id('migrationModal')?.classList.add('open');
+      if (isRegisterMode && data.requires_verification) {
+        showToast("Verification link sent! Check your inbox to activate your account.");
+        closeAuthModal();
+        toggleAuthMode(); // Switch form back to login mode
       } else {
-        await store.pullFromCloud();
+        showToast("Logged in successfully!");
+        closeAuthModal();
+        await checkAuthStatus();
+        const hasLocalFavs = Object.keys(store.readScope('guest').favorites || {}).length > 0;
+        const hasLocalPls = Object.keys(store.readScope('guest').playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
+        if (hasLocalFavs || hasLocalPls) {
+          $id('migrationModal')?.classList.add('open');
+        } else {
+          await store.pullFromCloud();
+        }
       }
     } else {
+      // Shows "Please verify your email address..." directly if unverified
       showToast(data.detail || "Authentication failed.");
     }
   } catch (err) {
@@ -3774,7 +3959,11 @@ function executeDeleteAccount() {
     danger: true,
     action: async () => {
       try {
-        const res = await fetch('/api/auth/delete-account', { method: 'POST', credentials: 'same-origin' });
+        const res = await fetch('/api/auth/delete-account', {
+          method: 'POST',
+          credentials: 'same-origin'
+        });
+        
         if (res.ok) {
           currentUser = null;
           await store.switchProfile(null);
@@ -3782,7 +3971,8 @@ function executeDeleteAccount() {
           switchView('home');
           showToast("Account deleted successfully.");
         } else {
-          showToast("Failed to delete account.");
+          const data = await res.json().catch(() => ({}));
+          showToast(data.detail || "Failed to delete account.");
         }
       } catch (e) {
         showToast("Network error while deleting account.");
@@ -4147,6 +4337,7 @@ window.reorderPlaylistTrack = reorderPlaylistTrack;
 window.openAuthModal = openAuthModal;
 window.closeAuthModal = closeAuthModal;
 window.toggleAuthMode = toggleAuthMode;
+window.togglePasswordVisibility = togglePasswordVisibility;
 window.handleAuthSubmit = handleAuthSubmit;
 window.checkAuthStatus = checkAuthStatus;
 window.updateAccountUI = updateAccountUI;
@@ -4231,7 +4422,7 @@ async function closeCinematicMode() {
 }
 
 // Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.5.5';
+const CURRENT_APP_VERSION = '2.5.8';
 
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');
@@ -4311,6 +4502,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   syncDownloadedPlaylist();
   checkAuthStatus();
+  // Check if user just verified via email link (?verified=1)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('verified') === '1') {
+    showToast("Email verified successfully! Welcome to MELO.");
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
   initScrubberHandlers();
   initLyricsUserScroll();
   initFullscreenSwipeDown();
