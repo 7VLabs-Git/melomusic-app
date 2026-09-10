@@ -5,6 +5,12 @@
 const $id = id => document.getElementById(id);
 window.__contextTrackMap = {};
 
+// Suppress benign ViewTransition cancellations from rapid tab switching
+window.addEventListener('unhandledrejection', (event) => {
+  if (event.reason && (event.reason.name === 'InvalidStateError' || event.reason.name === 'AbortError')) {
+    event.preventDefault();
+  }
+});
 // ==========================================
 // PIXEL M3 EXPRESSIVE LOADER GENERATOR
 // ==========================================
@@ -259,7 +265,7 @@ class MeloDataLayer {
       const sent = this.pending.slice(0, 100);
       const res = await fetch('/api/auth/library/sync', {
         method: 'POST',
-        credentials: 'same-origin',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_revision: this.state.revision || 0, mutations: sent })
       });
@@ -336,106 +342,6 @@ let meloConfirmationAction = null;
 // ==========================================
 // 3. CORE NAVIGATION & HOISTED UTILITIES
 // ==========================================
-function switchView(view, pushState = true) {
-  // At the top of switchView:
-if (activeView !== view && !['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
-  previousNavView = activeView;
-}
-  if (pushState && activeView !== view) {
-    navigationHistory.push(view);
-  }
-  activeView = view;
-
-  document.querySelectorAll('.capsule-btn, .pill-nav-item').forEach(btn => btn.classList.remove('active'));
-
-  // Encapsulate the DOM update so it can run instantly or with smooth view transitions
-  const run = () => {
-    if (view === 'home') {
-      $id('navHome')?.classList.add('active');
-      $id('mNavHome')?.classList.add('active');
-      renderHomeView();
-    } else if (view === 'search') {
-      $id('navSearch')?.classList.add('active');
-      $id('mNavSearch')?.classList.add('active');
-      renderSearchView();
-    } else if (view === 'favorites') {
-      $id('navFavs')?.classList.add('active');
-      $id('mNavFavs')?.classList.add('active');
-      renderFavoritesView();
-    } else if (view === 'loved') {
-      $id('navFavs')?.classList.add('active');
-      $id('mNavFavs')?.classList.add('active');
-      renderLovedTracks();
-    } else if (view === 'history') {
-      $id('navFavs')?.classList.add('active');
-      $id('mNavFavs')?.classList.add('active');
-      renderHistoryView();
-    } else if (view === 'offline') {
-      $id('navFavs')?.classList.add('active');
-      $id('mNavFavs')?.classList.add('active');
-      renderOfflineVault();
-    } else if (view === 'account') {
-      renderAccountView();
-    } else if (view === 'player' || view === 'nowplaying' || view === 'fullscreen') {
-      openFullscreenPlayer();
-    }
-
-   // Inside switchView(view, pushState = true) in static/js/app.js:
-if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
-  document.documentElement.style.removeProperty('--pl-dynamic-bg');
-  document.documentElement.style.removeProperty('--pl-dynamic-mid');
-  document.documentElement.style.removeProperty('--pl-dynamic-deep');
-  document.documentElement.style.removeProperty('--pl-dynamic-accent');
-}
-
-    // Hide fullscreen overlay if switching back to standard navigation tabs
-    if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
-      closeFullscreenPlayer();
-    }
-
-    // Smooth scroll reset to top of viewport to prevent jank
-    const vp = $id('mainViewport');
-    if (vp) vp.scrollTop = 0;
-  };
-
-  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!reduceMotion && document.startViewTransition) {
-    try {
-      const transition = document.startViewTransition(run);
-      transition.catch((err) => {
-        // Suppress benign transition aborts from rapid clicks or tab switches
-        if (err.name !== 'InvalidStateError' && err.name !== 'AbortError') {
-          console.warn('ViewTransition failed:', err);
-        }
-      });
-    } catch (e) {
-      run();
-    }
-  } else {
-    run();
-  }
-}
-
-function goBack() {
-  // Hub sub-views and details must return to Music Hub (favorites)
-  const hubViews = ['favorites', 'loved', 'history', 'offline', 'hub', 'library'];
-  
-  if (['playlist-detail', 'album-detail', 'artist-detail', 'loved', 'history', 'offline'].includes(activeView)) {
-    // If we entered from Search or Home, return there; otherwise return to Music Hub
-    if (previousNavView === 'search') {
-      switchView('search');
-    } else if (previousNavView === 'home') {
-      switchView('home');
-    } else {
-      switchView('favorites');
-    }
-  } else if (window.history.length > 1) {
-    window.history.back();
-  } else {
-    switchView('favorites');
-  }
-}
-window.goBack = goBack;
 
 function scrollToCategory(id) {
   const el = $id(id);
@@ -2053,11 +1959,6 @@ window.scrollQuickPicksTo = scrollQuickPicksTo;
 window.updateQuickPicksDots = updateQuickPicksDots;
 window.initQuickPicksObserver = initQuickPicksObserver;
 
-function loadForYouCatalog(query = 'Flow') {
-  return loadPersonalizedForYou(typeof query === 'string' ? query : 'Flow');
-}
-window.loadForYouCatalog = loadForYouCatalog;
-
 // ==========================================
 // BOTTOM SCROLL RED GLOW ENGINE
 // ==========================================
@@ -2197,11 +2098,11 @@ function switchView(view, pushState = true) {
   if (!reduceMotion && document.startViewTransition) {
     try {
       const transition = document.startViewTransition(run);
-      transition.catch((err) => {
-        if (err.name !== 'InvalidStateError' && err.name !== 'AbortError') {
-          console.warn('ViewTransition failed:', err);
-        }
-      });
+      if (transition && transition.finished) {
+        transition.finished.catch(() => {
+          // Benign abort caused by rapid route switching
+        });
+      }
     } catch (e) {
       run();
     }
@@ -2751,14 +2652,6 @@ window.loadPersonalizedForYou = loadPersonalizedForYou;
 window.switchVibePreset = switchVibePreset;
 window.playForYouAll = playForYouAll;
 window.renderForYouCompactGrid = renderForYouCompactGrid;
-
-function playForYouAll() {
-  if (forYouTracks.length > 0) {
-    currentPlaylistContextId = null;
-    playlist = [...forYouTracks];
-    playIndex(0);
-  }
-}
 
 async function loadShelfCategory(query, containerId) {
   const c = $id(containerId);
@@ -3617,9 +3510,14 @@ function openAuthModal() {
 function closeAuthModal(e) {
   const modal = $id('authModal');
   if (!modal) return;
-
   if (!e || e.target === modal || e.target?.classList.contains('drag-handle')) {
     modal.classList.remove('open');
+    if (typeof setAuthBanner === 'function') setAuthBanner(null);
+
+    // Reset view panels back to default main login/signup state
+    if ($id('authVerifyView')) $id('authVerifyView').style.display = 'none';
+    if ($id('authRecoveryView')) $id('authRecoveryView').style.display = 'none';
+    if ($id('authMainView')) $id('authMainView').style.display = 'block';
 
     // Reset/clear input fields and validation states when closing
     const emailInput = $id('authEmail');
@@ -3717,6 +3615,9 @@ window.togglePasswordVisibility = togglePasswordVisibility;
 function toggleAuthMode() {
   isRegisterMode = !isRegisterMode;
 
+  // CLEAR THE BANNER WHEN SWITCHING MODES
+  setAuthBanner(null);
+
   if ($id('authTitle')) $id('authTitle').innerText = isRegisterMode ? 'Create Account' : 'Welcome to MELO';
   if ($id('authSubtitle')) $id('authSubtitle').innerText = isRegisterMode ? 'Join to sync your library anywhere.' : 'Sign in to sync your library across devices.';
   if ($id('authName')) $id('authName').style.display = isRegisterMode ? 'block' : 'none';
@@ -3756,6 +3657,28 @@ function hidePasswordRecoveryView() {
 }
 window.hidePasswordRecoveryView = hidePasswordRecoveryView;
 
+function showVerificationSuccessView(email) {
+  if ($id('authMainView')) $id('authMainView').style.display = 'none';
+  if ($id('authRecoveryView')) $id('authRecoveryView').style.display = 'none';
+  
+  const verifyView = $id('authVerifyView');
+  const targetEmailEl = $id('authVerifyTargetEmail');
+  
+  if (targetEmailEl) targetEmailEl.innerText = email;
+  if (verifyView) verifyView.style.display = 'block';
+}
+
+function returnToLoginAfterVerify() {
+  if ($id('authVerifyView')) $id('authVerifyView').style.display = 'none';
+  if ($id('authRecoveryView')) $id('authRecoveryView').style.display = 'none';
+  if ($id('authMainView')) $id('authMainView').style.display = 'block';
+  
+  if (isRegisterMode) {
+    toggleAuthMode();
+  }
+}
+window.returnToLoginAfterVerify = returnToLoginAfterVerify;
+
 async function handlePasswordRecoverySubmit() {
   const emailInput = $id('recoveryEmail');
   const btn = $id('recoverySubmitBtn');
@@ -3771,7 +3694,7 @@ async function handlePasswordRecoverySubmit() {
   try {
     const res = await fetch('/api/auth/forgot-password', {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email })
     });
@@ -3792,6 +3715,19 @@ async function handlePasswordRecoverySubmit() {
 }
 window.handlePasswordRecoverySubmit = handlePasswordRecoverySubmit;
 
+function setAuthBanner(message, type = 'info') {
+  const banner = $id('authStatusBanner');
+  if (!banner) return;
+  if (!message) {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    return;
+  }
+  banner.className = `auth-status-banner is-${type}`;
+  banner.innerHTML = message;
+  banner.style.display = 'block';
+}
+
 async function handleAuthSubmit() {
   const email = $id('authEmail')?.value.trim();
   const password = $id('authPassword')?.value;
@@ -3799,67 +3735,111 @@ async function handleAuthSubmit() {
   const name = $id('authName')?.value.trim();
   const btn = $id('authSubmitBtn');
 
+  // 1. Reset any previous alert messages
+  if (typeof setAuthBanner === 'function') setAuthBanner(null);
+
+  // 2. Client-side input validations
   if (!email || !password || (isRegisterMode && !name)) {
-    showToast("Please fill in all fields.");
+    setAuthBanner('Please fill in all required fields.', 'error');
+    return;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    setAuthBanner('Please enter a valid email address.', 'error');
     return;
   }
 
   if (isRegisterMode) {
     if (password.length < 6) {
-      showToast("Password must be at least 6 characters.");
+      setAuthBanner('Password must be at least 6 characters long.', 'error');
       return;
     }
     if (password !== confirmPassword) {
-      showToast("Passwords do not match!");
+      setAuthBanner('Passwords do not match. Please check and try again.', 'error');
       return;
     }
   }
 
-  if (btn) { btn.disabled = true; btn.innerText = "Please wait..."; }
+  // 3. Set pending state on action button
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = isRegisterMode ? 'Creating Account...' : 'Logging in...';
+  }
+
   const endpoint = isRegisterMode ? '/api/auth/signup' : '/api/auth/login';
-  const payload = isRegisterMode ? { email, password, display_name: name } : { email, password };
+  const payload = isRegisterMode 
+    ? { email, password, display_name: name } 
+    : { email, password };
 
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
-      credentials: 'include', // <--- Use 'include' so cookies are always passed
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(payload)
     });
+
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      // 1. SAVE TOKEN TO LOCALSTORAGE HERE
-      if (data.session_token || data.token) {
-        localStorage.setItem('session_token', data.session_token || data.token);
+      // Persist session token if provided by the backend response
+      const token = data.session_token || data.token;
+      if (token) {
+        localStorage.setItem('session_token', token);
       }
 
-      if (isRegisterMode && data.requires_verification) {
-        showToast("Verification link sent! Check your inbox to activate your account.");
-        closeAuthModal();
-        toggleAuthMode();
-      } else {
-        showToast("Logged in successfully!");
-        closeAuthModal();
-
-        // 2. CHECK AUTH (Now has the token in localStorage)
-        await checkAuthStatus();
-
-        const hasLocalFavs = Object.keys(store.readScope('guest').favorites || {}).length > 0;
-        const hasLocalPls = Object.keys(store.readScope('guest').playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
-        if (hasLocalFavs || hasLocalPls) {
-          $id('migrationModal')?.classList.add('open');
+      // If user registered and needs email activation
+      if (isRegisterMode && (data.requires_verification || !token)) {
+        if (typeof showVerificationSuccessView === 'function') {
+          showVerificationSuccessView(email);
         } else {
-          await store.pullFromCloud();
+          setAuthBanner(
+            `<strong>Verification Link Sent!</strong><br>Check <em>${email}</em> and click the link to activate your account.`,
+            'success'
+          );
         }
+        return;
+      }
+
+      // Successful instant login or auto-verified account
+      closeAuthModal();
+      showToast('Logged in successfully!');
+      await checkAuthStatus();
+
+      // Check for guest library migration
+      const guestData = store.readScope('guest') || {};
+      const hasLocalFavs = Object.keys(guestData.favorites || {}).length > 0;
+      const hasLocalPls = Object.keys(guestData.playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
+
+      if (hasLocalFavs || hasLocalPls) {
+        $id('migrationModal')?.classList.add('open');
+      } else {
+        await store.pullFromCloud();
       }
     } else {
-      showToast(data.detail || "Authentication failed.");
+      // Handle distinct backend HTTP status codes
+      if (res.status === 403) {
+        setAuthBanner(
+          `<strong>Verification Required</strong><br>Check <em>${email}</em> for your activation link, or click above to resend.`,
+          'warning'
+        );
+      } else if (res.status === 401) {
+        setAuthBanner('Incorrect email or password. Please try again.', 'error');
+      } else if (res.status === 409 || (data.detail && data.detail.toLowerCase().includes('already registered'))) {
+        setAuthBanner('An account with this email already exists. Try logging in instead.', 'error');
+      } else {
+        setAuthBanner(data.detail || 'Authentication failed. Please verify your credentials.', 'error');
+      }
     }
   } catch (err) {
-    showToast("Network error. Please try again.");
+    console.error('[AUTH_ERROR]', err);
+    setAuthBanner('Network connection issue. Please check your internet and try again.', 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.innerText = isRegisterMode ? 'Sign Up' : 'Log In'; }
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = isRegisterMode ? 'Sign Up' : 'Log In';
+    }
   }
 }
 
@@ -4019,7 +3999,7 @@ async function executeChangePassword() {
   try {
     const res = await fetch('/api/auth/change-password', {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ old_password, new_password })
     });
@@ -4058,7 +4038,7 @@ function executeDeleteAccount() {
       try {
         const res = await fetch('/api/auth/delete-account', {
           method: 'POST',
-          credentials: 'same-origin'
+          credentials: 'include',
         });
         
         if (res.ok) {
@@ -4435,6 +4415,9 @@ window.openAuthModal = openAuthModal;
 window.closeAuthModal = closeAuthModal;
 window.toggleAuthMode = toggleAuthMode;
 window.togglePasswordVisibility = togglePasswordVisibility;
+window.setAuthBanner = setAuthBanner;
+window.showVerificationSuccessView = showVerificationSuccessView;
+window.returnToLoginAfterVerify = returnToLoginAfterVerify;
 window.handleAuthSubmit = handleAuthSubmit;
 window.checkAuthStatus = checkAuthStatus;
 window.updateAccountUI = updateAccountUI;
@@ -4519,7 +4502,7 @@ async function closeCinematicMode() {
 }
 
 // Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.6.0';
+const CURRENT_APP_VERSION = '2.6.5';
 
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');

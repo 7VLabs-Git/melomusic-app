@@ -10,13 +10,13 @@
   <title>MELO MUSIC</title>
   
   <!-- Browser Tab Favicon (New Separate Image) -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon.png?v=2.6.0" />
-  <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png?v=2.6.0" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon.png?v=2.6.5" />
+  <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png?v=2.6.5" />
 
   <!-- Mobile / Apple Touch Icon (Keeps MELO App Logo) -->
-  <link rel="apple-touch-icon" sizes="180x180" href="/static/images/logo.png?v=2.6.0" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/images/logo.png?v=2.6.5" />
   <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="/static/css/app.css?v=2.6.0" />
+  <link rel="stylesheet" href="/static/css/app.css?v=2.6.5" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
@@ -180,6 +180,9 @@
           </button>
         </div>
 
+        <!-- Place inside #authMainView right before the inputs or submit button -->
+        <div id="authStatusBanner" class="auth-status-banner" style="display:none;"></div>
+
         <!-- Forgot Password Link (Login mode only) -->
         <div id="authForgotRow" style="text-align:right; margin-bottom:14px;">
           <a onclick="showPasswordRecoveryView()" style="color:var(--text-muted); font-size:0.8rem; cursor:pointer; text-decoration:underline;">Forgot password?</a>
@@ -194,6 +197,35 @@
         </a>
       </div>
     </div>
+
+    <!-- Beautiful Inline Email Verification State -->
+<div id="authVerifyView" style="display: none; text-align: center; padding: 12px 6px;">
+  <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(250, 45, 72, 0.12); border: 1px solid rgba(250, 45, 72, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+    <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; fill: none; stroke: #fa2d48; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+      <polyline points="22,6 12,13 2,6"/>
+    </svg>
+  </div>
+
+  <h2 style="font-size: 1.4rem; font-weight: 800; color: #fff; margin: 0 0 8px;">Check Your Inbox</h2>
+  <p style="color: rgba(255, 255, 255, 0.7); font-size: 0.92rem; line-height: 1.5; margin: 0 0 20px;">
+    We've sent an activation link to<br>
+    <strong id="authVerifyTargetEmail" style="color: #fff;"></strong>
+  </p>
+
+  <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 14px 16px; margin-bottom: 24px; text-align: left;">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="font-size: 1.1rem;">💡</span>
+      <span style="color: rgba(255, 255, 255, 0.55); font-size: 0.82rem; line-height: 1.4;">
+        Tap the <strong>Verify & Log In</strong> button inside the email to immediately start streaming. Check your Spam folder if it doesn't appear within 2 minutes.
+      </span>
+    </div>
+  </div>
+
+  <button type="button" class="pill-action-btn" onclick="returnToLoginAfterVerify()" style="width: 100%; justify-content: center; padding: 13px;">
+    Back to Log In
+  </button>
+</div>
 
     <!-- 2. RECOVERY VIEW -->
     <div id="authRecoveryView" style="display:none;">
@@ -557,6 +589,6 @@
   <audio id="audio" preload="auto"></audio>
 
   <!-- External JavaScript Files with Cache Busting -->
-  <script src="/static/js/app.js?v=2.6.0"></script>
+  <script src="/static/js/app.js?v=2.6.5"></script>
 </body>
 </html>

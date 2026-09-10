@@ -1,14 +1,14 @@
-const CACHE_NAME = 'melo-cache-v2.6.5';
+const CACHE_NAME = 'melo-cache-v2.6.6';
 
 // Assets must match the exact versioned URLs requested in index.html
 const PRECACHE_ASSETS = [
   '/',
   '/static/manifest.json',
-  '/static/css/app.css?v=2.6.0',
-  '/static/js/app.js?v=2.6.0',
+  '/static/css/app.css?v=2.6.5',
+  '/static/js/app.js?v=2.6.5',
   '/static/images/melo-text.png',
-  '/static/images/logo.png?v=2.6.0',
-  '/static/images/favicon.png?v=2.6.0'
+  '/static/images/logo.png?v=2.6.5',
+  '/static/images/favicon.png?v=2.6.5'
 ];
 
 // 1. Install & Precache Assets
