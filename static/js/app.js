@@ -3822,21 +3822,29 @@ async function handleAuthSubmit() {
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include', // <--- Use 'include' so cookies are always passed
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
+      // 1. SAVE TOKEN TO LOCALSTORAGE HERE
+      if (data.session_token || data.token) {
+        localStorage.setItem('session_token', data.session_token || data.token);
+      }
+
       if (isRegisterMode && data.requires_verification) {
         showToast("Verification link sent! Check your inbox to activate your account.");
         closeAuthModal();
-        toggleAuthMode(); // Switch form back to login mode
+        toggleAuthMode();
       } else {
         showToast("Logged in successfully!");
         closeAuthModal();
+
+        // 2. CHECK AUTH (Now has the token in localStorage)
         await checkAuthStatus();
+
         const hasLocalFavs = Object.keys(store.readScope('guest').favorites || {}).length > 0;
         const hasLocalPls = Object.keys(store.readScope('guest').playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
         if (hasLocalFavs || hasLocalPls) {
@@ -3846,7 +3854,6 @@ async function handleAuthSubmit() {
         }
       }
     } else {
-      // Shows "Please verify your email address..." directly if unverified
       showToast(data.detail || "Authentication failed.");
     }
   } catch (err) {
@@ -3858,7 +3865,20 @@ async function handleAuthSubmit() {
 
 async function checkAuthStatus() {
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    const token = localStorage.getItem('session_token') || localStorage.getItem('token');
+    const headers = {
+      'Accept': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch('/api/auth/me', { 
+      method: 'GET',
+      credentials: 'include',
+      headers: headers
+    });
+
     if (res.ok) {
       currentUser = await res.json();
       loadLastSyncedAt();
@@ -4018,7 +4038,9 @@ async function executeChangePassword() {
 }
 
 async function executeLogout() {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  localStorage.removeItem('session_token');
+  localStorage.removeItem('token');
   currentUser = null;
   await store.switchProfile(null);
   updateAccountUI();
