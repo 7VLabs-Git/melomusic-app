@@ -1505,7 +1505,6 @@ async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
 }
 
 function renderSearchView() {
-  // Direct guard: If offline, route to offline search page immediately
   if (!navigator.onLine) {
     return renderSearchOfflineView();
   }
@@ -1532,8 +1531,6 @@ function renderSearchView() {
         <button class="vibe-chip ${globalSearchState.filter === 'albums' ? 'active' : ''}" onclick="applySearchFilter('albums', this)">Albums</button>
         <button class="vibe-chip ${globalSearchState.filter === 'artists' ? 'active' : ''}" onclick="applySearchFilter('artists', this)">Artists</button>
       </div>
-
-      <div id="recentSearchesPanel" style="display: ${globalSearchState.query ? 'none' : 'block'};"></div>
       
       <div id="dynamicSearchResultsArea">
         <div class="section-heading" id="searchResultsHeading"><h2 id="searchResultsTitle">Trending Recommendations</h2></div>
@@ -1554,41 +1551,81 @@ function renderSearchView() {
   const input = $id('dedicatedSearchInput');
   const clearBtn = $id('searchClearBtn');
   let searchTimer = null;
-  renderRecentSearches();
 
   if (input) {
-    input.addEventListener('focus', () => { if (input.value.trim()) $id('searchStageContent')?.classList.add('is-searching'); });
+    input.addEventListener('focus', () => { 
+      if (input.value.trim()) $id('searchStageContent')?.classList.add('is-searching'); 
+    });
+
     input.addEventListener('input', () => {
       clearTimeout(searchTimer);
       const q = input.value.trim();
       globalSearchState.query = q;
       if (clearBtn) clearBtn.style.display = q ? 'flex' : 'none';
+
       if (!q) {
         $id('searchStageContent')?.classList.remove('is-searching');
         clearSearchInput();
         return;
       }
+
       $id('searchStageContent')?.classList.add('is-searching');
-      if ($id('recentSearchesPanel')) $id('recentSearchesPanel').style.display = 'none';
       if ($id('defaultExploreArea')) $id('defaultExploreArea').style.display = 'none';
       if ($id('searchFiltersRow')) $id('searchFiltersRow').style.display = 'flex';
+
       searchTimer = setTimeout(() => {
-        store.rememberSearch(q);
         if ($id('searchResultsTitle')) $id('searchResultsTitle').innerText = `Results for "${q}"`;
         executeLiveSearch(q);
       }, 250);
     });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const cleanQuery = input.value.trim();
+        if (cleanQuery) {
+          clearTimeout(searchTimer);
+          input.blur();
+          if ($id('searchResultsTitle')) $id('searchResultsTitle').innerText = `Results for "${cleanQuery}"`;
+          executeLiveSearch(cleanQuery);
+        }
+      }
+    });
+
+    const searchCapsule = input.closest('.search-glass-capsule');
+    const searchIcon = searchCapsule?.querySelector('svg');
+    if (searchIcon) {
+      searchIcon.style.cursor = 'pointer';
+      searchIcon.onclick = () => {
+        const cleanQuery = input.value.trim();
+        if (cleanQuery) {
+          clearTimeout(searchTimer);
+          input.blur();
+          if ($id('searchResultsTitle')) $id('searchResultsTitle').innerText = `Results for "${cleanQuery}"`;
+          executeLiveSearch(cleanQuery);
+        }
+      };
+    }
   }
 
-  if (globalSearchState.query) executeLiveSearch(globalSearchState.query);
-  else loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12);
+  if (globalSearchState.query) {
+    executeLiveSearch(globalSearchState.query);
+  } else {
+    loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12);
+  }
 
   if (globalSearchState.scrollY > 0) {
-    setTimeout(() => { $id('mainViewport').scrollTop = globalSearchState.scrollY; }, 50);
+    setTimeout(() => { 
+      const vp = $id('mainViewport');
+      if (vp) vp.scrollTop = globalSearchState.scrollY; 
+    }, 50);
   }
-  $id('mainViewport').addEventListener('scroll', () => {
-    if (activeView === 'search') globalSearchState.scrollY = $id('mainViewport').scrollTop;
-  });
+
+  const vp = $id('mainViewport');
+  if (vp) {
+    vp.addEventListener('scroll', () => {
+      if (activeView === 'search') globalSearchState.scrollY = vp.scrollTop;
+    });
+  }
 }
 
 function applySearchFilter(filterStr, btnObj) {
@@ -1790,7 +1827,6 @@ function clearSearchInput() {
   if (clearBtn) clearBtn.style.display = 'none';
   stage?.classList.remove('is-searching');
 
-  if ($id('recentSearchesPanel')) $id('recentSearchesPanel').style.display = 'block';
   if ($id('defaultExploreArea')) $id('defaultExploreArea').style.display = 'block';
   if ($id('searchFiltersRow')) $id('searchFiltersRow').style.display = 'none';
 
@@ -1802,14 +1838,12 @@ function clearSearchInput() {
 }
 
 function quickSearch(query) {
-  store.rememberSearch(query);
   globalSearchState.query = query;
   const input = $id('dedicatedSearchInput');
   const clearBtn = $id('searchClearBtn');
   const stage = $id('searchStageContent');
   if (input) { input.value = query; if (clearBtn) clearBtn.style.display = 'flex'; }
   stage?.classList.add('is-searching');
-  if ($id('recentSearchesPanel')) $id('recentSearchesPanel').style.display = 'none';
   if ($id('defaultExploreArea')) $id('defaultExploreArea').style.display = 'none';
   if ($id('searchFiltersRow')) $id('searchFiltersRow').style.display = 'flex';
   executeLiveSearch(query);
@@ -1819,9 +1853,28 @@ function renderRecentSearches() {
   const panel = $id('recentSearchesPanel');
   if (!panel) return;
   const searches = store.getSearchHistory();
-  panel.innerHTML = searches.length
-    ? `<div class="section-heading recent-search-heading"><h2>Recent Searches</h2><a onclick="store.clearSearches(); renderRecentSearches()">Clear all</a></div><div class="recent-search-list">${searches.map(item => `<button class="recent-search-chip" onclick="quickSearch(${JSON.stringify(item.query).replace(/"/g, '&quot;')})">${accountText(item.query)}<span onclick="event.stopPropagation(); store.removeSearch(${JSON.stringify(item.query).replace(/"/g, '&quot;')}); renderRecentSearches()">×</span></button>`).join('')}</div>`
-    : '';
+
+  if (!searches.length) {
+    panel.innerHTML = '';
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="section-heading recent-search-heading">
+      <h2>Recent Searches</h2>
+      <a onclick="store.clearSearches(); renderRecentSearches()">Clear all</a>
+    </div>
+    <div class="recent-search-list">
+      ${searches.map(item => `
+        <div class="recent-search-chip" onclick="quickSearch(${JSON.stringify(item.query).replace(/"/g, '&quot;')})">
+          <span class="recent-search-label">${accountText(item.query)}</span>
+          <button type="button" class="recent-search-remove" aria-label="Remove search" onclick="event.stopPropagation(); store.removeSearch(${JSON.stringify(item.query).replace(/"/g, '&quot;')}); renderRecentSearches()">
+            <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 // ==========================================
@@ -3449,21 +3502,43 @@ window.openFullscreenPlayer = openFullscreenPlayer;
 
 function closeFullscreenPlayer() {
   const overlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
-  if (!overlay || !overlay.classList.contains('open')) return;
+  if (!overlay || (!overlay.classList.contains('open') && !overlay.classList.contains('active'))) return;
 
   if (overlay._animTimer) {
     clearTimeout(overlay._animTimer);
     overlay._animTimer = null;
   }
 
-  // 1. Remove the open class so CSS naturally animates back to translateY(100%) and visibility: hidden
+  // 1. Immediately drop pointer-events so clicks/touches pass through to the mini-player without waiting
+  overlay.style.pointerEvents = 'none';
+
+  // 2. Remove state classes
   overlay.classList.remove('open', 'active');
-  
-  // 2. Clear any dragging inline styles to allow pure CSS transition to play out
+
+  // 3. Clear any manual dragging inline styles
   overlay.style.transform = '';
   overlay.style.opacity = '';
   overlay.style.borderRadius = '';
   overlay.style.transition = '';
+
+  // 4. Force immediate tap responsiveness on the mini player
+  const miniPlayer = $id('miniPlayer') || $id('miniPlayerBar') || document.querySelector('.mini-player');
+  if (miniPlayer) {
+    miniPlayer.style.pointerEvents = 'auto';
+  }
+
+  // 5. Reset global dragging / swiping gesture flags if defined
+  if (typeof isDraggingPlayer !== 'undefined') isDraggingPlayer = false;
+  if (typeof isSwipingDown !== 'undefined') isSwipingDown = false;
+  if (typeof isPlayerGestureActive !== 'undefined') isPlayerGestureActive = false;
+
+  // 6. Reset overlay pointer-events when the CSS transition finishes completely
+  const onTransitionEnd = (e) => {
+    if (e.target !== overlay) return;
+    overlay.removeEventListener('transitionend', onTransitionEnd);
+    overlay.style.pointerEvents = '';
+  };
+  overlay.addEventListener('transitionend', onTransitionEnd, { once: true });
 }
 window.closeFullscreenPlayer = closeFullscreenPlayer;
 
@@ -4422,7 +4497,7 @@ async function closeCinematicMode() {
 }
 
 // Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.5.8';
+const CURRENT_APP_VERSION = '2.6.0';
 
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');
@@ -4535,6 +4610,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================
   // MINI PLAYER CONTROLS & SWIPE-SAFE DELEGATION
   // ==========================================
+  // ==========================================
+  // MINI PLAYER CONTROLS & TAP-TO-EXPAND
+  // ==========================================
   const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
 
   if (dockPlayer) {
@@ -4542,7 +4620,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let startX = 0;
     let isTouchMove = false;
 
-    // Track touch coordinates to differentiate between scroll/swipe and a real tap
+    // Distinguish scrolling gestures from taps
     dockPlayer.addEventListener('touchstart', (e) => {
       const t = e.touches[0];
       startY = t.clientY;
@@ -4552,20 +4630,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     dockPlayer.addEventListener('touchmove', (e) => {
       const t = e.touches[0];
-      // If user dragged finger more than 8px vertically or horizontally, flag as scrolling
       if (Math.abs(t.clientY - startY) > 8 || Math.abs(t.clientX - startX) > 8) {
         isTouchMove = true;
       }
     }, { passive: true });
 
     dockPlayer.addEventListener('click', (e) => {
-      // 1. If user was fast-swiping or scrolling, abort completely
+      // Abort if finger was swiping or scrolling
       if (isTouchMove) {
         isTouchMove = false;
         return;
       }
 
-      // 2. Play / Pause Button handling
+      // 1. Play / Pause button tap
       const playBtn = e.target.closest('#dockPlayBtn, #mDockPlayBtn');
       if (playBtn) {
         e.preventDefault();
@@ -4574,13 +4651,25 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // 3. Ignore control clicks, scrubber inputs, or wave visualizer
-      const isControl = e.target.closest('button, .control-btn, input, .dock-controls, #miniWaveCanvas');
-      if (isControl) {
+      // 2. Previous track button tap
+      const prevBtn = e.target.closest('.ctrl-btn[title="Previous"], .mini-ctrl-btn[onclick*="prevTrack"]');
+      if (prevBtn) {
+        return; // Allows inline onclick to handle prevTrack without opening fullscreen
+      }
+
+      // 3. Next track button tap
+      const nextBtn = e.target.closest('.ctrl-btn[title="Next"], .mini-ctrl-btn[onclick*="nextTrack"]');
+      if (nextBtn) {
+        return; // Allows inline onclick to handle nextTrack without opening fullscreen
+      }
+
+      // 4. Scrubber & volume sliders (desktop only)
+      if (e.target.closest('input[type="range"]')) {
         return;
       }
 
-      // 4. Legitimate single tap opens fullscreen
+      // 5. Tapping anywhere else on the mini player expands fullscreen
+      e.preventDefault();
       openFullscreenPlayer();
     });
   }

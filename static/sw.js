@@ -1,16 +1,16 @@
-const CACHE_NAME = 'melo-cache-v2.5.9';
+const CACHE_NAME = 'melo-cache-v2.6.5';
 
 // Assets must match the exact versioned URLs requested in index.html
 const PRECACHE_ASSETS = [
   '/',
   '/static/manifest.json',
-  '/static/css/app.css?v=2.5.9',
-  '/static/js/app.js?v=2.5.9',
+  '/static/css/app.css?v=2.6.0',
+  '/static/js/app.js?v=2.6.0',
   '/static/images/melo-text.png',
-  '/static/images/logo.png?v=2.5.9'
+  '/static/images/logo.png?v=2.6.0',
+  '/static/images/favicon.png?v=2.6.0'
 ];
 
-// 1. Install & Cache Shell Assets (Bypassing HTTP disk cache with reload)
 // 1. Install & Precache Assets
 self.addEventListener('install', (event) => {
   self.skipWaiting();

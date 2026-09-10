@@ -29,7 +29,14 @@
 
   --sidebar-w: 260px;
   --player-h: 88px;
-  --nav-h: calc(60px + env(safe-area-inset-bottom, 0px));
+
+  /* Hardware Notch & Dynamic Gesture Bar Insets */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  --nav-h: calc(60px + var(--safe-bottom));
 }
 
 * {
@@ -39,7 +46,7 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-body {
+html, body {
   background-color: var(--bg-core);
   color: var(--text-main);
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -50,17 +57,20 @@ body {
   display: flex;
   user-select: none;
   -webkit-font-smoothing: antialiased;
+  padding-top: var(--safe-top);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
 }
 
 #app {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
   grid-template-rows: 1fr var(--player-h);
-  height: 100vh;
-  height: 100dvh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   position: relative;
   background: radial-gradient(circle at 50% -20%, rgba(250, 45, 72, 0.08), transparent 45%), var(--bg-core);
+  overflow: hidden;
 }
 
 aside.sidebar {
@@ -75,6 +85,19 @@ aside.sidebar {
   z-index: 20;
 }
 
+main.main-viewport {
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Extra bottom clearance for mobile dock player + floating pill nav */
+  padding-bottom: calc(140px + var(--safe-bottom)) !important;
+  position: relative;
+  scroll-behavior: smooth;
+  transform: translate3d(0, 0, 0);
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  scrollbar-gutter: stable;
+}
 .brand-capsule {
   display: inline-flex;
   align-items: center;
@@ -162,14 +185,11 @@ main.main-viewport:has(.playlist-immersive-view)::before {
   display: none !important;
 }
 
-.stage-content {
-  padding: 24px 32px;
-  max-width: 1400px;
-  margin: 0 auto;
-  position: relative;
-  width: 100%;
-  box-sizing: border-box;
-}
+.stage-content { 
+    padding: calc(16px + var(--safe-top, env(safe-area-inset-top, 0px))) 16px calc(170px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) 16px !important; 
+    width: 100%; 
+    box-sizing: border-box; 
+  }
 
 .home-brand-header {
   display: flex;
@@ -499,48 +519,76 @@ main.main-viewport:has(.playlist-immersive-view)::before {
 }
 
 /* Search Interface */
-.search-hero-zone { margin-bottom: 24px; width: 100%; }
+.search-hero-zone {
+  margin-bottom: 16px;
+  width: 100%;
+  display: block;
+}
 .search-glass-capsule {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border-glow);
   border-radius: 9999px;
-  padding: 12px 20px;
-  width: 100%;
-  max-width: 660px;
+  padding: 0 16px 0 18px !important;
+  height: 48px !important;
+  width: min(100%, 640px) !important; /* Locks width to exactly 640px (or screen width on mobile) */
+  box-sizing: border-box !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
-  box-sizing: border-box;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  flex: none !important;
 }
+
 .search-glass-capsule:focus-within {
   background: rgba(255, 255, 255, 0.1);
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-glow);
+  box-shadow: 0 0 0 2px var(--accent-glow) !important;
 }
-.search-glass-capsule svg { width: 20px; height: 20px; fill: none; stroke: var(--text-muted); stroke-width: 2px; flex-shrink: 0; }
+.search-glass-capsule svg {
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 20px !important;
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 2px;
+  flex-shrink: 0 !important;
+}
+
 .search-glass-input {
-  background: transparent;
-  border: none;
-  color: #fff;
-  font-size: 1rem;
-  font-weight: 600;
-  outline: none;
-  width: 100%;
+  background: transparent !important;
+  border: none !important;
+  color: #fff !important;
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+  outline: none !important;
+  flex: 1 1 0% !important; /* Takes available width strictly without pushing parent */
+  min-width: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
-.search-glass-input::placeholder { color: var(--text-dim); font-weight: 400; }
-.search-clear-btn {
-  background: none;
-  border: none;
+.search-glass-input::placeholder {
   color: var(--text-dim);
-  font-size: 1rem;
-  cursor: pointer;
+  font-weight: 400;
+}
+
+.search-clear-btn {
+  background: none !important;
+  border: none !important;
+  color: var(--text-dim) !important;
+  font-size: 1.1rem !important;
+  cursor: pointer !important;
   display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
 }
 
 .is-searching .search-mood-cards,
@@ -2029,11 +2077,24 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 }
 
 @media (max-width: 768px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: 1fr; }
-  aside.sidebar { display: none; }
-  .mobile-nav-container { display: flex; }
+  #app { 
+    grid-template-columns: 1fr; 
+    grid-template-rows: 1fr; 
+  }
+  aside.sidebar { 
+    display: none; 
+  }
+  .mobile-nav-container { 
+    display: flex; 
+    bottom: calc(10px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+  }
 
-  .stage-content { padding: 16px 16px 160px 16px; width: 100%; box-sizing: border-box; }
+  /* Accommodate top notch and bottom pill nav + miniplayer in PWA */
+  .stage-content { 
+    padding: calc(16px + var(--safe-top, env(safe-area-inset-top, 0px))) 16px calc(170px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) 16px !important; 
+    width: 100%; 
+    box-sizing: border-box; 
+  }
 
   .capsule-grid {
     display: flex;
@@ -2064,21 +2125,26 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 
   footer.dock-player {
     position: fixed;
-    bottom: calc(74px + env(safe-area-inset-bottom, 0px));
-    left: 14px;
-    right: 14px;
+    bottom: calc(72px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+    left: calc(14px + var(--safe-left, env(safe-area-inset-left, 0px)));
+    right: calc(14px + var(--safe-right, env(safe-area-inset-right, 0px)));
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
     height: 60px;
     border-radius: 9999px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.9);
-    background: rgba(14, 16, 22, 0.96);
-    backdrop-filter: blur(40px) saturate(200%);
-    -webkit-backdrop-filter: blur(40px) saturate(200%);
-    display: flex;
+    background: rgba(14, 16, 22, 0.96) !important;
+    backdrop-filter: blur(40px) saturate(200%) !important;
+    -webkit-backdrop-filter: blur(40px) saturate(200%) !important;
+    display: flex !important;
+    grid-template-columns: none !important;
     justify-content: space-between;
     align-items: center;
     padding: 0 10px 0 8px;
     z-index: 115;
+    box-sizing: border-box;
   }
 
   .player-meta { max-width: calc(100% - 130px); }
@@ -2993,4 +3059,285 @@ body.is-offline .main-viewport {
 .auth-validated-input.is-invalid-match {
   border-color: #ff334b !important; /* Soft Red */
   box-shadow: 0 0 0 1px rgba(255, 51, 75, 0.35), 0 0 8px rgba(255, 51, 75, 0.2) !important;
+}
+
+/* =========================================================
+   SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
+   ========================================================= */
+/* =========================================================
+   SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
+   ========================================================= */
+
+/* The scrollable pill container */
+.vibe-chips-row,
+.search-tabs,
+.search-filters,
+.search-categories,
+.search-filter-pills,
+#searchFiltersRow,
+#searchFilterContainer {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 2px 8px 2px !important;
+  margin-bottom: 0 !important;
+  overflow-x: auto !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch !important;
+  width: 100% !important;
+}
+
+.vibe-chips-row::-webkit-scrollbar,
+.search-tabs::-webkit-scrollbar,
+#searchFiltersRow::-webkit-scrollbar {
+  display: none !important;
+}
+
+/* Default / Inactive category button */
+.vibe-chip,
+.search-tab,
+.search-filter-btn,
+.search-pill,
+.search-filter,
+.search-category-btn,
+button[data-category],
+button[data-filter] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: var(--text-muted, #9496a1) !important;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: 9999px !important;
+  padding: 8px 18px !important;
+  font-size: 0.85rem !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  outline: none !important;
+  user-select: none !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+/* Hover state */
+@media (hover: hover) {
+  .vibe-chip:hover,
+  .search-tab:hover,
+  .search-filter-btn:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+    color: var(--text-main, #ffffff) !important;
+    border-color: var(--border-glow, rgba(255, 255, 255, 0.18)) !important;
+    transform: translateY(-2px) !important;
+  }
+}
+
+/* Tap active bounce */
+.vibe-chip:active,
+.search-tab:active {
+  transform: scale(0.95) !important;
+}
+
+/* Selected / Active category button (Melo Red Accent) */
+.vibe-chip.active,
+.search-tab.active,
+.search-filter-btn.active {
+  background: var(--accent, #fa2d48) !important;
+  color: #ffffff !important;
+  border-color: var(--accent, #fa2d48) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 16px var(--accent-glow, rgba(250, 45, 72, 0.45)) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Tighten spacing between filters and dynamic search results */
+#dynamicSearchResultsArea {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+#dynamicSearchResultsArea .section-heading,
+#dynamicSearchResultsArea #searchResultsHeading {
+  margin-top: 6px !important;
+  margin-bottom: 10px !important;
+}
+
+#dynamicSearchResultsArea .hub-vault-card {
+  margin-top: 4px !important;
+  margin-bottom: 16px !important;
+}
+
+/* Fullscreen Player Container */
+#fullscreen-player,
+.fullscreen-player-modal {
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
+  will-change: transform;
+}
+
+/* When open */
+#fullscreen-player.active,
+.fullscreen-player-modal.open {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* When closed or closing */
+#fullscreen-player:not(.active),
+.fullscreen-player-modal:not(.open) {
+  transform: translateY(100%);
+  pointer-events: none !important;
+}
+
+/* Fullscreen Player Container */
+#fullscreen-player,
+.fullscreen-player-modal {
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
+  will-change: transform;
+}
+
+/* When open */
+#fullscreen-player.active,
+.fullscreen-player-modal.open {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* When closed or closing */
+#fullscreen-player:not(.active),
+.fullscreen-player-modal:not(.open) {
+  transform: translateY(100%);
+  pointer-events: none !important; /* Immediately releases clicks to elements underneath */
+}
+
+/* =========================================================
+   ENHANCED RECENT SEARCHES BUBBLES
+   ========================================================= */
+/* =========================================================
+   SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
+   ========================================================= */
+
+/* The scrollable pill container */
+.vibe-chips-row,
+.search-tabs,
+.search-filters,
+.search-categories,
+.search-filter-pills,
+#searchFiltersRow,
+#searchFilterContainer {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 2px 8px 2px !important;
+  margin-bottom: 0 !important;
+  overflow-x: auto !important;
+  scrollbar-width: none !important;
+  -webkit-overflow-scrolling: touch !important;
+  width: 100% !important;
+}
+
+.vibe-chips-row::-webkit-scrollbar,
+.search-tabs::-webkit-scrollbar,
+#searchFiltersRow::-webkit-scrollbar {
+  display: none !important;
+}
+
+/* Default / Inactive category button */
+.vibe-chip,
+.search-tab,
+.search-filter-btn,
+.search-pill,
+.search-filter,
+.search-category-btn,
+button[data-category],
+button[data-filter] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: var(--text-muted, #9496a1) !important;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: 9999px !important;
+  padding: 8px 18px !important;
+  font-size: 0.85rem !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  outline: none !important;
+  user-select: none !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+/* Hover state */
+@media (hover: hover) {
+  .vibe-chip:hover,
+  .search-tab:hover,
+  .search-filter-btn:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+    color: var(--text-main, #ffffff) !important;
+    border-color: var(--border-glow, rgba(255, 255, 255, 0.18)) !important;
+    transform: translateY(-2px) !important;
+  }
+}
+
+/* Tap active bounce */
+.vibe-chip:active,
+.search-tab:active {
+  transform: scale(0.95) !important;
+}
+
+/* Selected / Active category button (Melo Red Accent) */
+.vibe-chip.active,
+.search-tab.active,
+.search-filter-btn.active {
+  background: var(--accent, #fa2d48) !important;
+  color: #ffffff !important;
+  border-color: var(--accent, #fa2d48) !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 16px var(--accent-glow, rgba(250, 45, 72, 0.45)) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Tighten spacing between filters and dynamic search results */
+#dynamicSearchResultsArea {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+#dynamicSearchResultsArea .section-heading,
+#dynamicSearchResultsArea #searchResultsHeading {
+  margin-top: 6px !important;
+  margin-bottom: 10px !important;
+}
+
+#dynamicSearchResultsArea .hub-vault-card {
+  margin-top: 4px !important;
+  margin-bottom: 16px !important;
+}
+
+/* Fullscreen Player Container */
+#fullscreen-player,
+.fullscreen-player-modal {
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
+  will-change: transform;
+}
+
+/* When open */
+#fullscreen-player.active,
+.fullscreen-player-modal.open {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* When closed or closing */
+#fullscreen-player:not(.active),
+.fullscreen-player-modal:not(.open) {
+  transform: translateY(100%);
+  pointer-events: none !important;
 }
