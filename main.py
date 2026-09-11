@@ -1660,6 +1660,23 @@ async def favicon():
     svg_data = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="#fa2d48"/></svg>'
     return Response(content=svg_data, media_type="image/svg+xml")
 
+@app.get("/.well-known/assetlinks.json")
+async def get_assetlinks():
+    return [
+        {
+            "relation": [
+                "delegate_permission/common.handle_all_urls"
+            ],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "com.melomusic.app",
+                "sha256_cert_fingerprints": [
+                    "32:40:8B:6C:C4:86:A5:9E:33:47:0F:F8:BD:B8:71:CA:18:3A:05:1B:2D:D7:EF:11:79:E1:75:3D:FB:B7:41:0E"
+                ]
+            }
+        }
+    ]
+
 class NoCacheStaticFiles(StaticFiles):
     def is_not_modified(self, response: Response, request) -> bool:
         return False
