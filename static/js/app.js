@@ -4502,7 +4502,7 @@ async function closeCinematicMode() {
 }
 
 // Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.6.5';
+const CURRENT_APP_VERSION = '2.6.7';
 
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');
