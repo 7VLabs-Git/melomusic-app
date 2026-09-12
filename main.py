@@ -1061,7 +1061,7 @@ async def shutdown_event():
 # APP VERSION & IN-APP UPDATE SYSTEM
 # ==========================================
 # Whenever you release a new APK, update these 3 variables:
-LATEST_APP_VERSION = os.getenv("LATEST_APP_VERSION", "2.8.0")
+LATEST_APP_VERSION = os.getenv("LATEST_APP_VERSION", "2.8.8")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "7VLabs-Git/melomusic-app")
 FALLBACK_APK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/app-release.apk"
 
@@ -1445,6 +1445,59 @@ async def import_playlist(req: ImportRequest):
                             search_queries.append(f"{t_name} {t_artist}".strip())
                 except Exception:
                     pass
+
+        elif "music.apple.com" in url:
+            try:
+                # Add browser headers to avoid automated crawler blocks
+                am_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+                am_resp = await http_client.get(url, headers=am_headers, timeout=12.0)
+                if am_resp.status_code == 200:
+                    html_text = am_resp.text
+
+                    # 1. Parse JSON-LD Schema data embedded by Apple
+                    ld_json_matches = re.findall(r'<script[^>]*type=[\'"]application/ld\+json[\'"][^>]*>(.*?)</script>', html_text, re.DOTALL)
+                    for raw_json in ld_json_matches:
+                        try:
+                            schema = json.loads(raw_json.strip())
+                            
+                            # Handle @graph or direct schema objects
+                            items = schema if isinstance(schema, list) else schema.get("@graph", [schema])
+                            for node in items:
+                                node_type = str(node.get("@type", "")).lower()
+                                if any(t in node_type for t in ["musicalbum", "musicplaylist"]):
+                                    playlist_name = node.get("name") or playlist_name
+                                    tracks = node.get("track", []) or node.get("tracks", [])
+                                    for t in tracks:
+                                        t_title = t.get("name", "")
+                                        author = t.get("byArtist", {})
+                                        t_artist = author.get("name", "") if isinstance(author, dict) else ""
+                                        if t_title:
+                                            search_queries.append(f"{t_title} {t_artist}".strip())
+                        except Exception:
+                            continue
+
+                    # 2. Fallback: Parse meta tags & OpenGraph if JSON-LD is absent
+                    if not search_queries:
+                        title_match = re.search(r'<meta\s+property=[\'"]og:title[\'"]\s+content=[\'"](.*?)[\'"]', html_text, re.IGNORECASE)
+                        if title_match:
+                            playlist_name = html.unescape(title_match.group(1))
+
+                        # Scrape individual track title and artist anchors
+                        song_matches = re.findall(r'data-testid=[\'"]track-title[\'"][^>]*>(.*?)</a>', html_text, re.DOTALL)
+                        artist_matches = re.findall(r'data-testid=[\'"]track-subtitle[\'"][^>]*>(.*?)</a>', html_text, re.DOTALL)
+
+                        for idx, s_title in enumerate(song_matches[:40]):
+                            clean_t = html.unescape(re.sub(r'<[^>]+>', '', s_title)).strip()
+                            clean_a = ""
+                            if idx < len(artist_matches):
+                                clean_a = html.unescape(re.sub(r'<[^>]+>', '', artist_matches[idx])).strip()
+                            if clean_t:
+                                search_queries.append(f"{clean_t} {clean_a}".strip())
+            except Exception as am_err:
+                print(f"[APPLE_MUSIC_IMPORT_ERROR] {am_err}")
 
         if not search_queries:
             clean_seed = re.sub(r'https?://[^\s]+', '', url).strip()

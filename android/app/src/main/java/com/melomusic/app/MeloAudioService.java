@@ -54,57 +54,76 @@ public class MeloAudioService extends Service {
         super.onCreate();
         createNotificationChannel();
 
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (pm != null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MELO:AudioPlaybackLock");
-            wakeLock.setReferenceCounted(false);
+        // CRITICAL FIX: Satisfy Android 14+ foreground service start requirement immediately on creation
+        try {
+            Notification initialNotification = buildMediaNotification();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, initialNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(NOTIFICATION_ID, initialNotification);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
 
-        mediaSession = new MediaSessionCompat(this, "MeloMediaSession");
-        mediaSession.setCallback(new MediaSessionCompat.Callback() {
-            @Override
-            public void onPlay() {
-                isPlaying = true;
-                updatePlaybackState();
-                publishNotification();
-                MainActivity.sendJSEvent("togglePlayPause");
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MELO:AudioPlaybackLock");
+                wakeLock.setReferenceCounted(false);
             }
+        } catch (Exception ignored) {}
 
-            @Override
-            public void onPause() {
-                isPlaying = false;
-                updatePlaybackState();
-                publishNotification();
-                MainActivity.sendJSEvent("togglePlayPause");
-            }
+        try {
+            mediaSession = new MediaSessionCompat(this, "MeloMediaSession");
+            mediaSession.setCallback(new MediaSessionCompat.Callback() {
+                @Override
+                public void onPlay() {
+                    isPlaying = true;
+                    updatePlaybackState();
+                    publishNotification();
+                    MainActivity.sendJSEvent("togglePlayPause");
+                }
 
-            @Override
-            public void onSkipToNext() {
-                MainActivity.sendJSEvent("nextTrack");
-            }
+                @Override
+                public void onPause() {
+                    isPlaying = false;
+                    updatePlaybackState();
+                    publishNotification();
+                    MainActivity.sendJSEvent("togglePlayPause");
+                }
 
-            @Override
-            public void onSkipToPrevious() {
-                MainActivity.sendJSEvent("prevTrack");
-            }
+                @Override
+                public void onSkipToNext() {
+                    MainActivity.sendJSEvent("nextTrack");
+                }
 
-            @Override
-            public void onSeekTo(long pos) {
-                currentPositionMs = Math.max(0L, pos);
-                updatePlaybackState();
-                double seconds = pos / 1000.0;
-                MainActivity.sendJSEvent("seekToPosition:" + seconds);
-            }
-        });
-        mediaSession.setActive(true);
+                @Override
+                public void onSkipToPrevious() {
+                    MainActivity.sendJSEvent("prevTrack");
+                }
+
+                @Override
+                public void onSeekTo(long pos) {
+                    currentPositionMs = Math.max(0L, pos);
+                    updatePlaybackState();
+                    double seconds = pos / 1000.0;
+                    MainActivity.sendJSEvent("seekToPosition:" + seconds);
+                }
+            });
+            mediaSession.setActive(true);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
 
-        // Route media button actions coming from lockscreen or notification controls
-        MediaButtonReceiver.handleIntent(mediaSession, intent);
+        try {
+            MediaButtonReceiver.handleIntent(mediaSession, intent);
+        } catch (Exception ignored) {}
 
         String action = intent.getAction();
         if (ACTION_START.equals(action)) {
@@ -119,14 +138,10 @@ public class MeloAudioService extends Service {
             if (artist != null && !artist.isEmpty()) currentArtist = artist;
             isPlaying = playing;
             if (duration > 0) currentDurationMs = duration;
-            
-            // Only overwrite position if valid non-negative value is provided
-            if (position >= 0) {
-                currentPositionMs = position;
-            }
+            if (position >= 0) currentPositionMs = position;
 
             if (wakeLock != null && !wakeLock.isHeld()) {
-                wakeLock.acquire();
+                try { wakeLock.acquire(10 * 60 * 1000L); } catch (Exception ignored) {}
             }
 
             syncMediaMetadata();
@@ -140,30 +155,25 @@ public class MeloAudioService extends Service {
             }
         } else if (ACTION_UPDATE_PROGRESS.equals(action)) {
             long pos = intent.getLongExtra("position", -1L);
-            if (pos >= 0) {
-                currentPositionMs = pos;
-            }
+            if (pos >= 0) currentPositionMs = pos;
             long dur = intent.getLongExtra("duration", -1L);
-            if (dur > 0) {
-                currentDurationMs = dur;
-            }
+            if (dur > 0) currentDurationMs = dur;
             isPlaying = intent.getBooleanExtra("isPlaying", isPlaying);
-            
-            syncMediaMetadata();
+
             updatePlaybackState();
         } else if (ACTION_PLAY_PAUSE.equals(action)) {
             if (isPlaying) {
-                mediaSession.getController().getTransportControls().pause();
+                if (mediaSession != null) mediaSession.getController().getTransportControls().pause();
             } else {
-                mediaSession.getController().getTransportControls().play();
+                if (mediaSession != null) mediaSession.getController().getTransportControls().play();
             }
         } else if (ACTION_NEXT.equals(action)) {
-            mediaSession.getController().getTransportControls().skipToNext();
+            if (mediaSession != null) mediaSession.getController().getTransportControls().skipToNext();
         } else if (ACTION_PREV.equals(action)) {
-            mediaSession.getController().getTransportControls().skipToPrevious();
+            if (mediaSession != null) mediaSession.getController().getTransportControls().skipToPrevious();
         } else if (ACTION_STOP.equals(action)) {
             if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
+                try { wakeLock.release(); } catch (Exception ignored) {}
             }
             isPlaying = false;
             updatePlaybackState();
@@ -175,35 +185,44 @@ public class MeloAudioService extends Service {
     }
 
     private void syncMediaMetadata() {
-        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
-                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs > 0 ? currentDurationMs : -1L);
+        if (mediaSession == null) return;
+        try {
+            MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs > 0 ? currentDurationMs : -1L);
 
-        if (currentArtBitmap != null) {
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtBitmap);
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, currentArtBitmap);
+            if (currentArtBitmap != null && !currentArtBitmap.isRecycled()) {
+                metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtBitmap);
+                metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, currentArtBitmap);
+            }
+
+            mediaSession.setMetadata(metaBuilder.build());
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-
-        mediaSession.setMetadata(metaBuilder.build());
     }
 
     private void updatePlaybackState() {
-        long actions = PlaybackStateCompat.ACTION_PLAY
-                | PlaybackStateCompat.ACTION_PAUSE
-                | PlaybackStateCompat.ACTION_PLAY_PAUSE
-                | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
-                | PlaybackStateCompat.ACTION_SEEK_TO;
+        if (mediaSession == null) return;
+        try {
+            long actions = PlaybackStateCompat.ACTION_PLAY
+                    | PlaybackStateCompat.ACTION_PAUSE
+                    | PlaybackStateCompat.ACTION_PLAY_PAUSE
+                    | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                    | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                    | PlaybackStateCompat.ACTION_SEEK_TO;
 
-        int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
-        // When paused, playback speed must be strictly 0.0f to lock Android system scrubber
-        float speed = isPlaying ? 1.0f : 0.0f;
+            int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+            float speed = isPlaying ? 1.0f : 0.0f;
 
-        mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
-                .setActions(actions)
-                .setState(state, Math.max(0L, currentPositionMs), speed, SystemClock.elapsedRealtime())
-                .build());
+            mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
+                    .setActions(actions)
+                    .setState(state, Math.max(0L, currentPositionMs), speed, SystemClock.elapsedRealtime())
+                    .build());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     private void fetchArtworkAndNotify(String urlString) {
@@ -217,9 +236,12 @@ public class MeloAudioService extends Service {
                 conn.setReadTimeout(4000);
                 conn.connect();
                 InputStream input = conn.getInputStream();
-                bmp = BitmapFactory.decodeStream(input);
-            } catch (Exception ignored) {
-            }
+                Bitmap rawBmp = BitmapFactory.decodeStream(input);
+                if (rawBmp != null) {
+                    // Prevent OutOfMemoryError crashes by downscaling artwork safely
+                    bmp = Bitmap.createScaledBitmap(rawBmp, 320, 320, true);
+                }
+            } catch (Exception ignored) {}
 
             currentArtBitmap = bmp;
             syncMediaMetadata();
@@ -228,11 +250,14 @@ public class MeloAudioService extends Service {
     }
 
     private void publishNotification() {
-        Notification notification = buildMediaNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            Notification notification = buildMediaNotification();
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null) {
+                manager.notify(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -260,12 +285,15 @@ public class MeloAudioService extends Service {
                 .addAction(android.R.drawable.ic_media_previous, "Previous", prevIntent)
                 .addAction(playPauseIcon, isPlaying ? "Pause" : "Play", playPauseIntent)
                 .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
-                .setStyle(new MediaStyle()
-                        .setMediaSession(mediaSession.getSessionToken())
-                        .setShowActionsInCompactView(0, 1, 2))
                 .setPriority(NotificationCompat.PRIORITY_LOW);
 
-        if (currentArtBitmap != null) {
+        if (mediaSession != null) {
+            builder.setStyle(new MediaStyle()
+                    .setMediaSession(mediaSession.getSessionToken())
+                    .setShowActionsInCompactView(0, 1, 2));
+        }
+
+        if (currentArtBitmap != null && !currentArtBitmap.isRecycled()) {
             builder.setLargeIcon(currentArtBitmap);
         }
 
@@ -291,7 +319,7 @@ public class MeloAudioService extends Service {
     @Override
     public void onDestroy() {
         if (wakeLock != null && wakeLock.isHeld()) {
-            wakeLock.release();
+            try { wakeLock.release(); } catch (Exception ignored) {}
         }
         if (mediaSession != null) {
             mediaSession.release();

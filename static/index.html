@@ -266,9 +266,11 @@
               </div>
               <div class="sheet-track-artist" id="sheetArtist">—</div>
             </div>
-            <button class="sheet-icon-btn" onclick="toggleCurrentTrackFavorite()" style="border:none;background:transparent;" title="Save to Favorites">
-              <span id="playerSheetFavIcon" style="font-size:1.45rem; color:#fff;">♡</span>
-            </button>
+            <button class="sheet-icon-btn sheet-fav-btn" onclick="toggleCurrentTrackFavorite()" style="border:none;background:transparent;" title="Save to Favorites">
+  <svg id="playerSheetFavIcon" class="player-sheet-heart-svg" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+  </svg>
+</button>
           </div>
 
           <div class="straight-wave-scrubber" id="straightWaveScrubberBox">
@@ -414,11 +416,11 @@
       <div class="drag-handle" onclick="closeImportModal()"></div>
       <div class="context-modal-title">Import Playlist</div>
       <p style="color:var(--text-muted); font-size:0.85rem; text-align:center; margin-bottom:16px;">
-        Paste your Spotify, YouTube Music, or YouTube playlist link below.
+        Paste your Spotify, Apple Music, YouTube Music, or YouTube playlist link below.
       </p>
       
       <div id="importInputSection" style="display:flex; flex-direction:column; gap:12px;">
-        <input type="text" id="importPlaylistUrlInput" placeholder="https://open.spotify.com/playlist/..." style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
+        <input type="text" id="importPlaylistUrlInput" placeholder="https://music.apple.com/... or spotify/yt" style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
         <button class="pill-action-btn" id="executeImportBtn" onclick="executePlaylistImport()" style="width:100%; justify-content:center; padding:12px; background:var(--accent); color:#fff;">
           Import to MELO Hub
         </button>

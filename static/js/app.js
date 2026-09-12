@@ -1181,12 +1181,10 @@ function syncSheetTrackInfo() {
   }
   if ($id('sheetArtist')) $id('sheetArtist').innerText = track.artist;
   
-  // Read directly from store to eliminate stale variable delay
   const isFav = Boolean(store.getFavorites()[String(track.id)]);
   const favIcon = $id('playerSheetFavIcon');
   if (favIcon) {
-    favIcon.innerText = isFav ? '♥' : '♡';
-    favIcon.style.color = isFav ? 'var(--accent, #fa2d48)' : '#ffffff';
+    favIcon.classList.toggle('active', isFav);
   }
 
   // Update canvas mesh palette only if artwork actually changed
@@ -1212,59 +1210,107 @@ function initScrubberHandlers() {
   const dockScrubber = $id('dockScrubber');
 
   if (stb && audio) {
-    const handleSeek = (clientX) => {
-      if (!audio.duration || isNaN(audio.duration)) return 0;
+    let pendingSeekProgress = null;
+
+    const calculateProgress = (clientX) => {
       const rect = stb.getBoundingClientRect();
-      const p = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      updateScrubberVisuals(p);
-      if ($id('sheetTimeCur')) $id('sheetTimeCur').innerText = fmtTime(p * audio.duration);
-      return p;
+      if (rect.width <= 0) return 0;
+      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     };
 
-    stb.addEventListener('mousedown', (e) => {
-      isDraggingScrubber = true;
-      handleSeek(e.clientX);
-      const onMove = (mv) => { if (isDraggingScrubber) handleSeek(mv.clientX); };
-      const onUp = (up) => {
-        if (isDraggingScrubber) {
-          isDraggingScrubber = false;
-          const finalP = handleSeek(up.clientX);
-          if (typeof finalP === 'number') audio.currentTime = finalP * audio.duration;
-          persistPlaybackSession();
-        }
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    });
+    const updateDisplayVisuals = (p) => {
+      const pct = p * 100;
+      const playedZone = $id('scrubberPlayedZone');
+      const thumb = $id('scrubberThumbIndicator');
+      const curTime = $id('sheetTimeCur');
 
+      if (playedZone) playedZone.style.width = pct + '%';
+      if (thumb) thumb.style.left = pct + '%';
+      if (curTime && audio.duration && !isNaN(audio.duration)) {
+        curTime.innerText = fmtTime(p * audio.duration);
+      }
+    };
+
+    // Touch events for mobile screens
     stb.addEventListener('touchstart', (e) => {
+      if (!audio.duration || isNaN(audio.duration)) return;
       isDraggingScrubber = true;
-      if (e.touches[0]) handleSeek(e.touches[0].clientX);
-    }, { passive: true });
+      stb.classList.add('is-scrubbing');
+      const touch = e.touches[0];
+      if (touch) {
+        pendingSeekProgress = calculateProgress(touch.clientX);
+        updateDisplayVisuals(pendingSeekProgress);
+      }
+    }, { passive: false });
 
     stb.addEventListener('touchmove', (e) => {
-      if (isDraggingScrubber && e.touches[0]) {
-        handleSeek(e.touches[0].clientX);
+      if (!isDraggingScrubber) return;
+      e.preventDefault(); // Stop page gesture interference
+      const touch = e.touches[0];
+      if (touch) {
+        pendingSeekProgress = calculateProgress(touch.clientX);
+        updateDisplayVisuals(pendingSeekProgress);
       }
-    }, { passive: true });
+    }, { passive: false });
 
-    const endTouchSeek = (e) => {
-      if (isDraggingScrubber) {
-        const clientX = e.changedTouches?.[0]?.clientX;
-        if (clientX !== undefined) {
-          const finalP = handleSeek(clientX);
-          if (typeof finalP === 'number') audio.currentTime = finalP * audio.duration;
-          persistPlaybackSession();
-        }
-        // Small delay before unlocking to avoid fighting the next timeupdate tick
-        setTimeout(() => { isDraggingScrubber = false; }, 60);
+    const finishTouchSeek = (e) => {
+      if (!isDraggingScrubber) return;
+      if (e.changedTouches && e.changedTouches[0]) {
+        pendingSeekProgress = calculateProgress(e.changedTouches[0].clientX);
       }
+      if (pendingSeekProgress !== null && audio.duration && !isNaN(audio.duration)) {
+        audio.currentTime = pendingSeekProgress * audio.duration;
+        updateScrubberVisuals(pendingSeekProgress);
+        persistPlaybackSession();
+      }
+      pendingSeekProgress = null;
+      stb.classList.remove('is-scrubbing');
+      setTimeout(() => {
+        isDraggingScrubber = false;
+      }, 50);
     };
 
-    stb.addEventListener('touchend', endTouchSeek, { passive: true });
-    stb.addEventListener('touchcancel', () => { isDraggingScrubber = false; }, { passive: true });
+    stb.addEventListener('touchend', finishTouchSeek, { passive: true });
+    stb.addEventListener('touchcancel', () => {
+      stb.classList.remove('is-scrubbing');
+      isDraggingScrubber = false;
+      pendingSeekProgress = null;
+    }, { passive: true });
+
+    // Mouse events for desktop
+    stb.addEventListener('mousedown', (e) => {
+      if (!audio.duration || isNaN(audio.duration)) return;
+      isDraggingScrubber = true;
+      stb.classList.add('is-scrubbing');
+      pendingSeekProgress = calculateProgress(e.clientX);
+      updateDisplayVisuals(pendingSeekProgress);
+
+      const onMouseMove = (moveEvent) => {
+        if (!isDraggingScrubber) return;
+        pendingSeekProgress = calculateProgress(moveEvent.clientX);
+        updateDisplayVisuals(pendingSeekProgress);
+      };
+
+      const onMouseUp = (upEvent) => {
+        if (isDraggingScrubber) {
+          pendingSeekProgress = calculateProgress(upEvent.clientX);
+          if (audio.duration && !isNaN(audio.duration)) {
+            audio.currentTime = pendingSeekProgress * audio.duration;
+            updateScrubberVisuals(pendingSeekProgress);
+            persistPlaybackSession();
+          }
+          stb.classList.remove('is-scrubbing');
+          setTimeout(() => {
+            isDraggingScrubber = false;
+          }, 50);
+        }
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
   }
 
   if (dockScrubber && audio) {
@@ -1343,11 +1389,19 @@ async function fetchLyrics(track, token) {
             if (audio) {
               audio.currentTime = l.time;
               isUserScrollingLyrics = false;
-              updateLyricsSync();
+              updateLyricsSync(true);
             }
           }
         };
         container.appendChild(div);
+      });
+
+      // Immediately highlight and auto-center the currently playing lyric
+      isUserScrollingLyrics = false;
+      requestAnimationFrame(() => {
+        if (typeof updateLyricsSync === 'function') {
+          updateLyricsSync(true);
+        }
       });
     }
   } catch (err) {
@@ -1357,7 +1411,49 @@ async function fetchLyrics(track, token) {
   }
 }
 
-function updateLyricsSync() {
+let lyricsAnimationRaf = null;
+
+// Slower, ultra-smooth ease-out quintic scroll
+function smoothScrollLyricsTo(container, targetY, duration = 1100) {
+  if (!container) return;
+  if (lyricsAnimationRaf) {
+    cancelAnimationFrame(lyricsAnimationRaf);
+    lyricsAnimationRaf = null;
+  }
+
+  const startY = container.scrollTop;
+  const delta = targetY - startY;
+  if (Math.abs(delta) < 1.5) {
+    container.scrollTop = targetY;
+    return;
+  }
+
+  const startTime = performance.now();
+
+  // Quintic ease-out: starts gently, floats into the center with zero bounce
+  function smoothFloatEase(t) {
+    return 1 - Math.pow(1 - t, 5);
+  }
+
+  function step(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const ease = smoothFloatEase(progress);
+
+    container.scrollTop = Math.round(startY + delta * ease);
+
+    if (progress < 1) {
+      lyricsAnimationRaf = requestAnimationFrame(step);
+    } else {
+      container.scrollTop = targetY;
+      lyricsAnimationRaf = null;
+    }
+  }
+
+  lyricsAnimationRaf = requestAnimationFrame(step);
+}
+
+function updateLyricsSync(forceCenter = false) {
   if (!isSynced || !parsedLyrics || !parsedLyrics.length) return;
   const audio = $id('audio');
   if (!audio || isNaN(audio.currentTime)) return;
@@ -1371,39 +1467,49 @@ function updateLyricsSync() {
     }
   }
 
-  if (activeIndex !== lastActiveLyricIdx && activeIndex >= 0) {
+  if (activeIndex >= 0 && (activeIndex !== lastActiveLyricIdx || forceCenter)) {
     lastActiveLyricIdx = activeIndex;
 
-    // A. Update Regular Player Sheet Lyrics
+    const alignToCenter = (container, lineElement) => {
+      if (!container || !lineElement) return;
+      const targetScroll = Math.round(
+        lineElement.offsetTop - (container.clientHeight / 2) + (lineElement.clientHeight / 2)
+      );
+      // Gentle 1.1s return animation
+      smoothScrollLyricsTo(container, Math.max(0, targetScroll), forceCenter ? 1100 : 900);
+    };
+
+    // 1. Fullscreen Player Sheet
     const container = $id('sheetViewLyrics');
     if (container) {
       const lines = container.querySelectorAll('.lyrics-line');
       lines.forEach((line, idx) => {
+        line.classList.remove('active', 'near-active');
         if (idx === activeIndex) {
           line.classList.add('active');
-          if (!isUserScrollingLyrics) {
-            const targetY = line.offsetTop - (container.clientHeight / 2) + (line.clientHeight / 2);
-            container.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+          if (!isUserScrollingLyrics || forceCenter) {
+            alignToCenter(container, line);
           }
-        } else {
-          line.classList.remove('active');
+        } else if (Math.abs(idx - activeIndex) === 1) {
+          line.classList.add('near-active');
         }
       });
     }
 
-    // B. Update Cinematic View Lyrics
+    // 2. Cinematic View
     const cineContainer = $id('cinematicLyricsScroll');
     if (cineContainer) {
       const cineLines = cineContainer.querySelectorAll('.cinematic-lyrics-line');
       cineLines.forEach((line, idx) => {
+        line.classList.remove('active');
         if (idx === activeIndex) {
           line.classList.add('active');
-          if (!isUserScrollingLyrics) {
-            const targetY = line.offsetTop - (cineContainer.clientHeight / 2) + (line.clientHeight / 2);
-            cineContainer.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+          if (!isUserScrollingLyrics || forceCenter) {
+            const targetScroll = Math.round(
+              line.offsetTop - (cineContainer.clientHeight / 2) + (line.clientHeight / 2)
+            );
+            smoothScrollLyricsTo(cineContainer, Math.max(0, targetScroll), 900);
           }
-        } else {
-          line.classList.remove('active');
         }
       });
     }
@@ -1411,26 +1517,40 @@ function updateLyricsSync() {
 }
 
 function initLyricsUserScroll() {
-  const markUserScroll = () => {
-    isUserScrollingLyrics = true;
-    clearTimeout(lyricsScrollResumeTimer);
-    lyricsScrollResumeTimer = setTimeout(() => {
-      isUserScrollingLyrics = false;
-      updateLyricsSync();
-    }, 4000);
+  const attachLockListeners = (container) => {
+    if (!container) return;
+
+    const onUserTouch = () => {
+      if (lyricsAnimationRaf) {
+        cancelAnimationFrame(lyricsAnimationRaf);
+        lyricsAnimationRaf = null;
+      }
+      isUserScrollingLyrics = true;
+      clearTimeout(lyricsScrollResumeTimer);
+    };
+
+    const startResumeTimer = () => {
+      clearTimeout(lyricsScrollResumeTimer);
+      // Exactly 3 seconds pause before returning smoothly
+      lyricsScrollResumeTimer = setTimeout(() => {
+        isUserScrollingLyrics = false;
+        updateLyricsSync(true);
+      }, 3000);
+    };
+
+    container.addEventListener('touchstart', onUserTouch, { passive: true });
+    container.addEventListener('touchmove', onUserTouch, { passive: true });
+    container.addEventListener('touchend', startResumeTimer, { passive: true });
+    container.addEventListener('touchcancel', startResumeTimer, { passive: true });
+
+    container.addEventListener('wheel', () => {
+      onUserTouch();
+      startResumeTimer();
+    }, { passive: true });
   };
 
-  const container = $id('sheetViewLyrics');
-  if (container) {
-    container.addEventListener('wheel', markUserScroll, { passive: true });
-    container.addEventListener('touchmove', markUserScroll, { passive: true });
-  }
-
-  const cineContainer = $id('cinematicLyricsScroll');
-  if (cineContainer) {
-    cineContainer.addEventListener('wheel', markUserScroll, { passive: true });
-    cineContainer.addEventListener('touchmove', markUserScroll, { passive: true });
-  }
+  attachLockListeners($id('sheetViewLyrics'));
+  attachLockListeners($id('cinematicLyricsScroll'));
 }
 
 // ==========================================
@@ -1484,6 +1604,8 @@ function updateMediaSession(track) {
   } catch (e) {}
 }
 
+let lastNativeProgressPush = 0;
+
 function updateSystemMediaPosition() {
   const audio = $id('audio');
   if (!audio || isNaN(audio.duration) || audio.duration <= 0) return;
@@ -1502,9 +1624,13 @@ function updateSystemMediaPosition() {
     } catch (e) {}
   }
 
-  // Sync with native Android notification service
-  if (window.MeloNative && window.MeloNative.updatePlaybackProgress) {
-    window.MeloNative.updatePlaybackProgress(posMs, durMs, !audio.paused);
+  // Throttle native Android IPC to at least 2.5 seconds to prevent Service call flooding
+  const now = Date.now();
+  if (now - lastNativeProgressPush > 2500) {
+    lastNativeProgressPush = now;
+    if (window.MeloNative && window.MeloNative.updatePlaybackProgress) {
+      window.MeloNative.updatePlaybackProgress(posMs, durMs, !audio.paused);
+    }
   }
 }
 window.updateSystemMediaPosition = updateSystemMediaPosition;
@@ -1579,8 +1705,11 @@ async function checkAndExpandInfiniteQueue() {
       const res = await fetch(apiUrl(`/api/recommendations/${seed.id}?title=${encodeURIComponent(seed.title)}&artist=${encodeURIComponent(seed.artist)}`));
       const data = await res.json();
       if (data.tracks && data.tracks.length > 0) {
-        const existingIds = new Set(playlist.map(t => t.id));
-        const newTracks = data.tracks.filter(t => !existingIds.has(t.id));
+        // Map through normalizeTrackData so relative proxy paths point to the backend domain
+        const normalized = data.tracks.map(normalizeTrackData);
+        const existingIds = new Set(playlist.map(t => String(t.id)));
+        const newTracks = normalized.filter(t => t.id && !existingIds.has(String(t.id)));
+        
         if (newTracks.length > 0) {
           playlist.push(...newTracks);
           if ($id('tabQueue')?.classList.contains('active')) {
@@ -1611,7 +1740,15 @@ function switchPlayerSheetTab(tab) {
     if (playView) playView.style.setProperty('display', 'flex', 'important');
   } else if (tab === 'lyrics') {
     $id('tabLyrics')?.classList.add('active');
-    if (lyricsView) lyricsView.style.setProperty('display', 'flex', 'important');
+    if (lyricsView) {
+      lyricsView.style.setProperty('display', 'flex', 'important');
+      // Force instant re-centering whenever the tab is clicked
+      lastActiveLyricIdx = -1;
+      isUserScrollingLyrics = false;
+      requestAnimationFrame(() => {
+        updateLyricsSync(true);
+      });
+    }
   } else if (tab === 'queue') {
     $id('tabQueue')?.classList.add('active');
     if (queueView) queueView.style.setProperty('display', 'flex', 'important');
@@ -1678,11 +1815,17 @@ function renderSheetQueueList() {
       moveQueueTrack(fromIdx, globalIdx);
     });
 
+    // Ensure relative /api/ URLs resolve with the full backend host and bypass CORS
+    let thumbSrc = t.thumbnail || '';
+    if (thumbSrc.startsWith('/api/')) {
+      thumbSrc = apiUrl(thumbSrc);
+    }
+
     item.onclick = () => playIndex(globalIdx);
     item.innerHTML = `
       <span class="queue-drag">&#8801;</span>
       <div class="queue-left-block">
-        <img class="queue-thumb" src="${t.thumbnail || ''}" loading="lazy" />
+        <img class="queue-thumb" src="${thumbSrc}" referrerpolicy="no-referrer" loading="lazy" />
         <div class="queue-info">
           <div class="queue-title">${accountText(t.title)}</div>
           <div class="queue-artist">${accountText(t.artist)}</div>
@@ -2126,7 +2269,7 @@ function renderRecentSearches() {
 // ==========================================
 // REMASTERED MATERIAL YOU / PLAY STORE OTA ENGINE
 // ==========================================
-const CURRENT_APP_VERSION = '2.7.0'; // Base installed version
+const CURRENT_APP_VERSION = '2.8.8'; // Base installed version
 
 let updateSession = {
   state: 'idle', // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'latest'
@@ -2378,49 +2521,94 @@ function beginDownloadAndInstall() {
   }
   if (dismissBtn) dismissBtn.style.display = 'none';
   if (progressWrap) progressWrap.style.display = 'flex';
+  if (progressBar) progressBar.style.width = '0%';
+  if (progressPercent) progressPercent.textContent = '0%';
+  if (progressLabel) progressLabel.textContent = 'Connecting to download mirror…';
 
+  // 1. Android Native In-App Download (Direct APK streaming into cache)
+  if (window.MeloNative && typeof window.MeloNative.downloadAppUpdate === 'function') {
+    window.MeloNative.downloadAppUpdate(downloadUrl);
+    return;
+  }
+
+  // 2. Fallback simulation solely for desktop browser testing
   let currentPercent = 0;
   const totalMB = 28.4;
 
   updateSession.simTimer = setInterval(() => {
     currentPercent = Math.min(100, currentPercent + Math.floor(Math.random() * 9) + 4);
-
-    if (progressBar) progressBar.style.width = `${currentPercent}%`;
-    if (progressPercent) progressPercent.textContent = `${currentPercent}%`;
-    if (progressLabel) {
-      const downloadedMB = ((currentPercent / 100) * totalMB).toFixed(1);
-      progressLabel.textContent = `Downloading update… ${downloadedMB} MB / ${totalMB} MB`;
-    }
+    window.onOtaDownloadProgress(currentPercent, ((currentPercent / 100) * totalMB).toFixed(1), totalMB);
 
     if (currentPercent >= 100) {
       clearInterval(updateSession.simTimer);
-      updateSession.state = 'ready';
-
-      setTimeout(() => {
-        if (progressWrap) progressWrap.style.display = 'none';
-        if (dismissBtn) dismissBtn.style.display = 'block';
-
-        if (actionBtn) {
-          actionBtn.disabled = false;
-          actionBtn.style.opacity = '1';
-          actionBtn.className = 'update-action-btn install-state';
-          actionBtn.innerHTML = `<span>Install Update</span>`;
-          actionBtn.onclick = launchPackageInstaller;
-        }
-      }, 400);
+      window.onOtaDownloadComplete();
     }
   }, 180);
 }
 
+// Global hooks called directly from Java via evaluateJavascript
+window.onOtaDownloadProgress = function(percent, curMB, totMB) {
+  const progressBar = $id('updateProgressBar');
+  const progressPercent = $id('updateProgressPercent');
+  const progressLabel = $id('updateProgressLabel');
+
+  if (progressBar) progressBar.style.width = `${percent}%`;
+  if (progressPercent) progressPercent.textContent = `${percent}%`;
+  if (progressLabel) progressLabel.textContent = `Downloading update… ${curMB} MB / ${totMB} MB`;
+};
+
+window.onOtaDownloadComplete = function() {
+  updateSession.state = 'ready';
+
+  const actionBtn = $id('updateActionBtn');
+  const dismissBtn = $id('updateDismissBtn');
+  const progressWrap = $id('updateProgressWrap');
+
+  setTimeout(() => {
+    if (progressWrap) progressWrap.style.display = 'none';
+    if (dismissBtn) dismissBtn.style.display = 'block';
+
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.style.opacity = '1';
+      actionBtn.className = 'update-action-btn install-state';
+      actionBtn.innerHTML = `<span>Install Update</span>`;
+      actionBtn.onclick = launchPackageInstaller;
+    }
+  }, 350);
+};
+
+window.onOtaDownloadError = function(errorMsg) {
+  updateSession.state = 'available';
+  showToast("Download failed. Check your internet connection.");
+
+  const actionBtn = $id('updateActionBtn');
+  const dismissBtn = $id('updateDismissBtn');
+  const progressWrap = $id('updateProgressWrap');
+
+  if (progressWrap) progressWrap.style.display = 'none';
+  if (dismissBtn) dismissBtn.style.display = 'block';
+
+  if (actionBtn) {
+    actionBtn.disabled = false;
+    actionBtn.style.opacity = '1';
+    actionBtn.innerHTML = `<span>Retry Download</span>`;
+    actionBtn.onclick = beginDownloadAndInstall;
+  }
+};
+
 function launchPackageInstaller() {
+  // Trigger native FileProvider installation package
+  if (window.MeloNative && typeof window.MeloNative.installAppUpdate === 'function') {
+    window.MeloNative.installAppUpdate();
+    closeUpdatesModal();
+    return;
+  }
+
+  // Fallback if running outside Capacitor
   const downloadUrl = updateSession.payload?.download_url ||
     'https://github.com/7VLabs-Git/melomusic-app/releases/latest/download/app-release.apk';
-
-  if (window.Capacitor?.Plugins?.Browser) {
-    window.Capacitor.Plugins.Browser.open({ url: downloadUrl });
-  } else {
-    window.open(downloadUrl, '_system');
-  }
+  window.open(downloadUrl, '_system');
 }
 
 // Global window bindings
@@ -2658,24 +2846,24 @@ const meloViewScrollMemory = {
   account: 0
 };
 
-function switchView(view, pushState = true) {
+function switchView(view, pushState = true, isInitialBoot = false) {
   const vp = $id('mainViewport');
-
-  // 1. Save scroll position of the view we are leaving
-  if (vp && activeView) {
-    meloViewScrollMemory[activeView] = vp.scrollTop;
-  }
+  const vc = $id('viewContainer');
 
   updateOfflinePlayerVisibility();
 
-  // 2. Navigation stack management
-  let animClass = 'nav-anim-tab';
+  // 1. Classify animation type
   const primaryTabs = ['home', 'search', 'favorites', 'library'];
+  let animClass = '';
 
-  if (pushState && !primaryTabs.includes(view)) {
-    animClass = 'nav-anim-forward';
-  } else if (!pushState) {
-    animClass = 'nav-anim-backward';
+  if (!isInitialBoot) {
+    if (!pushState) {
+      animClass = 'nav-anim-backward';
+    } else if (primaryTabs.includes(view) && primaryTabs.includes(activeView)) {
+      animClass = 'nav-anim-tab';
+    } else {
+      animClass = 'nav-anim-forward';
+    }
   }
 
   if (primaryTabs.includes(view) && pushState) {
@@ -2688,7 +2876,7 @@ function switchView(view, pushState = true) {
   currentView = view;
   updateNavActiveStates(view);
 
-  // 3. Render target screen
+  // 2. Render target screen
   if (view === 'home') {
     if (!navigator.onLine) renderHomeOfflineView();
     else renderHomeView();
@@ -2710,7 +2898,7 @@ function switchView(view, pushState = true) {
     openFullscreenPlayer();
   }
 
-  // 4. Reset dynamic backdrop colors outside detail cards
+  // 3. Reset dynamic backdrop colors outside detail cards
   if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
     document.documentElement.style.removeProperty('--pl-dynamic-bg');
     document.documentElement.style.removeProperty('--pl-dynamic-mid');
@@ -2722,27 +2910,28 @@ function switchView(view, pushState = true) {
     closeFullscreenPlayer();
   }
 
-  // 5. Instantly apply target view's dedicated scroll position
-  const targetScrollY = meloViewScrollMemory[view] || 0;
-  if (vp) {
-    vp.scrollTop = targetScrollY;
-  }
+  // 4. Force instant top reset across all potential scrolling containers
+  const resetToTop = () => {
+    if (vp) vp.scrollTop = 0;
+    if (vc) vc.scrollTop = 0;
+    window.scrollTo(0, 0);
+  };
+  resetToTop();
 
-  // 6. Enforce scroll reset across animation & layout reflow
+  // 5. Trigger animation and ensure view settles cleanly at top (scrollTop: 0)
   requestAnimationFrame(() => {
     const stage = document.querySelector('.stage-content, .playlist-immersive-view');
-    if (stage) {
-      stage.classList.remove('nav-anim-forward', 'nav-anim-backward', 'nav-anim-tab');
+    if (stage && animClass) {
+      stage.classList.remove('nav-anim-forward', 'nav-anim-backward', 'nav-anim-tab', 'anim-finished');
       stage.classList.add(animClass);
 
       stage.addEventListener('animationend', () => {
-        stage.style.willChange = 'auto';
+        stage.classList.remove('nav-anim-forward', 'nav-anim-backward', 'nav-anim-tab');
+        stage.classList.add('anim-finished');
       }, { once: true });
     }
 
-    if (vp) {
-      vp.scrollTop = targetScrollY;
-    }
+    resetToTop();
   });
 }
 window.switchView = switchView;
@@ -2948,12 +3137,6 @@ function initFullscreenSwipeDown() {
   const sheet = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
   if (!sheet) return;
 
-  let startY = 0;
-  let currentY = 0;
-  let isDragging = false;
-  let animFrameId = null;
-
-  // 1. Also allow clicking the drag pill or header down arrow to close instantly
   const dragPill = sheet.querySelector('.drag-handle');
   if (dragPill) {
     dragPill.onclick = (e) => {
@@ -2962,7 +3145,9 @@ function initFullscreenSwipeDown() {
     };
   }
 
-  const chevronBtn = sheet.querySelector('#sheetDismissBtn') || sheet.querySelector('.circle-back-btn');
+  const chevronBtn = sheet.querySelector('#sheetDismissBtn') || 
+                     sheet.querySelector('.circle-back-btn') || 
+                     sheet.querySelector('.sheet-icon-btn[title="Back"]');
   if (chevronBtn) {
     chevronBtn.onclick = (e) => {
       e.stopPropagation();
@@ -2970,87 +3155,7 @@ function initFullscreenSwipeDown() {
     };
   }
 
-  // 2. High-performance touch listener
-  sheet.addEventListener('touchstart', (e) => {
-    if (!sheet.classList.contains('open')) return;
-
-    // Do not interfere if user is scrubbing playback or volume
-    if (e.target.closest('#scrubberTrackBase, .scrubber-bar-container, .scrubber-thumb, input[type="range"], .mini-wave-canvas')) return;
-
-    // If inside lyrics or queue, only allow swipe-down when at top of list
-    const scrollContainer = e.target.closest('#sheetViewLyrics, #sheetViewQueue');
-    if (scrollContainer && scrollContainer.scrollTop > 5) return;
-
-    startY = e.touches[0].clientY;
-    currentY = startY;
-    isDragging = false;
-  }, { passive: true });
-
-  sheet.addEventListener('touchmove', (e) => {
-    if (!startY) return;
-
-    const touchY = e.touches[0].clientY;
-    const dy = touchY - startY;
-
-    // Immediately start dragging if moving down
-    if (dy > 0) {
-      currentY = touchY;
-      isDragging = true;
-
-      if (!animFrameId) {
-        animFrameId = requestAnimationFrame(() => {
-          sheet.classList.add('is-dragging');
-          // 1:1 finger tracking using hardware translate3d
-          sheet.style.transform = `translate3d(0, ${dy}px, 0)`;
-          animFrameId = null;
-        });
-      }
-    }
-  }, { passive: true });
-
-  const endDrag = () => {
-    if (!isDragging) {
-      startY = 0;
-      return;
-    }
-
-    if (animFrameId) {
-      cancelAnimationFrame(animFrameId);
-      animFrameId = null;
-    }
-
-    isDragging = false;
-    sheet.classList.remove('is-dragging');
-
-    const totalMoved = currentY - startY;
-
-    // If pulled more than 90px down, dismiss smoothly
-    if (totalMoved > 90) {
-      sheet.style.transition = 'transform 0.22s cubic-bezier(0.25, 1, 0.5, 1)';
-      sheet.style.transform = 'translate3d(0, 100%, 0)';
-
-      setTimeout(() => {
-        closeFullscreenPlayer();
-        sheet.style.transform = '';
-        sheet.style.transition = '';
-      }, 230);
-    } else {
-      // Rebound back up instantly
-      sheet.style.transition = 'transform 0.2s cubic-bezier(0.25, 1, 0.5, 1)';
-      sheet.style.transform = 'translate3d(0, 0, 0)';
-
-      setTimeout(() => {
-        sheet.style.transform = '';
-        sheet.style.transition = '';
-      }, 210);
-    }
-
-    startY = 0;
-    currentY = 0;
-  };
-
-  sheet.addEventListener('touchend', endDrag, { passive: true });
-  sheet.addEventListener('touchcancel', endDrag, { passive: true });
+  // Swipe-down dragging disabled
 }
 
 function openCreatePlaylistModal() {
@@ -3658,6 +3763,12 @@ function openPlaylistDetails(plId) {
     hideMeloLoader();
     return;
   }
+
+  const vp = $id('mainViewport');
+  if (vp) vp.scrollTop = 0;
+  if (vc) vc.scrollTop = 0;
+  window.scrollTo(0, 0);
+
   const leadImage = getPlaylistHeroCoverURL(pl);
   applyPlaylistDynamicColors(leadImage, pl.name);
   const bgStyle = leadImage ? `style="background-image: url('${leadImage}');"` : '';
@@ -4363,10 +4474,14 @@ function openFullscreenPlayer() {
   const current = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : window.currentTrack;
   if (current) {
     window.currentTrack = current;
+    // Reset lyric center memory so it never stays stuck off-center
+    lastActiveLyricIdx = -1;
+    isUserScrollingLyrics = false;
+
     if (!parsedLyrics || parsedLyrics.length === 0) {
       fetchLyrics(current, activePlayToken);
     } else {
-      updateLyricsSync();
+      setTimeout(() => updateLyricsSync(true), 60);
     }
   }
 }
@@ -4398,22 +4513,20 @@ function toggleCurrentTrackFavorite() {
   const trackId = String(track.id);
   const willLove = !store.getFavorites()[trackId];
 
-  // 1. Immediately toggle in store
   store.setFavorite(track, willLove);
   favorites = store.getFavorites();
 
-  // 2. Instant visual feedback on the sheet button (Zero delay)
   const icon = $id('playerSheetFavIcon');
   if (icon) {
-    icon.textContent = willLove ? '♥' : '♡';
-    icon.style.color = willLove ? 'var(--accent, #fa2d48)' : '#ffffff';
-    icon.style.transform = 'scale(1.25)';
-    setTimeout(() => { icon.style.transform = 'scale(1)'; }, 180);
+    icon.classList.remove('heart-burst');
+    icon.classList.toggle('active', willLove);
+    if (willLove) {
+      void icon.offsetWidth; // Force reflow to re-trigger smooth spring animation
+      icon.classList.add('heart-burst');
+    }
   }
 
   showToast(willLove ? 'Added to Loved Tracks ♥' : 'Removed from Favorites');
-
-  // 3. Update 3-dot context menu row if open
   updateContextMenuFavState(willLove);
 }
 window.toggleCurrentTrackFavorite = toggleCurrentTrackFavorite;
@@ -5682,23 +5795,56 @@ async function actionOpenCinematicMode() {
   updateCinematicInfo();
   renderCinematicLyrics();
 
-  // Request fullscreen and attempt orientation lock
+  // 1. Native Android Orientation Lock via Bridge
+  if (window.MeloNative && typeof window.MeloNative.setScreenOrientation === 'function') {
+    window.MeloNative.setScreenOrientation('landscape');
+  }
+
+  // 2. Capacitor Screen Orientation Plugin Support
+  if (window.Capacitor?.Plugins?.ScreenOrientation) {
+    try {
+      await window.Capacitor.Plugins.ScreenOrientation.lock({ orientation: 'landscape' });
+    } catch (err) {}
+  }
+
+  // 3. Web Standards Orientation & Fullscreen Fallback
   try {
-    if (document.documentElement.requestFullscreen) {
+    if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
       await document.documentElement.requestFullscreen().catch(() => {});
     }
     if (screen.orientation && screen.orientation.lock) {
       await screen.orientation.lock('landscape').catch(() => {});
     }
   } catch (err) {}
+
+  // 4. Force immediate alignment to current playing lyric line
+  requestAnimationFrame(() => {
+    if (typeof updateLyricsSync === 'function') {
+      updateLyricsSync(true);
+    }
+  });
 }
 
 async function closeCinematicMode() {
   const overlay = $id('cinematicOverlay');
   if (!overlay) return;
+
   isCinematicActive = false;
   overlay.classList.remove('open');
 
+  // 1. Reset Native Android Orientation
+  if (window.MeloNative && typeof window.MeloNative.setScreenOrientation === 'function') {
+    window.MeloNative.setScreenOrientation('portrait');
+  }
+
+  // 2. Reset Capacitor Orientation
+  if (window.Capacitor?.Plugins?.ScreenOrientation) {
+    try {
+      await window.Capacitor.Plugins.ScreenOrientation.unlock();
+    } catch (err) {}
+  }
+
+  // 3. Reset Web Standards Orientation & Fullscreen
   try {
     if (screen.orientation && screen.orientation.unlock) {
       screen.orientation.unlock();
@@ -6222,30 +6368,20 @@ function initApp() {
   }
   requestAnimationFrame(renderLiveFluidMesh);
 
-  // INITIAL VIEW MOUNT
+  // INITIAL VIEW MOUNT (Clean single-invocation with animation suppressed)
   try {
-    switchView('home', false);
+    switchView('home', false, true); // Added isInitialBoot parameter
   } catch (err) {
     console.error('[INIT_SWITCHVIEW_ERROR]', err);
   }
 }
 
-// ROBUST BOOTSTRAPPER: Guarantees DOM presence and mounts Home View
 function startMeloEngine() {
   try {
     initApp();
   } catch (err) {
     console.error('[MELO_INIT_ERROR]', err);
   }
-
-  // Fail-safe view mounter: If viewContainer is empty, force render Home
-  setTimeout(() => {
-    const vc = $id('viewContainer');
-    if (vc && (!vc.children.length || !vc.innerHTML.trim())) {
-      console.warn('[MELO] Mounting fallback Home view...');
-      switchView('home', false);
-    }
-  }, 50);
 }
 
 window.togglePlay = togglePlay;

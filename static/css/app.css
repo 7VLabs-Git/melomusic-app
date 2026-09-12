@@ -1208,78 +1208,7 @@ footer.dock-player.is-playing {
   text-overflow: ellipsis;
 }
 
-/* Scrubber */
-.straight-wave-scrubber {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 6px 14px;
-  box-sizing: border-box;
-  user-select: none;
-}
 
-.scrubber-track-base {
-  position: relative;
-  width: 100%;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.scrubber-unplayed-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 7px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.scrubber-played-zone {
-  position: absolute;
-  left: 0;
-  height: 7px;
-  width: var(--scrubber-pct, 0%);
-  border-radius: 9999px;
-  background: linear-gradient(90deg, #fa2d48, var(--play-accent-color, #c026d3));
-  overflow: hidden;
-  pointer-events: none;
-  transition: width 0.05s linear;
-}
-
-.scrubber-live-wave-canvas {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  border-radius: 9999px;
-}
-
-.scrubber-thumb-indicator {
-  position: absolute;
-  left: var(--scrubber-pct, 0%);
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 12px var(--play-accent-color, #ffffff), 0 0 20px var(--play-accent-color, #ffffff);
-  pointer-events: none;
-  transition: left 0.05s linear, transform 0.15s ease;
-}
-
-@media (hover: hover) { .straight-wave-scrubber:hover .scrubber-thumb-indicator { transform: translate(-50%, -50%) scale(1.15); } }
-
-.scrubber-time-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0 2px;
-}
 
 /* Transport Controls */
 .sheet-transport-btns {
@@ -1352,31 +1281,81 @@ footer.dock-player.is-playing {
   display: none;
 }
 
-/* Synchronized Lyrics View */
+/* =========================================================
+   APPLE MUSIC STYLE POLISHED DEVANAGARI & LATIN LYRICS
+   ========================================================= */
 .sheet-lyrics-view {
   display: none;
   flex-direction: column;
   height: 100%;
-  overflow-y: auto;
-  gap: 28px;
-  padding: 20px 8px;
+  width: 100%;
+  max-width: 100%;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y !important;
+  gap: 24px;
+  /* Balanced viewport padding to prevent giant empty voids */
+  padding: 24vh 20px 32vh 20px !important;
   scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+  scroll-behavior: auto !important;
+  /* Smooth edge-fade mask */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 0, 0, 1) 15%,
+    rgba(0, 0, 0, 1) 85%,
+    transparent 100%
+  ) !important;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 0, 0, 1) 15%,
+    rgba(0, 0, 0, 1) 85%,
+    transparent 100%
+  ) !important;
 }
-.sheet-lyrics-view::-webkit-scrollbar { display: none; }
+
+.sheet-lyrics-view::-webkit-scrollbar {
+  display: none !important;
+}
+
 .lyrics-line {
-  font-size: 1.8rem;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.22);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  /* Larger, bold, legible font */
+  font-size: 2rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.01em;
+  color: #ffffff !important;
+  opacity: 0.42; /* Much more readable than 0.22 */
+  line-height: 1.45 !important;
   cursor: pointer;
-  line-height: 1.35;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  word-wrap: break-word;
+  white-space: normal;
+  transform: scale(0.98) translateZ(0);
+  transform-origin: left center;
+  transition: opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  user-select: none;
+  -webkit-user-select: none;
 }
-.lyrics-line:hover { color: rgba(255, 255, 255, 0.6); }
+
+/* Focused active lyric line: Vivid, large, and glowing */
 .lyrics-line.active {
-  color: #ffffff;
-  transform: scale(1.04);
-  transform-origin: left;
-  text-shadow: 0 4px 24px rgba(255, 255, 255, 0.5);
+  opacity: 1 !important;
+  transform: scale(1.06) translateZ(0) !important;
+  text-shadow: 0 4px 28px rgba(255, 255, 255, 0.55);
+}
+
+/* Nearby lines stay clear and legible */
+.lyrics-line.near-active {
+  opacity: 0.65 !important;
+  transform: scale(1.0) translateZ(0) !important;
 }
 
 /* Clean Queue View */
@@ -1487,7 +1466,9 @@ footer.dock-player.is-playing {
 }
 @media (hover: hover) { .queue-action-btn:hover { color: #fff; transform: scale(1.1); } }
 
-/* Cinematic Ambient Overlay */
+/* =========================================================
+   CINEMATIC AMBIENT LANDSCAPE STAGE
+   ========================================================= */
 .cinematic-overlay {
   position: fixed;
   inset: 0;
@@ -1495,10 +1476,11 @@ footer.dock-player.is-playing {
   z-index: 600;
   display: none;
   flex-direction: column;
-  padding: 24px 36px;
+  padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 24px) env(safe-area-inset-bottom, 16px) env(safe-area-inset-left, 24px);
   overflow: hidden;
   transition: opacity 0.35s ease;
   opacity: 0;
+  box-sizing: border-box;
 }
 
 .cinematic-overlay.open {
@@ -1508,123 +1490,158 @@ footer.dock-player.is-playing {
   pointer-events: auto !important;
 }
 
+/* Minimal Top Row with Small Exit Cross */
 .cinematic-top-row {
-  position: relative;
-  z-index: 10;
+  position: absolute;
+  top: max(env(safe-area-inset-top, 14px), 14px);
+  right: max(env(safe-area-inset-right, 18px), 18px);
+  z-index: 20;
   display: flex;
   justify-content: flex-end;
-  width: 100%;
 }
 
 .cinematic-subtle-cross {
-  width: 44px;
-  height: 44px;
+  width: 28px !important;
+  height: 28px !important;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--border-glow);
-  color: #fff;
-  font-size: 1.2rem;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+  font-size: 0.82rem !important;
+  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
+  padding: 0;
+  outline: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
-.cinematic-subtle-cross:active { transform: scale(0.9); }
 
+.cinematic-subtle-cross:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+  transform: scale(1.08);
+}
+
+.cinematic-subtle-cross:active {
+  transform: scale(0.92);
+}
+
+/* Two-Column Landscape Layout: Left (Artwork + Title), Right (Lyrics) */
 .cinematic-stage-layout {
   position: relative;
   z-index: 5;
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: minmax(320px, 460px) 1fr !important;
   align-items: center;
   height: 100%;
-  gap: 48px;
-  max-width: 1280px;
-  margin: 0 auto;
   width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  gap: 36px;
+  box-sizing: border-box;
 }
 
+/* Left Column: Fixed Centered Art & Metadata */
 .cinematic-left-art {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
   position: relative;
+  width: 100%;
 }
 
 .cinematic-art-halo {
   position: absolute;
-  width: 280px;
-  height: 280px;
+  width: 330px !important;
+  height: 330px !important;
   border-radius: 50%;
   background: radial-gradient(circle, var(--mesh-color-1), var(--mesh-color-2), transparent 70%);
-  filter: blur(40px);
+  filter: blur(48px) !important;
   z-index: 0;
   animation: haloPulse 6s ease-in-out infinite alternate;
-}
-@keyframes haloPulse {
-  0% { transform: scale(0.95); opacity: 0.7; }
-  100% { transform: scale(1.15); opacity: 1; }
 }
 
 .cinematic-art-img {
   position: relative;
   z-index: 1;
-  width: 260px;
-  height: 260px;
-  border-radius: 24px;
+  width: min(340px, 62vh) !important;
+  height: min(340px, 62vh) !important;
+  aspect-ratio: 1 / 1;
+  border-radius: 28px !important;
   object-fit: cover;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .cinematic-meta-box {
-  margin-top: 18px;
+  margin-top: 14px;
   position: relative;
   z-index: 1;
-  max-width: 280px;
+  max-width: 320px !important;
+  width: 100%;
 }
+
 .cinematic-track-title {
-  font-size: 1.25rem;
-  font-weight: 800;
-  color: #fff;
+  font-size: 0.98rem !important; /* Smaller, cleaner title text */
+  font-weight: 700 !important;
+  color: #ffffff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: -0.01em;
 }
+
 .cinematic-track-artist {
-  font-size: 0.9rem;
+  font-size: 0.76rem !important; /* Smaller subtitle text */
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* Right Column: Flowing Synchronized Lyrics */
 .cinematic-right-lyrics {
-  height: 80%;
+  height: 85%;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  padding: 40px 16px;
+  gap: 20px;
+  padding: 30px 16px;
   scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+  box-sizing: border-box;
 }
-.cinematic-right-lyrics::-webkit-scrollbar { display: none; }
+
+.cinematic-right-lyrics::-webkit-scrollbar {
+  display: none;
+}
 
 .cinematic-lyrics-line {
-  font-size: 2.2rem;
+  font-size: 1.65rem;
   font-weight: 800;
-  color: rgba(255, 255, 255, 0.22);
-  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.25);
+  line-height: 1.35;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: color 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: left;
 }
+
+.cinematic-lyrics-line:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
 .cinematic-lyrics-line.active {
   color: #ffffff;
   transform: scale(1.05);
-  transform-origin: left;
-  text-shadow: 0 4px 30px rgba(255, 255, 255, 0.6);
+  text-shadow: 0 4px 24px rgba(255, 255, 255, 0.55);
 }
 
 /* Modals */
@@ -1971,12 +1988,13 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
     height: 100% !important;
     width: 100% !important;
   }
-}
+
   aside.sidebar { 
-    display: none; 
+    display: none !important; 
   }
+
   .mobile-nav-container { 
-    display: flex; 
+    display: flex !important; 
     bottom: calc(10px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
   }
 
@@ -2087,18 +2105,6 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
   .hub-vault-grid {
     grid-template-columns: 1fr;
     gap: 12px;
-  }
-
-  .cinematic-stage-layout {
-    grid-template-columns: 1fr;
-    gap: 20px;
-  }
-  .cinematic-art-img {
-    width: 180px;
-    height: 180px;
-  }
-  .cinematic-lyrics-line {
-    font-size: 1.4rem;
   }
 
 .melo-toast {
@@ -3020,52 +3026,6 @@ body.player-expanded #dockPlayerBar {
   padding-bottom: 8px !important;
 }
 
-/* Scrubber time and line styling */
-.straight-wave-scrubber {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 4px 6px;
-  box-sizing: border-box;
-}
-
-.scrubber-track-base {
-  position: relative;
-  width: 100%;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.scrubber-thumb-indicator {
-  position: absolute;
-  left: var(--scrubber-pct, 0%);
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 14px !important;
-  height: 14px !important;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
-  pointer-events: none;
-}
-
-/* Tab 2: Lyrics View */
-.sheet-lyrics-view {
-  display: none;
-  flex-direction: column;
-  height: 100%;
-  width: 100%;
-  overflow-y: auto;
-  gap: 24px;
-  padding: 24px 8px 48px;
-  scrollbar-width: none;
-  box-sizing: border-box;
-}
-.sheet-lyrics-view::-webkit-scrollbar { display: none; }
-
 /* Tab 3: Queue View */
 .sheet-queue-view {
   display: none;
@@ -3573,38 +3533,40 @@ button[data-filter] {
 }
 
 /* =========================================================
-   HARDWARE-COMPOSITED PAGE TRANSITIONS
+   GPU-COMPOSITED, ZERO-JITTER PAGE TRANSITIONS
    ========================================================= */
 #viewContainer {
   width: 100%;
-  height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  min-height: 100%;
+  overflow: visible !important;
+  contain: layout style;
 }
 
+/* Base stage surface promoted to dedicated GPU layer */
 .stage-content,
 .playlist-immersive-view {
   position: relative;
   z-index: 1;
   width: 100%;
   min-height: 100%;
-  contain: content;
-  transform: translateZ(0);
+  box-sizing: border-box;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* 1. Forward Push (Opening Account, Playlists, Loved Tracks, History) */
+.nav-anim-forward {
+  animation: meloMobileForward 0.22s cubic-bezier(0.1, 0.9, 0.2, 1) both !important;
   will-change: transform, opacity;
 }
 
-/* 1. Forward Navigation: Smooth 16px slide + fast fade */
-.nav-anim-forward {
-  animation: meloNavForward 0.2s cubic-bezier(0.16, 1, 0.3, 1) both !important;
-}
-
-@keyframes meloNavForward {
+@keyframes meloMobileForward {
   0% {
-    opacity: 0;
-    transform: translate3d(16px, 0, 0);
+    opacity: 0.1;
+    transform: translate3d(24px, 0, 0);
   }
   100% {
     opacity: 1;
@@ -3612,15 +3574,16 @@ button[data-filter] {
   }
 }
 
-/* 2. Backward Navigation: Smooth return slide */
+/* 2. Backward Pop (Tapping Back buttons or Android Back gesture) */
 .nav-anim-backward {
-  animation: meloNavBackward 0.18s cubic-bezier(0.16, 1, 0.3, 1) both !important;
+  animation: meloMobileBackward 0.2s cubic-bezier(0.1, 0.9, 0.2, 1) both !important;
+  will-change: transform, opacity;
 }
 
-@keyframes meloNavBackward {
+@keyframes meloMobileBackward {
   0% {
-    opacity: 0;
-    transform: translate3d(-14px, 0, 0);
+    opacity: 0.1;
+    transform: translate3d(-20px, 0, 0);
   }
   100% {
     opacity: 1;
@@ -3628,32 +3591,36 @@ button[data-filter] {
   }
 }
 
-/* 3. Primary Tab Switch: Soft micro-scale settle without layout shift */
+/* 3. Bottom Pill Tab Switching (Home <-> Search <-> Music Hub) */
 .nav-anim-tab {
-  animation: meloNavTab 0.16s cubic-bezier(0.25, 1, 0.5, 1) both !important;
+  animation: meloMobileTabCrossfade 0.18s cubic-bezier(0.2, 0, 0, 1) both !important;
+  will-change: opacity;
 }
 
-@keyframes meloNavTab {
+@keyframes meloMobileTabCrossfade {
   0% {
-    opacity: 0.2;
-    transform: scale3d(0.992, 0.992, 1);
+    opacity: 0.25;
   }
   100% {
     opacity: 1;
-    transform: scale3d(1, 1, 1);
   }
 }
 
-/* Accessibility Fallback */
+/* Clean up GPU memory immediately once transition completes */
+.stage-content.anim-finished,
+.playlist-immersive-view.anim-finished {
+  will-change: auto !important;
+  transform: none !important;
+}
+
+/* Accessibility: instant switch if user prefers reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .nav-anim-forward,
   .nav-anim-backward,
   .nav-anim-tab {
-    animation: meloNavFade 0.12s ease both !important;
-  }
-  @keyframes meloNavFade {
-    0% { opacity: 0.85; }
-    100% { opacity: 1; }
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
 
@@ -4001,15 +3968,17 @@ button[data-filter] {
   width: 140px !important;
   min-width: 140px !important;
   max-width: 140px !important;
+  height: 188px !important;
   flex-shrink: 0 !important;
   pointer-events: none;
+  box-sizing: border-box;
 }
 
 .melo-skeleton-box {
   position: relative;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: #141620;
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .melo-skeleton-box::after {
@@ -4020,18 +3989,19 @@ button[data-filter] {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.05) 50%,
     transparent 100%
   );
-  animation: meloSkeletonShimmer 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: meloSkeletonShimmer 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .melo-skeleton-poster {
   width: 140px !important;
   height: 140px !important;
+  min-height: 140px !important;
   aspect-ratio: 1 / 1 !important;
   border-radius: 14px !important;
-  margin-bottom: 8px;
+  margin-bottom: 8px !important;
 }
 
 .melo-skeleton-line {
@@ -4124,29 +4094,40 @@ button[data-filter] {
   margin-top: 2px !important;
 }
 
-/* Fix Made For You container height and spacing */
+/* Definite geometry for all shelves during skeleton & runtime state */
 #forYouGrid.capsule-grid {
-  min-height: auto !important;
-  height: auto !important;
+  min-height: 64px !important;
+  height: 64px !important;
   margin-bottom: 0 !important;
   padding-bottom: 4px !important;
+  box-sizing: border-box !important;
 }
 
 .for-you-spotlight {
-  margin-bottom: 12px !important;
+  min-height: 108px !important;
+  margin-bottom: 16px !important;
 }
 
 #quickPicksSpotlightBox {
+  min-height: 250px !important;
   margin-top: 0 !important;
+  contain: layout style;
 }
 
-/* Restrict min-height solely to large poster shelves to prevent shifts */
+#quickPicksGrid {
+  min-height: 195px !important;
+  height: 195px !important;
+}
+
+/* Enforce precise heights on all horizontal shelves to stop layout reflow */
 #trendingGrid,
 #bollywoodGrid,
 #punjabiGrid,
 #indieGrid,
-#searchGrid {
-  min-height: 195px;
+#searchGrid,
+.capsule-grid {
+  min-height: 195px !important;
+  contain: layout paint;
 }
 
 /* ==========================================
@@ -4605,22 +4586,6 @@ select.melo-themed-select option {
   background: rgba(255, 255, 255, 0.07);
 }
 
-/* Unified bottom edge clearance */
-.stage-content,
-.account-stage {
-  box-sizing: border-box;
-  min-height: auto !important;
-  padding-bottom: 84px !important; /* Clears only the bottom navigation pill */
-}
-
-/* Compensate only when the mini player bar is actively floating */
-#dockPlayerBar.active ~ #mainViewport .stage-content,
-#dockPlayerBar.active ~ #mainViewport .account-stage,
-body.has-mini-player .stage-content,
-body.player-docked .stage-content {
-  padding-bottom: 130px !important;
-}
-
 #homeBottomGlow {
   display: none !important;
 }
@@ -4903,4 +4868,135 @@ body.player-docked .stage-content {
 
 .update-secondary-btn:hover {
   color: rgba(255, 255, 255, 0.85);
+}
+
+/* =========================================================
+   ZERO-LATENCY CONTINUOUS SCRUBBER DRAG
+   ========================================================= */
+.straight-wave-scrubber {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 14px;
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.scrubber-track-base {
+  position: relative;
+  width: 100%;
+  height: 28px !important; /* Increased touch hit area */
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none !important; /* Disables scroll/gesture takeover during drag */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.scrubber-unplayed-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+}
+
+.scrubber-played-zone {
+  position: absolute;
+  left: 0;
+  height: 6px;
+  width: 0%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #fa2d48, var(--play-accent-color, #c026d3));
+  pointer-events: none;
+  transition: width 0.08s ease;
+}
+
+.scrubber-live-wave-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+.scrubber-thumb-indicator {
+  position: absolute;
+  left: 0%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px !important;
+  height: 16px !important;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5), 0 0 12px var(--play-accent-color, rgba(250, 45, 72, 0.8));
+  pointer-events: none;
+  transition: left 0.08s ease, transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Eliminate lag while finger is actively sliding */
+.scrubber-track-base.is-scrubbing .scrubber-played-zone,
+.scrubber-track-base.is-scrubbing .scrubber-thumb-indicator {
+  transition: none !important;
+}
+
+.scrubber-track-base.is-scrubbing .scrubber-thumb-indicator {
+  transform: translate(-50%, -50%) scale(1.3) !important;
+}
+
+.scrubber-time-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2px;
+}
+
+/* =========================================================
+   BOLD VECTOR HEART WITH INSTANT BURST
+   ========================================================= */
+.sheet-fav-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 44px !important;
+  height: 44px !important;
+  cursor: pointer !important;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.player-sheet-heart-svg {
+  width: 26px !important;
+  height: 26px !important;
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 2.2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-origin: center;
+  transition: stroke 0.2s ease, fill 0.2s ease, transform 0.2s ease;
+  will-change: transform;
+}
+
+.player-sheet-heart-svg.active {
+  fill: #fa2d48 !important;
+  stroke: #fa2d48 !important;
+}
+
+.player-sheet-heart-svg.heart-burst {
+  animation: meloHeartPop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes meloHeartPop {
+  0% { transform: scale(0.8); }
+  45% { transform: scale(1.32); }
+  75% { transform: scale(0.92); }
+  100% { transform: scale(1); }
+}
 }
