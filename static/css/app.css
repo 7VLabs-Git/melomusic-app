@@ -31,8 +31,8 @@
   --player-h: 88px;
 
   /* Hardware Notch & Dynamic Gesture Bar Insets */
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 28px);
+  --safe-bottom: env(safe-area-inset-bottom, 16px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
@@ -50,16 +50,17 @@ html, body {
   background-color: var(--bg-core);
   color: var(--text-main);
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  height: 100vh;
+  height: 100%;
   height: 100dvh;
+  width: 100%;
   width: 100vw;
+  margin: 0 !important;
+  padding: 0 !important;
   overflow: hidden;
   display: flex;
   user-select: none;
+  -webkit-user-select: none;
   -webkit-font-smoothing: antialiased;
-  padding-top: var(--safe-top);
-  padding-left: var(--safe-left);
-  padding-right: var(--safe-right);
 }
 
 #app {
@@ -69,8 +70,10 @@ html, body {
   height: 100%;
   width: 100%;
   position: relative;
-  background: radial-gradient(circle at 50% -20%, rgba(250, 45, 72, 0.08), transparent 45%), var(--bg-core);
+  background: radial-gradient(circle at 50% 0%, rgba(250, 45, 72, 0.12), transparent 45%), var(--bg-core);
   overflow: hidden;
+  margin: 0;
+  padding: 0;
 }
 
 aside.sidebar {
@@ -86,18 +89,22 @@ aside.sidebar {
 }
 
 main.main-viewport {
-  overflow-y: auto;
-  overflow-x: hidden;
-  /* Extra bottom clearance for mobile dock player + floating pill nav */
-  padding-bottom: calc(140px + var(--safe-bottom)) !important;
-  position: relative;
-  scroll-behavior: smooth;
-  transform: translate3d(0, 0, 0);
+  flex: 1 1 auto;
   width: 100%;
   height: 100%;
+  max-height: 100vh;
+  max-height: 100dvh;
+  overflow-y: auto !important;
+  overflow-x: hidden;
+  position: relative;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
   background: transparent !important;
-  scrollbar-gutter: stable;
+  box-sizing: border-box;
+  /* Provides base safety margin at the bottom */
+  padding-bottom: 0 !important;
 }
+
 .brand-capsule {
   display: inline-flex;
   align-items: center;
@@ -152,17 +159,6 @@ main.main-viewport {
   border-color: var(--accent);
 }
 
-main.main-viewport {
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-bottom: 32px;
-  position: relative;
-  scroll-behavior: smooth;
-  transform: translate3d(0, 0, 0);
-  width: 100%;
-  background: transparent !important;
-}
-
 /* Subtle Top Red Ambient Glow */
 .main-viewport::before {
   content: "";
@@ -186,6 +182,8 @@ main.main-viewport:has(.playlist-immersive-view)::before {
 }
 
 .stage-content { 
+    position: relative;
+    z-index: 1;
     padding: calc(16px + var(--safe-top, env(safe-area-inset-top, 0px))) 16px calc(170px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) 16px !important; 
     width: 100%; 
     box-sizing: border-box; 
@@ -237,139 +235,6 @@ main.main-viewport:has(.playlist-immersive-view)::before {
   stroke-linejoin: round;
 }
 
-/* ==========================================
-   SLIM 2-UP STACKED HORIZONTAL "MADE FOR YOU"
-   ========================================== */
-.for-you-spotlight {
-  position: relative;
-  margin-bottom: 24px;
-  border-radius: 18px;
-  padding: 14px 18px;
-  background: linear-gradient(135deg, rgba(18, 20, 28, 0.9), rgba(10, 12, 17, 0.98));
-  border: 1px solid var(--border-subtle);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.for-you-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.for-you-title {
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* 2-Row Vertical Stack Columns Scrolling Horizontally in Pairs */
-.for-you-spotlight .capsule-grid {
-  display: grid !important;
-  grid-template-rows: repeat(2, auto) !important;
-  grid-auto-flow: column !important;
-  grid-auto-columns: calc(50% - 5px) !important;
-  overflow-x: auto !important;
-  scroll-snap-type: x mandatory;
-  gap: 8px !important;
-  padding: 4px 2px 6px 2px !important;
-  margin-bottom: 0 !important;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-@media (max-width: 520px) {
-  .for-you-spotlight .capsule-grid {
-    grid-auto-columns: calc(90% - 4px) !important;
-  }
-}
-
-.for-you-spotlight .capsule-grid::-webkit-scrollbar {
-  display: none;
-}
-
-/* Compact, Slim Song Card Box */
-.for-you-mini-card {
-  scroll-snap-align: start;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px;
-  cursor: pointer;
-  box-sizing: border-box;
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-}
-
-.for-you-mini-card:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.16);
-  transform: translateY(-2px);
-}
-
-.fym-thumb {
-  width: 34px;
-  height: 34px;
-  border-radius: 6px;
-  object-fit: cover;
-  flex-shrink: 0;
-  background: #181822;
-}
-
-.fym-info {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.fym-title {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: #fff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.fym-artist {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.fym-play-icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(250, 45, 72, 0.15);
-  color: var(--accent, #fa2d48);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.55rem;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-
-.for-you-mini-card:hover .fym-play-icon {
-  opacity: 1;
-  background: var(--accent, #fa2d48);
-  color: #fff;
-}
-
 .section-heading {
   display: flex;
   justify-content: space-between;
@@ -389,33 +254,27 @@ main.main-viewport:has(.playlist-immersive-view)::before {
   width: 100%;
 }
 .poster-item {
-  display: flex;
-  flex-direction: column;
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  height: auto !important;
+  aspect-ratio: auto !important;
+  overflow: visible !important;
   cursor: pointer;
-  background: transparent !important;
-  border: none !important;
-  padding: 0 !important;
-  box-shadow: none !important;
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  min-width: 0;
+  flex-shrink: 0 !important;
 }
 .poster-item:hover { transform: translateY(-4px); }
 
 .poster-img,
 .pl-cover-img,
 .quick-picks-spotlight .poster-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
   display: block;
-  transform: none !important;
-  transition: opacity 0.2s ease;
-}
-
-/* Card tactile feedback on tap */
-.poster-item:active,
-.quick-picks-spotlight .capsule-grid .poster-item:active {
-  transform: scale(0.96) !important;
+  background: #181920;
 }
 
 /* Clean desktop hover without image cropping */
@@ -434,11 +293,14 @@ main.main-viewport:has(.playlist-immersive-view)::before {
   width: 100%;
   height: 100%;
   aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 14px;
 }
 .pl-collage-grid img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 .pl-empty-cover {
   width: 100%;
@@ -948,39 +810,44 @@ main.main-viewport:has(.playlist-immersive-view)::before {
 }
 
 /* Dock Mini-Player */
+/* Inactive state: completely invisible and pushed down */
 footer.dock-player {
-    position: fixed;
-    bottom: calc(72px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
-    left: 50% !important;
-    right: auto !important;
-    transform: translateX(-50%) translateY(120px) scale(0.96);
-    width: 86% !important;
-    max-width: 335px !important; /* Slightly increased for optimal spacing */
-    margin: 0 !important;
-    height: 60px;
-    border-radius: 9999px;
-    border: 1px solid rgba(255, 255, 255, 0.14) !important;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.9);
-    background: rgba(14, 16, 22, 0.96) !important;
-    backdrop-filter: blur(40px) saturate(200%) !important;
-    -webkit-backdrop-filter: blur(40px) saturate(200%) !important;
-    display: flex !important;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 14px 0 10px !important;
-    z-index: 115;
-    box-sizing: border-box;
-    overflow: hidden !important;
-  }
+  position: fixed;
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px)) !important;
+  left: 50% !important;
+  right: auto !important;
+  transform: translateX(-50%) translateY(250%) scale(0.9) !important;
+  width: 86% !important;
+  max-width: 335px !important;
+  height: 60px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.9);
+  background: rgba(14, 16, 22, 0.96) !important;
+  backdrop-filter: blur(40px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(200%) !important;
+  display: flex !important;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 14px 0 10px !important;
+  z-index: 115;
+  box-sizing: border-box;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease, visibility 0.3s !important;
+}
 
-  footer.dock-player.active,
-  footer.dock-player.visible,
-  footer.dock-player.is-active,
-  #dockPlayerBar.active {
-    opacity: 1 !important;
-    pointer-events: auto !important;
-    transform: translateX(-50%) translateY(0) scale(1) !important;
-  }
+/* Active state: cleanly slides up when music plays */
+footer.dock-player.active,
+footer.dock-player.is-active,
+#dockPlayerBar.active {
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: translateX(-50%) translateY(0) scale(1) !important;
+}
 
   footer.dock-player .player-meta {
     display: flex !important;
@@ -1153,18 +1020,6 @@ footer.dock-player.is-playing {
 }
 .lyrics-overlay.open { transform: translate3d(0, 0, 0); }
 .lyrics-overlay.dragging { transition: none !important; }
-
-#fullscreenPlayerOverlay:not(.open) {
-  pointer-events: none !important;
-  visibility: hidden !important;
-  transform: translateY(100%) !important;
-  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1), visibility 0.3s !important;
-}
-#fullscreenPlayerOverlay.open {
-  pointer-events: auto !important;
-  visibility: visible !important;
-  transform: translateY(0) !important;
-}
 
 .live-fluid-mesh-canvas {
   position: absolute;
@@ -1773,10 +1628,10 @@ footer.dock-player.is-playing {
 .context-action-modal {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.72);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  z-index: 300;
+  z-index: 100000 !important; /* Must be higher than 9999 */
   display: none;
   align-items: flex-end;
   justify-content: center;
@@ -2105,10 +1960,15 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
 }
 
 @media (max-width: 768px) {
-  #app { 
-    grid-template-columns: 1fr; 
-    grid-template-rows: 1fr; 
+  #app {
+    display: flex !important;
+    flex-direction: column !important;
+    grid-template-columns: none !important;
+    grid-template-rows: none !important;
+    height: 100% !important;
+    width: 100% !important;
   }
+}
   aside.sidebar { 
     display: none; 
   }
@@ -2118,11 +1978,28 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
   }
 
   /* Accommodate top notch and bottom pill nav + miniplayer in PWA */
-  .stage-content { 
-    padding: calc(16px + var(--safe-top, env(safe-area-inset-top, 0px))) 16px calc(170px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) 16px !important; 
-    width: 100%; 
-    box-sizing: border-box; 
-  }
+  .stage-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  box-sizing: border-box;
+  padding-top: max(env(safe-area-inset-top), 24px) !important;
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+  padding-bottom: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.stage-content::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: calc(140px + env(safe-area-inset-bottom, 16px));
+  min-height: calc(140px + env(safe-area-inset-bottom, 16px));
+  flex-shrink: 0;
+  pointer-events: none;
+}
 
   .capsule-grid {
     display: flex;
@@ -2225,7 +2102,6 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
   .cinematic-lyrics-line {
     font-size: 1.4rem;
   }
-}
 
 .melo-toast {
   position: fixed;
@@ -2565,14 +2441,13 @@ select#lovedSort.melo-themed-select option {
 
 /* ==========================================
    VIBRANT CANDY RED QUICK PICKS SPOTLIGHT
-   (MINIMAL DARKNESS, TOP-RIGHT ACCENT ONLY)
+   (PERFECTLY CENTERED & BALANCED HORIZONTAL ALIGNMENT)
    ========================================== */
 .quick-picks-spotlight {
   position: relative;
-  margin-bottom: 34px;
-  border-radius: 26px;
-  padding: 18px 20px 16px 20px;
-  min-height: 290px; /* Locks height to stop box jumping during refresh */
+  margin-bottom: 30px;
+  border-radius: 24px;
+  padding: 18px 16px 16px 16px;
   background: 
     radial-gradient(ellipse at 95% 8%, rgba(0, 0, 0, 0.88) 0%, rgba(10, 10, 14, 0.65) 30%, rgba(10, 10, 14, 0.2) 55%, transparent 72%),
     radial-gradient(circle at 18% 25%, rgba(255, 75, 110, 0.4) 0%, transparent 55%),
@@ -2596,6 +2471,7 @@ select#lovedSort.melo-themed-select option {
   align-items: flex-start;
   margin-bottom: 14px;
   gap: 12px;
+  padding: 0 4px;
 }
 
 .quick-picks-titles {
@@ -2627,29 +2503,6 @@ select#lovedSort.melo-themed-select option {
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
-.shelf-refresh-btn:hover {
-  transform: rotate(180deg);
-}
-
-/* Horizontal Scroll Grid with anti-clipping padding */
-.quick-picks-spotlight .capsule-grid {
-  position: relative;
-  z-index: 2;
-  display: flex !important;
-  overflow-x: auto !important;
-  scroll-snap-type: x mandatory;
-  min-height: 195px; /* Holds grid volume during content swaps */
-  gap: 12px !important;
-  padding: 8px 4px 12px 4px !important;
-  margin: -8px -4px 0 -4px !important;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.quick-picks-spotlight .capsule-grid::-webkit-scrollbar {
-  display: none;
-}
-
 .shelf-refresh-btn {
   display: inline-flex;
   align-items: center;
@@ -2664,61 +2517,137 @@ select#lovedSort.melo-themed-select option {
   -webkit-tap-highlight-color: transparent;
 }
 
+.shelf-refresh-btn:hover {
+  transform: rotate(180deg);
+}
+
 .shelf-refresh-btn.is-spinning {
   transform: rotate(360deg);
 }
 
+/* Horizontal Scroll Grid with symmetrical margins and padding */
+.quick-picks-spotlight .capsule-grid {
+  position: relative;
+  z-index: 2;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  gap: 12px !important;
+  padding: 4px 2px 8px 2px !important;
+  margin: 0 !important;
+  scrollbar-width: none;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.quick-picks-spotlight .capsule-grid::-webkit-scrollbar {
+  display: none;
+}
+
+/* =========================================================
+   PERFECT QUICK PICKS SPOTLIGHT ITEMS (FIXED IMAGE FIT & NO SHAKE)
+   ========================================================= */
 .quick-picks-spotlight .capsule-grid .poster-item {
-  flex: 0 0 154px !important;
-  max-width: 154px !important;
+  flex: 0 0 144px !important;
+  width: 144px !important;
+  min-width: 144px !important;
+  max-width: 144px !important;
   scroll-snap-align: start;
-  background: rgba(14, 15, 20, 0.25) !important;
-  padding: 10px !important;
-  border-radius: 18px !important;
-  border: 1px solid rgba(255, 255, 255, 0.18) !important;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, border-color 0.2s ease;
+  background: transparent !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  box-sizing: border-box !important;
+  cursor: pointer;
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.4, 1), opacity 0.16s ease !important;
+  -webkit-tap-highlight-color: transparent !important;
 }
 
-.quick-picks-spotlight .capsule-grid .poster-item:hover {
-  transform: translateY(-3px) scale(1.015);
-  background: rgba(14, 15, 20, 0.4) !important;
-  border-color: rgba(255, 255, 255, 0.4) !important;
+/* Smooth desktop hover without layout shifts */
+@media (hover: hover) and (pointer: fine) {
+  .quick-picks-spotlight .capsule-grid .poster-item:hover {
+    transform: translateY(-2px) !important;
+    background: transparent !important;
+    border: none !important;
+  }
 }
 
-.poster-wrap,
+/* Touch active single scale (no double bounce or shake) */
+.quick-picks-spotlight .capsule-grid .poster-item:active {
+  transform: scale(0.96) !important;
+  opacity: 0.88 !important;
+}
+
+/* Artwork box: tightly framed 1:1 container with zero shift */
 .quick-picks-spotlight .poster-wrap {
-  border-radius: 14px !important;
+  width: 144px !important;
+  height: 144px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 16px !important;
   overflow: hidden !important;
-  aspect-ratio: 1 / 1;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  background-color: #1a1c24 !important;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45) !important;
   margin-bottom: 8px !important;
   position: relative;
+  display: block !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  transform: none !important;
 }
 
-.quick-picks-spotlight .poster-item:hover .poster-img {
-  transform: scale(1.06);
+/* Image fills the container completely */
+.quick-picks-spotlight .poster-wrap .poster-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+  transform: none !important;
+  transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1) !important;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .quick-picks-spotlight .poster-item:hover .poster-img {
+    transform: scale(1.04) !important;
+  }
+}
+
+/* Clean title text */
 .quick-picks-spotlight .poster-title {
   color: #ffffff !important;
-  font-size: 0.85rem !important;
+  font-size: 0.84rem !important;
   font-weight: 700 !important;
+  line-height: 1.25 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+  text-align: left !important;
 }
 
+/* Clean artist subtitle text */
 .quick-picks-spotlight .poster-subtitle {
-  color: rgba(255, 255, 255, 0.8) !important;
+  color: rgba(255, 255, 255, 0.75) !important;
   font-size: 0.74rem !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  text-align: left !important;
 }
 
-/* Slide Indicator Dots at the bottom */
+/* Indicator dots */
 .qp-dots-container {
   display: flex;
   justify-content: center;
   align-items: center;
   gap: 6px;
-  margin-top: 12px;
+  margin-top: 10px;
   position: relative;
   z-index: 2;
 }
@@ -2736,26 +2665,6 @@ select#lovedSort.melo-themed-select option {
   width: 18px;
   border-radius: 9999px;
   background: #ffffff;
-}
-
-/* ==========================================
-   PERSISTENT AMBIENT BOTTOM SCROLL GLOW
-   ========================================== */
-#homeBottomGlow {
-  position: fixed !important;
-  bottom: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  height: 140px !important;
-  background: radial-gradient(ellipse 85% 100% at 50% 100%, rgba(250, 45, 72, 0.5) 0%, rgba(250, 45, 72, 0.15) 50%, transparent 80%) !important;
-  pointer-events: none !important;
-  z-index: 99999 !important;
-  opacity: 0 !important;
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
-}
-
-#homeBottomGlow.visible {
-  opacity: 1 !important;
 }
 
 /* ==========================================
@@ -2939,76 +2848,240 @@ select#lovedSort.melo-themed-select option {
   color: #ffffff;
 }
 
-/* ==========================================
-   HIDE MINIPLAYER DOCK IN OFFLINE MODE
-   ========================================== */
-body.is-offline #dockPlayerBar {
-  opacity: 0 !important;
-  pointer-events: none !important;
-  transform: translateY(100%) !important;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease !important;
-}
-
-/* Adjust viewport bottom spacing when player bar collapses */
-body.is-offline .main-viewport {
-  padding-bottom: 80px !important;
-}
-
-/* ==========================================
-   INTERACTIVE FULLSCREEN PLAYER DISMISSAL
-   ========================================== */
-/* ==========================================
-   SMOOTH GPU-ACCELERATED FULLSCREEN SHEET
-   ========================================== */
-/* ==========================================
-   SMOOTH HARDWARE-ACCELERATED FULLSCREEN SHEET
-   ========================================== */
+/* =========================================================
+   CLEAN HARDWARE-ACCELERATED FULLSCREEN SHEET (EXPAND / CONTRACT)
+   ========================================================= */
 #fullscreenPlayerOverlay,
-.fullscreen-player-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
+.fullscreen-player-overlay,
+.lyrics-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  z-index: 9999 !important;
   display: flex !important;
-  flex-direction: column;
-  background: #0a0b0f;
-  transform: translateY(100%);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  touch-action: pan-x;
+  flex-direction: column !important;
+  background: #07080b !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+
+  /* Proper notch clearance and bottom gesture bar padding */
+  padding-top: max(env(safe-area-inset-top, 0px), 44px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 36px) !important;
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+
+  /* Performance transforms & anchor origin aligned with the mini dock */
   will-change: transform, opacity, border-radius;
-  transition: transform 0.36s cubic-bezier(0.32, 0.72, 0, 1),
-              opacity 0.26s ease,
-              visibility 0.36s ease,
-              border-radius 0.36s ease;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform-origin: center bottom;
+
+  /* Initial contracted state matching the bottom mini player position */
+  transform: translate3d(0, 100%, 0) scale(0.92);
+  border-radius: 36px 36px 0 0;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+
+  /* Smooth iOS-style spring curve */
+  transition: 
+    transform 0.36s cubic-bezier(0.2, 0.9, 0.25, 1),
+    opacity 0.26s cubic-bezier(0.2, 0.9, 0.25, 1),
+    border-radius 0.32s cubic-bezier(0.2, 0.9, 0.25, 1),
+    visibility 0.36s;
 }
 
+/* Expanded fullscreen state */
 #fullscreenPlayerOverlay.open,
-.fullscreen-player-overlay.open {
-  transform: translateY(0%);
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  border-radius: 0px;
+.fullscreen-player-overlay.open,
+.lyrics-overlay.open {
+  transform: translate3d(0, 0, 0) scale(1) !important;
+  border-radius: 0px !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
 }
 
-/* While finger is dragging, disable CSS transitions for zero-lag tracking */
+/* Disables CSS transition during finger swipe for pure 1:1 hardware drag */
 #fullscreenPlayerOverlay.is-dragging,
-.fullscreen-player-overlay.is-dragging {
+.fullscreen-player-overlay.is-dragging,
+.lyrics-overlay.is-dragging {
   transition: none !important;
 }
 
-/* Drag indicator bar at top of sheet */
-.fullscreen-player-overlay .sheet-drag-handle,
-#fullscreenPlayerOverlay .sheet-drag-handle {
-  width: 38px;
-  height: 4.5px;
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.28);
-  margin: 10px auto 4px auto;
-  cursor: grab;
-  flex-shrink: 0;
+/* Hide grey punch-hole drag bar */
+/* Visible, instant-response drag handle */
+.drag-handle {
+  display: block !important;
+  width: 44px !important;
+  height: 5px !important;
+  border-radius: 9999px !important;
+  background: rgba(255, 255, 255, 0.38) !important;
+  margin: 6px auto 14px auto !important;
+  cursor: pointer !important;
+  touch-action: none !important; /* Disables browser gesture delay */
+  flex-shrink: 0 !important;
+  z-index: 20 !important;
 }
+
+/* Zero delay when dragging */
+#fullscreenPlayerOverlay.is-dragging {
+  transition: none !important;
+}
+
+/* Mini dock morph reaction */
+footer.dock-player,
+#dockPlayerBar {
+  will-change: transform, opacity;
+  transition: transform 0.32s cubic-bezier(0.2, 0.9, 0.25, 1), opacity 0.24s ease !important;
+}
+
+body.player-expanded footer.dock-player,
+body.player-expanded #dockPlayerBar {
+  transform: translateX(-50%) translateY(8px) scale(0.94) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Header bar */
+.player-sheet-header {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  flex-shrink: 0;
+  margin-bottom: 8px !important;
+}
+
+/* Inner views container */
+.sheet-body-container {
+  position: relative;
+  z-index: 2;
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-width: 480px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Tab 1: Now Playing Track View (NO !important so it hides cleanly on tab switch) */
+.sheet-nowplaying-view {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.sheet-top-artwork-box {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  padding: 8px 0 !important;
+}
+
+.sheet-cover-container {
+  width: min(68vw, 290px) !important;
+  height: min(68vw, 290px) !important;
+  max-width: 290px !important;
+  max-height: 290px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 24px !important;
+  overflow: hidden !important;
+  margin: auto !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+}
+
+.sheet-cover-art {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 24px !important;
+  display: block;
+}
+
+.sheet-bottom-controls-box {
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  flex-shrink: 0 !important;
+  margin-top: auto !important;
+  padding-bottom: 8px !important;
+}
+
+/* Scrubber time and line styling */
+.straight-wave-scrubber {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+}
+
+.scrubber-track-base {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.scrubber-thumb-indicator {
+  position: absolute;
+  left: var(--scrubber-pct, 0%);
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+}
+
+/* Tab 2: Lyrics View */
+.sheet-lyrics-view {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow-y: auto;
+  gap: 24px;
+  padding: 24px 8px 48px;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+.sheet-lyrics-view::-webkit-scrollbar { display: none; }
+
+/* Tab 3: Queue View */
+.sheet-queue-view {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  gap: 10px;
+  padding: 12px 4px 48px;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+.sheet-queue-view::-webkit-scrollbar { display: none; }
 
 /* ==========================================
    AUTH MODAL EYE TOGGLES
@@ -3174,41 +3247,6 @@ button[data-filter] {
   margin-bottom: 16px !important;
 }
 
-/* Fullscreen Player Container */
-#fullscreen-player,
-.fullscreen-player-modal {
-  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
-  will-change: transform;
-}
-
-/* When open */
-#fullscreen-player.active,
-.fullscreen-player-modal.open {
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-/* When closed or closing */
-#fullscreen-player:not(.active),
-.fullscreen-player-modal:not(.open) {
-  transform: translateY(100%);
-  pointer-events: none !important;
-}
-
-/* Fullscreen Player Container */
-#fullscreen-player,
-.fullscreen-player-modal {
-  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
-  will-change: transform;
-}
-
-/* When open */
-#fullscreen-player.active,
-.fullscreen-player-modal.open {
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
 /* When closed or closing */
 #fullscreen-player:not(.active),
 .fullscreen-player-modal:not(.open) {
@@ -3216,9 +3254,6 @@ button[data-filter] {
   pointer-events: none !important; /* Immediately releases clicks to elements underneath */
 }
 
-/* =========================================================
-   ENHANCED RECENT SEARCHES BUBBLES
-   ========================================================= */
 /* =========================================================
    SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
    ========================================================= */
@@ -3325,26 +3360,6 @@ button[data-filter] {
   margin-bottom: 16px !important;
 }
 
-/* Fullscreen Player Container */
-#fullscreen-player,
-.fullscreen-player-modal {
-  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1), opacity 0.28s ease;
-  will-change: transform;
-}
-
-/* When open */
-#fullscreen-player.active,
-.fullscreen-player-modal.open {
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-/* When closed or closing */
-#fullscreen-player:not(.active),
-.fullscreen-player-modal:not(.open) {
-  transform: translateY(100%);
-  pointer-events: none !important;
-}
 .auth-status-banner {
   padding: 12px 14px;
   border-radius: 10px;
@@ -3373,4 +3388,1340 @@ button[data-filter] {
   background: rgba(244, 63, 94, 0.12);
   border: 1px solid rgba(244, 63, 94, 0.35);
   color: #f43f5e;
+}
+
+/* =========================================================
+   NATIVE MOBILE SCROLL & LAYOUT FIX
+   ========================================================= */
+@media (max-width: 768px) {
+  html, body {
+    height: 100% !important;
+    min-height: 100% !important;
+    overflow: hidden !important;
+  }
+
+  #app {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    width: 100% !important;
+    overflow: hidden !important;
+  }
+
+  main.main-viewport {
+    flex: 1 1 auto !important;
+    height: 100% !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    padding-bottom: 0 !important;
+  }
+
+  /* Creates real physical scroll margin so shelves never hide behind the dock */
+  .stage-content {
+    padding-bottom: calc(180px + var(--safe-bottom, 16px)) !important;
+  }
+
+  /* Fix poster container sizing */
+  .poster-wrap,
+  .quick-picks-spotlight .poster-wrap {
+    width: 100% !important;
+    aspect-ratio: 1 / 1 !important;
+    background: #161820 !important;
+    border-radius: 14px !important;
+    overflow: hidden !important;
+  }
+
+  .poster-img {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+  }
+}
+
+/* =========================================================
+   LAYOUT SHIFT & BUFFERING SHAKE ELIMINATION (CLS FIX)
+   ========================================================= */
+.view-panel-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  contain: layout style;
+}
+
+/* =========================================================
+   STABLE POSTER CARDS & WRAPPERS (ZERO COLLAPSING)
+   ========================================================= */
+.poster-item {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  height: auto !important;
+  aspect-ratio: auto !important;
+  overflow: visible !important;
+  cursor: pointer;
+  flex-shrink: 0 !important;
+}
+
+.poster-wrap,
+.quick-picks-spotlight .poster-wrap {
+  position: relative !important;
+  width: 140px !important;
+  height: 140px !important;
+  min-height: 140px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  background: #181920 !important;
+  flex-shrink: 0 !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.poster-wrap .poster-img,
+.quick-picks-spotlight .poster-wrap .poster-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+
+/* Stabilize card titles and subtitles to prevent text reflow jumping */
+.poster-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 8px;
+  height: 1.2rem;
+}
+
+.poster-subtitle {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  height: 1.1rem;
+}
+
+/* Shelf scroll container hardware acceleration */
+.horizontal-shelf, .tracks-shelf {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  contain: layout;
+}
+.horizontal-shelf::-webkit-scrollbar {
+  display: none;
+}
+
+/* =========================================================
+   UNIFORM HEADER DOWNWARD OFFSET ADJUSTMENTS
+   ========================================================= */
+
+/* 1. Home screen logo and settings gear */
+.home-brand-header {
+  margin-top: 8px !important;
+  margin-bottom: 24px !important;
+}
+
+/* 2. Search screen back button and title header */
+.top-action-bar {
+  margin-top: 8px !important;
+  margin-bottom: 20px !important;
+}
+
+/* 3. Melo Hub header and top row */
+.hub-clean-header {
+  margin-top: 6px !important;
+  padding-top: 6px !important;
+}
+
+/* 4. Playlist immersive view back button and three-dot options row */
+.playlist-top-nav-row {
+  top: 36px !important;
+}
+
+/* =========================================================
+   COMPOSITED STAGE BASE LAYER (ZERO LAYOUT REFLOW)
+   ========================================================= */
+.stage-content,
+.playlist-immersive-view {
+  width: 100%;
+  min-height: 100%;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* =========================================================
+   SEAMLESS AMBIENT APP BOOT LOADER (ZERO SCREEN JUMP)
+   ========================================================= */
+.melo-ambient-loader {
+  position: fixed;
+  inset: 0;
+  background-color: #07080b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.3s cubic-bezier(0.25, 1, 0.5, 1), visibility 0.3s;
+  contain: strict;
+  will-change: opacity;
+}
+
+.melo-ambient-loader.dismissed {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Minimalist glowing red sound ring */
+.melo-spinner-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(250, 45, 72, 0.15);
+  border-top-color: #fa2d48;
+  box-shadow: 0 0 16px rgba(250, 45, 72, 0.35);
+  animation: meloRingSpin 0.75s linear infinite;
+  will-change: transform;
+}
+
+@keyframes meloRingSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* =========================================================
+   TEXT VISIBILITY & POSTER CARD STABILIZATION
+   ========================================================= */
+
+/* Ensure all card titles and artists are explicitly visible */
+.poster-title,
+.fym-title,
+.tr-title,
+.queue-title {
+  display: block !important;
+  color: #ffffff !important;
+  font-size: 0.86rem !important;
+  font-weight: 700 !important;
+  line-height: 1.3 !important;
+  height: auto !important;
+  max-height: 2.6rem !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  margin-top: 6px !important;
+}
+
+.poster-subtitle,
+.fym-artist,
+.tr-artist,
+.queue-artist {
+  display: block !important;
+  color: var(--text-muted, #9496a1) !important;
+  font-size: 0.75rem !important;
+  line-height: 1.2 !important;
+  height: auto !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  margin-top: 2px !important;
+}
+
+/* Fix "Made For You" horizontal strip so all songs scroll cleanly */
+.for-you-spotlight .capsule-grid {
+  display: grid !important;
+  grid-template-rows: repeat(2, 54px) !important;
+  grid-auto-flow: column !important;
+  grid-auto-columns: 240px !important;
+  gap: 10px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 2px 10px 2px !important;
+  margin: 0 !important;
+  width: 100% !important;
+}
+
+.for-you-mini-card {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 6px 10px !important;
+  height: 54px !important;
+  width: 240px !important;
+  box-sizing: border-box !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px !important;
+  aspect-ratio: auto !important;
+  flex-shrink: 0 !important;
+}
+
+.for-you-mini-card .fym-thumb {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  border-radius: 8px !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+}
+
+.for-you-mini-card .fym-info {
+  flex: 1 !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+}
+
+/* =========================================================
+   HARDWARE-COMPOSITED PAGE TRANSITIONS
+   ========================================================= */
+#viewContainer {
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stage-content,
+.playlist-immersive-view {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 100%;
+  contain: content;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* 1. Forward Navigation: Smooth 16px slide + fast fade */
+.nav-anim-forward {
+  animation: meloNavForward 0.2s cubic-bezier(0.16, 1, 0.3, 1) both !important;
+}
+
+@keyframes meloNavForward {
+  0% {
+    opacity: 0;
+    transform: translate3d(16px, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* 2. Backward Navigation: Smooth return slide */
+.nav-anim-backward {
+  animation: meloNavBackward 0.18s cubic-bezier(0.16, 1, 0.3, 1) both !important;
+}
+
+@keyframes meloNavBackward {
+  0% {
+    opacity: 0;
+    transform: translate3d(-14px, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* 3. Primary Tab Switch: Soft micro-scale settle without layout shift */
+.nav-anim-tab {
+  animation: meloNavTab 0.16s cubic-bezier(0.25, 1, 0.5, 1) both !important;
+}
+
+@keyframes meloNavTab {
+  0% {
+    opacity: 0.2;
+    transform: scale3d(0.992, 0.992, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+/* Accessibility Fallback */
+@media (prefers-reduced-motion: reduce) {
+  .nav-anim-forward,
+  .nav-anim-backward,
+  .nav-anim-tab {
+    animation: meloNavFade 0.12s ease both !important;
+  }
+  @keyframes meloNavFade {
+    0% { opacity: 0.85; }
+    100% { opacity: 1; }
+  }
+}
+
+/* =========================================================
+   FIXED POSTER CARD & TEXT VISIBILITY SYSTEM
+   ========================================================= */
+
+/* 1. Ensure the card container does NOT clip its text */
+.capsule-grid .poster-item {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  height: auto !important;
+  aspect-ratio: auto !important;
+  overflow: visible !important;
+  cursor: pointer;
+  flex-shrink: 0 !important;
+}
+
+/* 2. Lock the 1:1 aspect ratio strictly to the artwork wrapper */
+.capsule-grid .poster-item .poster-wrap {
+  position: relative !important;
+  width: 140px !important;
+  height: 140px !important;
+  min-height: 140px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  background: #181920;
+  flex-shrink: 0 !important;
+}
+
+.capsule-grid .poster-item .poster-wrap .poster-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+
+/* 3. Force Song Title Display */
+.poster-title {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  font-size: 0.84rem !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  line-height: 1.25 !important;
+  margin-top: 8px !important;
+  margin-bottom: 2px !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 1 !important;
+}
+
+/* 4. Force Artist Name Display */
+.poster-subtitle {
+  display: block !important;
+  font-size: 0.74rem !important;
+  color: var(--text-muted, #9ca3af) !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 0.9 !important;
+  visibility: visible !important;
+  text-align: left !important;
+}
+
+/* 5. Search Results Track Row Text */
+.track-row .tr-info {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+.track-row .tr-info .tr-title {
+  color: #ffffff !important;
+  font-size: 0.9rem !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.track-row .tr-info .tr-artist {
+  color: var(--text-muted, #9ca3af) !important;
+  font-size: 0.78rem !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  margin-top: 2px !important;
+}
+
+/* =========================================================
+   FIXED "MADE FOR YOU" SCROLLER (ZERO OVERLAP)
+   ========================================================= */
+#forYouGrid {
+  display: flex !important;
+  flex-direction: row !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  gap: 12px !important;
+  padding: 4px 2px 12px 2px !important;
+  margin-bottom: 0 !important;
+  scrollbar-width: none;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+#forYouGrid::-webkit-scrollbar {
+  display: none !important;
+}
+
+.for-you-mini-card {
+  scroll-snap-align: start;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 12px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px !important;
+  cursor: pointer;
+  box-sizing: border-box !important;
+  height: 56px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
+  flex-shrink: 0 !important;
+  transition: background 0.15s ease, opacity 0.15s ease !important;
+}
+
+.for-you-mini-card:active {
+  background: rgba(255, 255, 255, 0.14) !important;
+  opacity: 0.9 !important;
+}
+
+.for-you-mini-card .fym-thumb {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  border-radius: 8px !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+  background: #181920 !important;
+}
+
+.for-you-mini-card .fym-info {
+  flex: 1 !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+}
+
+.for-you-mini-card .fym-title {
+  color: #ffffff !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+  line-height: 1.25 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  width: 100% !important;
+  text-align: left !important;
+}
+
+.for-you-mini-card .fym-play-icon {
+  color: rgba(255, 255, 255, 0.45) !important;
+  font-size: 0.75rem !important;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* =========================================================
+   1. POLISHED SHELF SCROLLING ("BECAUSE YOU LISTENED TO...")
+   ========================================================= */
+.horizontal-shelf,
+.tracks-shelf,
+.shelf-scroll-row,
+.capsule-grid {
+  display: flex !important;
+  flex-direction: row !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scroll-behavior: smooth !important;
+  -webkit-overflow-scrolling: touch !important;
+  scroll-snap-type: x proximity !important;
+  gap: 14px !important;
+  padding: 8px 4px 16px 4px !important;
+  scrollbar-width: none !important;
+}
+
+.horizontal-shelf::-webkit-scrollbar,
+.tracks-shelf::-webkit-scrollbar,
+.shelf-scroll-row::-webkit-scrollbar,
+.capsule-grid::-webkit-scrollbar {
+  display: none !important;
+}
+
+/* =========================================================
+   SILKY NATIVE TAP FEEDBACK (ZERO JITTER / ZERO SHAKE)
+   ========================================================= */
+.poster-item {
+  cursor: pointer;
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  height: auto !important;
+  overflow: visible !important;
+  flex-shrink: 0 !important;
+  transition: opacity 0.12s ease !important;
+  transform: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+/* Stable opacity dim on touch — no geometric scaling shake */
+.poster-item:active {
+  opacity: 0.72 !important;
+  transform: none !important;
+}
+
+.poster-wrap {
+  position: relative !important;
+  width: 140px !important;
+  height: 140px !important;
+  min-height: 140px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  background: #181920 !important;
+  flex-shrink: 0 !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  transform: none !important;
+}
+
+.poster-wrap .poster-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+  transform: none !important;
+}
+
+/* Limit hover transformations to desktop mice only */
+@media (hover: hover) and (pointer: fine) {
+  .poster-item:hover .poster-wrap {
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6) !important;
+  }
+  .poster-item:hover .poster-img {
+    transform: scale(1.03) !important;
+    transition: transform 0.2s ease !important;
+  }
+}
+
+/* =========================================================
+   3. PLAY/PAUSE BUTTON LOADER ANIMATION
+   ========================================================= */
+.btn-playback-loading {
+  position: relative;
+  pointer-events: none;
+}
+
+.btn-playback-loading svg {
+  opacity: 0 !important;
+}
+
+.btn-playback-loading::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top-color: #000000;
+  animation: btnSpin 0.65s linear infinite;
+}
+
+/* Fullscreen player button spinner (white theme) */
+.sheet-play-large.btn-playback-loading::after {
+  width: 26px;
+  height: 26px;
+  border: 3px solid rgba(0, 0, 0, 0.25);
+  border-top-color: #000000;
+}
+
+@keyframes btnSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* =========================================================
+   KEYBOARD SHIELD FOR BOTTOM NAV & MINI DOCK
+   ========================================================= */
+@media screen and (max-height: 520px) {
+  /* On-screen keyboard detected via vertical squish */
+  .mobile-nav-container {
+    display: none !important;
+  }
+  footer.dock-player {
+    bottom: 8px !important;
+  }
+}
+
+.for-you-title {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", "Inter", sans-serif !important;
+  font-size: 1.35rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em !important;
+  color: #ffffff !important;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+}
+
+/* Remove grey pill / drag handle from the 3-dot context action modal */
+.context-action-modal .drag-handle,
+.context-modal-sheet > .drag-handle,
+.context-modal-sheet::before {
+  display: none !important;
+}
+
+/* ==========================================
+   MELO AMBIENT SKELETON SHIMMER SYSTEM
+   ========================================== */
+.melo-skeleton-card {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  flex-shrink: 0 !important;
+  pointer-events: none;
+}
+
+.melo-skeleton-box {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.melo-skeleton-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 100%
+  );
+  animation: meloSkeletonShimmer 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.melo-skeleton-poster {
+  width: 140px !important;
+  height: 140px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 14px !important;
+  margin-bottom: 8px;
+}
+
+.melo-skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+
+.melo-skeleton-line.title {
+  width: 82%;
+  height: 13px;
+  margin-top: 6px;
+}
+
+.melo-skeleton-line.subtitle {
+  width: 58%;
+  height: 10px;
+  opacity: 0.6;
+}
+
+/* Skeleton for Made For You cards */
+.melo-skeleton-fym {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 12px !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 12px !important;
+  height: 56px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
+  flex-shrink: 0 !important;
+  pointer-events: none;
+}
+
+.melo-skeleton-fym-thumb {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  border-radius: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+.melo-skeleton-fym-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@keyframes meloSkeletonShimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.melo-skeleton-card {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 140px !important;
+  min-width: 140px !important;
+  max-width: 140px !important;
+  height: auto !important;
+  flex-shrink: 0 !important;
+  pointer-events: none;
+  margin: 0 !important;
+}
+
+.melo-skeleton-poster {
+  width: 140px !important;
+  height: 140px !important;
+  min-height: 140px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 14px !important;
+  margin-bottom: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+.melo-skeleton-line.title {
+  width: 85% !important;
+  height: 1.2rem !important;
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+}
+
+.melo-skeleton-line.subtitle {
+  width: 55% !important;
+  height: 1.1rem !important;
+  margin-top: 2px !important;
+}
+
+/* Fix Made For You container height and spacing */
+#forYouGrid.capsule-grid {
+  min-height: auto !important;
+  height: auto !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 4px !important;
+}
+
+.for-you-spotlight {
+  margin-bottom: 12px !important;
+}
+
+#quickPicksSpotlightBox {
+  margin-top: 0 !important;
+}
+
+/* Restrict min-height solely to large poster shelves to prevent shifts */
+#trendingGrid,
+#bollywoodGrid,
+#punjabiGrid,
+#indieGrid,
+#searchGrid {
+  min-height: 195px;
+}
+
+/* ==========================================
+   LOVED TRACKS TOOLBAR & CONTROLS REFINEMENT
+   ========================================== */
+.library-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  margin-bottom: 18px !important;
+}
+
+/* Custom themed select capsule */
+.melo-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.melo-themed-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 999px !important;
+  padding: 8px 32px 8px 14px !important;
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+  outline: none !important;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+}
+
+.melo-themed-select option {
+  background: #14151b !important;
+  color: #ffffff !important;
+}
+
+/* Balanced button row */
+.library-toolbar .pill-action-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  padding: 7px 14px !important;
+  font-size: 0.78rem !important;
+  font-weight: 700 !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  margin: 0 !important;
+}
+
+.library-toolbar .filter-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 7px 14px !important;
+  font-size: 0.78rem !important;
+  font-weight: 600 !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  margin: 0 !important;
+}
+
+/* ==========================================
+   LOVED TRACKS THEMING FIXES
+   ========================================== */
+.library-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin-bottom: 16px !important;
+  width: 100% !important;
+}
+
+.melo-select-wrapper {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+select.melo-themed-select {
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+  background-color: #161822 !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 20px !important;
+  padding: 6px 30px 6px 14px !important;
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: calc(100% - 10px) center !important;
+}
+
+select.melo-themed-select option {
+  background-color: #12131a !important;
+  color: #ffffff !important;
+  padding: 8px 12px !important;
+}
+
+.library-toolbar .pill-action-btn {
+  height: 32px !important;
+  padding: 0 14px !important;
+  font-size: 0.78rem !important;
+  font-weight: 700 !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin: 0 !important;
+}
+
+.library-toolbar .filter-chip {
+  height: 32px !important;
+  padding: 0 14px !important;
+  font-size: 0.78rem !important;
+  font-weight: 600 !important;
+  border-radius: 999px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  margin: 0 !important;
+}
+
+/* =============================================================================
+   MELO ACCOUNT UI - MODERN INDUSTRY GRADE SPEC
+   ============================================================================= */
+.account-stage {
+  padding-bottom: 120px !important;
+}
+
+/* Glassmorphic User Identity Banner */
+.melo-account-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px !important;
+  padding: 22px 24px;
+  background: linear-gradient(135deg, rgba(250, 45, 72, 0.12) 0%, rgba(20, 22, 32, 0.7) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.5);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.melo-account-hero::before {
+  content: "";
+  position: absolute;
+  top: -40px;
+  right: -40px;
+  width: 140px;
+  height: 140px;
+  background: radial-gradient(circle, rgba(250, 45, 72, 0.3) 0%, transparent 70%);
+  pointer-events: none;
+  filter: blur(20px);
+}
+
+.melo-avatar-halo {
+  position: relative;
+  width: 68px !important;
+  height: 68px !important;
+  border-radius: 22px !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.melo-puppy-avatar-svg {
+  width: 52px;
+  height: 52px;
+}
+
+.melo-account-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.melo-account-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fa2d48;
+  background: rgba(250, 45, 72, 0.12);
+  border: 1px solid rgba(250, 45, 72, 0.25);
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 4px;
+}
+
+.melo-account-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.melo-account-email {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Metric Quick-Glance Cards */
+.melo-telemetry-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.melo-telemetry-tile {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 12px 10px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.melo-telemetry-val {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.melo-telemetry-lbl {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-top: 2px;
+  letter-spacing: 0.04em;
+}
+
+/* Cloud Sync Console */
+.melo-sync-console {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.melo-sync-detail {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.melo-sync-indicator {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.melo-sync-indicator svg {
+  width: 18px;
+  height: 18px;
+  stroke: #ffffff;
+  fill: none;
+  stroke-width: 2;
+}
+
+.melo-sync-indicator.sync-active svg {
+  animation: meloPulseSync 1.4s ease infinite;
+  stroke: #fa2d48;
+}
+
+@keyframes meloPulseSync {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+.melo-sync-text h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.melo-sync-text p {
+  margin: 2px 0 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.melo-sync-action-btn {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 999px !important;
+  padding: 8px 16px !important;
+  font-size: 0.78rem !important;
+  font-weight: 700 !important;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.melo-sync-action-btn:active {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-color: rgba(255, 255, 255, 0.25) !important;
+}
+
+/* Settings & Controls Group */
+.melo-group-card {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.melo-group-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 18px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.melo-group-item:last-child {
+  border-bottom: none;
+}
+
+.melo-group-item:active {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.melo-group-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.melo-group-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.melo-group-icon svg {
+  width: 17px;
+  height: 17px;
+  stroke: #ffffff;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.melo-group-item.is-danger .melo-group-icon svg {
+  stroke: #fa2d48;
+}
+
+.melo-group-content strong {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.melo-group-item.is-danger .melo-group-content strong {
+  color: #fa2d48;
+}
+
+.melo-group-content small {
+  display: block;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.melo-group-arrow svg {
+  width: 15px;
+  height: 15px;
+  stroke: rgba(255, 255, 255, 0.35);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Embedded Change Password Form */
+.melo-password-tray {
+  padding: 6px 18px 18px 18px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.melo-input-field {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 0.85rem;
+  color: #ffffff;
+  outline: none;
+  margin-top: 8px;
+}
+
+.melo-input-field:focus {
+  border-color: #fa2d48;
+  background: rgba(255, 255, 255, 0.07);
 }

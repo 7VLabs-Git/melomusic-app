@@ -1,0 +1,23 @@
+{
+  "appId": "com.melo.music",
+  "appName": "MELO",
+  "webDir": "static",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "launchAutoHide": true,
+      "launchFadeOutDuration": 200,
+      "backgroundColor": "#07080b",
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true
+    }
+  }
+}

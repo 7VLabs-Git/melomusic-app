@@ -438,16 +438,16 @@ async def signup(payload: AuthPayload, request: Request, response: Response, db=
         db.refresh(new_user)
 
     # Cookie setting logic:
-    is_https = request.url.scheme == "https" or IS_PRODUCTION and "localhost" not in str(request.base_url)
+    is_https = request.url.scheme == "https" or (IS_PRODUCTION and "localhost" not in str(request.base_url))
     session_token = create_access_token({"sub": str(new_user.id), "email": new_user.email})
     response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            max_age=60 * 60 * 24 * 7,
-            path="/",
-            samesite="lax",
-            secure=is_https
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=60 * 60 * 24 * 7,
+        path="/",
+        samesite="lax",
+        secure=is_https
     )
 
     # 2. Dispatch verification email in background
@@ -481,9 +481,11 @@ async def signup(payload: AuthPayload, request: Request, response: Response, db=
 
     asyncio.create_task(send_brevo_email(clean_email, "Verify your MELO account", html_content))
 
-    # 3. Return authenticated user payload so app.js switches to Account profile immediately
+    # 3. Return authenticated user payload with tokens so app.js switches profile immediately
     return {
         "success": True,
+        "session_token": session_token,
+        "token": session_token,
         "requires_verification": not new_user.is_verified,
         "user": {
             "id": new_user.id,
@@ -543,58 +545,30 @@ async def login(payload: AuthPayload, request: Request, response: Response, db=D
     if not user or not pwd_context.verify(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # If the user is unverified, don't just fail - dispatch a fresh token immediately
-    if not user.is_verified:
-        token = str(uuid.uuid4())
-        user.verification_token = token
-        db.commit()
-
-        base_url = os.getenv("RENDER_EXTERNAL_URL", os.getenv("APP_BASE_URL", str(request.base_url).rstrip("/")))
-        verify_link = f"{base_url}/api/auth/verify-email?token={token}"
-
-        # PRINT TO TERMINAL/LOGS SO YOU CAN VERIFY WITH 1 CLICK
-        print("\n" + "=" * 60)
-        print(f"[CLICK TO VERIFY {clean_email}]:")
-        print(verify_link)
-        print("=" * 60 + "\n")
-
-        html_body = f"""
-        <div style="background:#0a0b0f;color:#fff;padding:32px;font-family:sans-serif;text-align:center;">
-            <h2>Verify Your MELO Account</h2>
-            <p>Click below to verify your account and sign in:</p>
-            <p><a href="{verify_link}" style="background:#fa2d48;color:#fff;padding:12px 28px;border-radius:30px;text-decoration:none;font-weight:bold;display:inline-block;">Verify Email</a></p>
-        </div>
-        """
-        await send_brevo_email(clean_email, "Verify your MELO account", html_body)
-
-        raise HTTPException(
-            status_code=403,
-            detail="Verification required. A new verification link has been sent to your email (and logged in server logs)."
-        )
-
+    # Issue session token directly without requiring verification
     session_token = create_access_token({"sub": str(user.id), "email": user.email})
-    # Cookie setting logic:
     is_https = request.url.scheme == "https" or IS_PRODUCTION and "localhost" not in str(request.base_url)
 
     response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            max_age=60 * 60 * 24 * 7,
-            path="/",
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        max_age=60 * 60 * 24 * 7,
+        path="/",
         samesite="lax",
         secure=is_https
     )
 
     return {
         "success": True,
+        "session_token": session_token,
+        "token": session_token,
         "user": {
             "id": user.id,
             "email": user.email,
             "display_name": user.display_name
         }
     }
-
 @app.get("/api/auth/verify-email")
 def verify_email(request: Request, token: str, db=Depends(get_db)):
     user = db.query(User).filter(User.verification_token == token).first()
@@ -1055,6 +1029,7 @@ search_cache = TTLCache(maxsize=1500, ttl=3600)
 lyrics_cache = TTLCache(maxsize=1500, ttl=86400)
 rec_cache = TTLCache(maxsize=1500, ttl=7200)
 image_cache = TTLCache(maxsize=5000, ttl=86400)
+album_cache = TTLCache(maxsize=100, ttl=86400)
 
 http_client: Optional[httpx.AsyncClient] = None
 ytm: Optional[YTMusic] = None
@@ -1104,6 +1079,35 @@ async def shutdown_event():
     if http_client:
         await http_client.aclose()
 
+# ==========================================
+# APP VERSION & IN-APP UPDATE SYSTEM
+# ==========================================
+# Whenever you release a new APK, update these 3 variables:
+LATEST_APP_VERSION = os.getenv("LATEST_APP_VERSION", "2.7.0")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "ayushkumar2812/melomusic-app")
+FALLBACK_APK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/app-release.apk"
+
+@app.get("/api/app-version")
+async def get_app_version():
+    """
+    Returns the latest published app version, direct APK download link,
+    and release highlights.
+    """
+    download_url = os.getenv("APP_DOWNLOAD_URL", FALLBACK_APK_URL)
+    release_notes = os.getenv(
+        "APP_RELEASE_NOTES", 
+        "• Fluid page transitions and animation smoothing\n"
+        "• Faster home and search shelf caching\n"
+        "• Polished splash screen and auth flows"
+    )
+
+    return {
+        "latest_version": LATEST_APP_VERSION,
+        "download_url": download_url,
+        "release_notes": release_notes,
+        "force_update": False
+    }
+
 @app.get("/api/ping")
 async def ping():
     return {"status": "alive"}
@@ -1131,8 +1135,8 @@ def clean_thumbnail_url(raw_url: str) -> str:
         return ""
     clean = html.unescape(raw_url.strip())
     clean = clean.replace("50x50", "500x500").replace("150x150", "500x500")
-    if "http://" in clean:
-        clean = clean.replace("http://", "https://")
+    if clean.startswith("http://"):
+        clean = clean.replace("http://", "https://", 1)
     return clean
 
 def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1169,18 +1173,22 @@ def format_saavn_track(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     raw_image = more_info.get("image") or item.get("image") or item.get("image_url") or ""
     thumb = clean_thumbnail_url(raw_image)
+
     decrypted_audio_url = decrypt_saavn_url(enc_url)
     if decrypted_audio_url:
         stream_cache[str(track_id)] = decrypted_audio_url
 
-    encoded_thumb_param = urllib.parse.quote(thumb, safe="") if thumb else ""
+    # Route through proxy so Android WebView never gets 403 Forbidden
+    encoded_thumb = urllib.parse.quote(thumb, safe="") if thumb else ""
+    proxied_thumb = f"/api/proxy-image?url={encoded_thumb}" if encoded_thumb else ""
+
     return {
         "id": str(track_id),
         "title": title,
         "artist": artist,
         "album": album,
         "duration": dur_str,
-        "thumbnail": f"/api/proxy-image?url={encoded_thumb_param}" if encoded_thumb_param else thumb,
+        "thumbnail": proxied_thumb,
         "enc_url": enc_url
     }
 
@@ -1211,6 +1219,104 @@ async def search_single_saavn_track(query_str: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
     return None
+
+@app.get("/api/featured-albums")
+async def get_featured_albums():
+    if "featured_albums" in album_cache:
+        return album_cache["featured_albums"]
+
+    # Official JioSaavn Featured / Top Albums Endpoint
+    api_url = "https://www.jiosaavn.com/api.php"
+    params = {
+        "__call": "content.getFeaturedAlbums",
+        "_format": "json",
+        "_marker": "0",
+        "api_version": "4",
+        "ctx": "web6dot0",
+        "n": "20",
+        "p": "1"
+    }
+
+    try:
+        resp = await http_client.get(api_url, params=params, headers=CDN_HEADERS, timeout=9.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_items = []
+            if isinstance(data, list):
+                raw_items = data
+            elif isinstance(data, dict):
+                raw_items = data.get("data", data.get("results", []))
+
+            formatted_albums = []
+            seen_titles = set()
+
+            for item in raw_items:
+                title = html.unescape(item.get("title", item.get("name", ""))).strip()
+                if not title or title.lower() in seen_titles:
+                    continue
+                seen_titles.add(title.lower())
+
+                artist = item.get("music", item.get("primary_artists", item.get("subtitle", "Bollywood Album")))
+                artist = html.unescape(artist).strip()
+
+                raw_img = item.get("image", item.get("image_url", ""))
+                thumb = clean_thumbnail_url(raw_img)
+
+                encoded_thumb = urllib.parse.quote(thumb, safe="") if thumb else ""
+                proxied_thumb = f"/api/proxy-image?url={encoded_thumb}" if encoded_thumb else ""
+
+                album_id = str(item.get("id", item.get("albumid", "")))
+
+                formatted_albums.append({
+                    "id": album_id,
+                    "title": title,
+                    "artist": artist or "Bollywood Album",
+                    "thumbnail": proxied_thumb
+                })
+
+            if formatted_albums:
+                payload = {"albums": formatted_albums[:10]}
+                album_cache["featured_albums"] = payload
+                return payload
+    except Exception as e:
+        print(f"[FEATURED_ALBUMS_ERROR] {e}")
+
+    # Fallback to general Hindi album search if featured endpoint is blocked
+    try:
+        search_params = {
+            "__call": "search.getAlbumResults",
+            "_format": "json",
+            "_marker": "0",
+            "api_version": "4",
+            "ctx": "web6dot0",
+            "p": "1",
+            "n": "15",
+            "q": "Hindi 2026"
+        }
+        s_resp = await http_client.get(api_url, params=search_params, headers=CDN_HEADERS, timeout=8.0)
+        if s_resp.status_code == 200:
+            s_data = s_resp.json()
+            s_results = s_data.get("results", [])
+            fallback_list = []
+            for item in s_results:
+                title = html.unescape(item.get("title", item.get("name", ""))).strip()
+                raw_img = item.get("image", "")
+                thumb = clean_thumbnail_url(raw_img)
+                enc_t = urllib.parse.quote(thumb, safe="") if thumb else ""
+                fallback_list.append({
+                    "id": str(item.get("id", "")),
+                    "title": title,
+                    "artist": html.unescape(item.get("music", item.get("primary_artists", "Bollywood"))).strip(),
+                    "thumbnail": f"/api/proxy-image?url={enc_t}" if enc_t else ""
+                })
+            if fallback_list:
+                payload = {"albums": fallback_list[:10]}
+                album_cache["featured_albums"] = payload
+                return payload
+    except Exception as err:
+        print(f"[ALBUMS_FALLBACK_FAIL] {err}")
+
+    return {"albums": []}
 
 @app.get("/api/search")
 async def search_endpoint(query: str = Query(..., min_length=1)):
@@ -1318,7 +1424,7 @@ async def import_playlist(req: ImportRequest):
     if not url:
         raise HTTPException(status_code=400, detail="URL cannot be empty")
 
-    imported_tracks = []
+    search_queries = []
     playlist_name = "Imported Playlist"
 
     try:
@@ -1332,27 +1438,20 @@ async def import_playlist(req: ImportRequest):
                 if embed_resp.status_code == 200:
                     next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>', embed_resp.text)
                     if next_data_match:
-                        try:
-                            raw_json = json.loads(next_data_match.group(1))
-                            entity = raw_json.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
-                            playlist_name = entity.get("title") or entity.get("name") or playlist_name
-                            track_list = entity.get("trackList", [])
-
-                            for t in track_list[:40]:
-                                t_title = t.get("title", "")
-                                t_subtitle = t.get("subtitle", "")
-                                if t_title:
-                                    matched = await search_single_saavn_track(f"{t_title} {t_subtitle}".strip())
-                                    if matched and matched["id"] not in [x["id"] for x in imported_tracks]:
-                                        imported_tracks.append(matched)
-                        except Exception:
-                            pass
+                        raw_json = json.loads(next_data_match.group(1))
+                        entity = raw_json.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+                        playlist_name = entity.get("title") or entity.get("name") or playlist_name
+                        track_list = entity.get("trackList", [])
+                        for t in track_list[:40]:
+                            t_title = t.get("title", "")
+                            t_subtitle = t.get("subtitle", "")
+                            if t_title:
+                                search_queries.append(f"{t_title} {t_subtitle}".strip())
 
         elif "youtube.com" in url or "youtu.be" in url:
             parsed = urllib.parse.urlparse(url)
             query_params = urllib.parse.parse_qs(parsed.query)
             playlist_id = query_params.get("list", [None])[0]
-
             if not playlist_id and "playlist/" in url:
                 playlist_id = url.split("playlist/")[1].split("?")[0]
 
@@ -1360,31 +1459,51 @@ async def import_playlist(req: ImportRequest):
                 try:
                     pl_data = ytm.get_playlist(playlist_id, limit=60)
                     playlist_name = pl_data.get("title", "YouTube Playlist")
-                    raw_tracks = pl_data.get("tracks", [])
-
-                    for item in raw_tracks[:35]:
+                    for item in pl_data.get("tracks", [])[:40]:
                         t_name = item.get("title", "")
                         t_artists = item.get("artists", [])
                         t_artist = t_artists[0].get("name", "") if t_artists else ""
                         if t_name:
-                            matched = await search_single_saavn_track(f"{t_name} {t_artist}".strip())
-                            if matched and matched["id"] not in [x["id"] for x in imported_tracks]:
-                                imported_tracks.append(matched)
+                            search_queries.append(f"{t_name} {t_artist}".strip())
                 except Exception:
                     pass
 
-        if not imported_tracks:
+        if not search_queries:
             clean_seed = re.sub(r'https?://[^\s]+', '', url).strip()
             if clean_seed:
                 res = await search_endpoint(query=clean_seed)
-                imported_tracks = res.get("results", [])[:20]
-                playlist_name = clean_seed.capitalize()
+                return {
+                    "success": True,
+                    "name": clean_seed.capitalize(),
+                    "tracks": res.get("results", [])[:25]
+                }
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[IMPORT_ERROR] {e}")
+
+    if not search_queries:
+        raise HTTPException(status_code=404, detail="Could not retrieve playable songs. Ensure the playlist is public.")
+
+    # Search tracks concurrently in batches of 5 for speed
+    imported_tracks = []
+    seen_ids = set()
+
+    async def fetch_track(q):
+        try:
+            return await search_single_saavn_track(q)
+        except Exception:
+            return None
+
+    for i in range(0, len(search_queries), 5):
+        batch = search_queries[i:i + 5]
+        results = await asyncio.gather(*(fetch_track(q) for q in batch))
+        for track in results:
+            if track and track["id"] not in seen_ids:
+                seen_ids.add(track["id"])
+                imported_tracks.append(track)
 
     if not imported_tracks:
-        raise HTTPException(status_code=404, detail="Could not retrieve playable songs. Ensure the playlist is public.")
+        raise HTTPException(status_code=404, detail="No matching tracks found on streaming servers.")
 
     return {
         "success": True,
@@ -1563,7 +1682,14 @@ async def proxy_image(url: str):
         )
 
     try:
-        resp = await http_client.get(decoded_url, headers=CDN_HEADERS, timeout=8.0)
+        resp = await http_client.get(
+            decoded_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.jiosaavn.com/"
+            },
+            timeout=8.0
+        )
         if resp.status_code == 200:
             content_type = resp.headers.get("content-type", "image/jpeg")
             image_cache[decoded_url] = (resp.content, content_type)
@@ -1672,6 +1798,7 @@ async def get_assetlinks():
                 "package_name": "com.melomusic.app",
                 "sha256_cert_fingerprints": [
                     "32:40:8B:6C:C4:86:A5:9E:33:47:0F:F8:BD:B8:71:CA:18:3A:05:1B:2D:D7:EF:11:79:E1:75:3D:FB:B7:41:0E"
+                    "93:44:03:E2:78:3F:59:C4:F2:8D:A2:95:14:98:F3:AC:FA:B6:13:6C:A2:41:1E:F8:8A:E1:7E:52:45:8F:67:8D"
                 ]
             }
         }

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Solid base color matching your squircle background -->
+    <background android:drawable="@color/colorPrimaryDark" />
+
+    <!-- Foreground logo scaled up to fill the full squircle container -->
+    <foreground>
+        <inset
+            android:drawable="@drawable/splash"
+            android:insetTop="-18%"
+            android:insetBottom="-18%"
+            android:insetLeft="-18%"
+            android:insetRight="-18%" />
+    </foreground>
+</adaptive-icon>

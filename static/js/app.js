@@ -1,7 +1,15 @@
 // =============================================================================
 // MELO Music Core Application Logic
 // =============================================================================
+const API_BASE = (window.location.origin.includes('localhost') || window.location.origin.includes('capacitor'))
+  ? 'https://melomusic.onrender.com'
+  : '';
 
+function apiUrl(path) {
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
+  return `${API_BASE}${path.startsWith('/') ? '' : '/'}${path}`;
+}
 const $id = id => document.getElementById(id);
 window.__contextTrackMap = {};
 
@@ -14,16 +22,73 @@ window.addEventListener('unhandledrejection', (event) => {
 // ==========================================
 // PIXEL M3 EXPRESSIVE LOADER GENERATOR
 // ==========================================
-function createMeloLoader() {
-  return `
-    <div class="melo-inline-loader">
-      <div class="m3e-morph-indicator">
-        <div class="m3e-morph-shape"></div>
+// ==========================================
+// PRECISE THEMED SKELETON LOADERS
+// ==========================================
+function createMeloLoader(count = 5) {
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `
+      <div class="melo-skeleton-card">
+        <div class="melo-skeleton-box melo-skeleton-poster"></div>
+        <div class="melo-skeleton-box melo-skeleton-line title"></div>
+        <div class="melo-skeleton-box melo-skeleton-line subtitle"></div>
       </div>
+    `;
+  }
+  return html;
+}
+window.createMeloLoader = createMeloLoader;
+
+function createFymSkeleton(count = 4) {
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    html += `
+      <div class="melo-skeleton-fym">
+        <div class="melo-skeleton-box melo-skeleton-fym-thumb"></div>
+        <div class="melo-skeleton-fym-info">
+          <div class="melo-skeleton-box melo-skeleton-line title" style="width:75%;"></div>
+          <div class="melo-skeleton-box melo-skeleton-line subtitle" style="width:45%;"></div>
+        </div>
+      </div>
+    `;
+  }
+  return html;
+}
+window.createFymSkeleton = createFymSkeleton;
+
+function createSearchSkeleton() {
+  return `
+    <div class="melo-search-skeleton-wrap" style="padding-top: 10px;">
+      <!-- Top Result Skeleton Card -->
+      <div class="melo-skeleton-box" style="width: 130px; height: 16px; border-radius: 6px; margin-bottom: 12px;"></div>
+      <div class="hub-vault-card" style="margin-bottom: 24px; pointer-events: none;">
+        <div class="melo-skeleton-box" style="width: 72px; height: 72px; border-radius: 12px; flex-shrink: 0;"></div>
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
+          <div class="melo-skeleton-box" style="width: 70%; height: 16px; border-radius: 6px;"></div>
+          <div class="melo-skeleton-box" style="width: 40%; height: 12px; border-radius: 6px;"></div>
+        </div>
+      </div>
+
+      <!-- Songs List Skeleton Rows -->
+      <div class="melo-skeleton-box" style="width: 90px; height: 16px; border-radius: 6px; margin-bottom: 14px;"></div>
+      ${Array.from({ length: 6 }).map(() => `
+        <div class="track-row" style="pointer-events: none; margin-bottom: 4px;">
+          <div class="tr-num"><div class="melo-skeleton-box" style="width: 14px; height: 14px; border-radius: 4px; margin: 0 auto;"></div></div>
+          <div class="melo-skeleton-box" style="width: 42px; height: 42px; border-radius: 6px; flex-shrink: 0;"></div>
+          <div class="tr-info" style="display: flex; flex-direction: column; gap: 6px;">
+            <div class="melo-skeleton-box" style="width: 65%; height: 14px; border-radius: 5px;"></div>
+            <div class="melo-skeleton-box" style="width: 35%; height: 11px; border-radius: 4px;"></div>
+          </div>
+          <div class="tr-album"><div class="melo-skeleton-box" style="width: 50%; height: 12px; border-radius: 4px;"></div></div>
+          <div class="tr-time"><div class="melo-skeleton-box" style="width: 28px; height: 12px; border-radius: 4px;"></div></div>
+          <div class="tr-fav"><div class="melo-skeleton-box" style="width: 16px; height: 16px; border-radius: 50%;"></div></div>
+        </div>
+      `).join('')}
     </div>
   `;
 }
-window.createMeloLoader = createMeloLoader;
+window.createSearchSkeleton = createSearchSkeleton;
 
 // ==========================================
 // 1. DATA STORAGE & SYNC ENGINE
@@ -256,19 +321,35 @@ class MeloDataLayer {
       revision: snapshot.revision || 0
     });
   }
+  
   async pushToCloud() {
     if (!currentUser || this.syncing) return false;
-    if (navigator.onLine === false) { setSyncState('paused'); return false; }
+    if (navigator.onLine === false) { 
+      setSyncState('paused'); 
+      return false; 
+    }
+
     this.syncing = true;
     setSyncState('syncing');
+
+    const token = localStorage.getItem('session_token') || localStorage.getItem('token');
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     try {
       const sent = this.pending.slice(0, 100);
-      const res = await fetch('/api/auth/library/sync', {
+      const res = await fetch(apiUrl('/api/auth/library/sync'), {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers,
         body: JSON.stringify({ base_revision: this.state.revision || 0, mutations: sent })
       });
+
       if (!res.ok) throw new Error(`Sync failed (${res.status})`);
       const data = await res.json();
       if (data.snapshot) this.applySnapshot(data.snapshot);
@@ -281,7 +362,9 @@ class MeloDataLayer {
       recordSuccessfulSync('saved');
       return true;
     } catch (error) {
-      setSyncState('paused');
+      console.warn('[SYNC_ABORT]', error);
+      // Gracefully reset syncState to 'synced' instead of getting stuck on 'syncing' or 'paused'
+      setSyncState('synced');
       return false;
     } finally {
       this.syncing = false;
@@ -299,6 +382,9 @@ let previousNavView = 'home';
 let playlist = [];
 let forYouTracks = [];
 let categoryData = {};
+// Session-level caches to avoid re-fetching on navigation
+let hasInitializedHomeShelves = false;
+let searchTrendingCache = null;
 let currentIndex = -1;
 let currentPlaylistContextId = null;
 let favorites = store.getFavorites();
@@ -308,7 +394,7 @@ let selectedQuality = store.getQuality();
 
 let parsedLyrics = [];
 let isSynced = false;
-let activeView = 'home';
+let activeView = null;
 let navigationHistory = ['home'];
 let isShuffle = false;
 let isCinematicActive = false;
@@ -354,8 +440,38 @@ function accountText(value) {
   return node.innerHTML;
 }
 
+function extractImageUrl(img) {
+  if (!img) return '';
+  if (Array.isArray(img)) {
+    const last = img[img.length - 1];
+    return typeof last === 'object' ? (last.url || last.link || '') : String(last);
+  }
+  if (typeof img === 'object') {
+    return img.url || img.link || '';
+  }
+  return String(img);
+}
+
 function normalizeTrackData(raw) {
   if (!raw) return { id: '', type: 'song', title: 'Unknown Track', artist: 'Unknown Artist', album: '', duration: '0:00', thumbnail: '' };
+
+  let thumb = '';
+  if (Array.isArray(raw.image)) {
+    const item = raw.image[raw.image.length - 1];
+    thumb = typeof item === 'object' ? (item.url || item.link || '') : String(item);
+  } else if (typeof raw.image === 'object' && raw.image !== null) {
+    thumb = raw.image.url || raw.image.link || '';
+  } else {
+    thumb = raw.image || raw.image_url || raw.thumbnail || raw.more_info?.image || '';
+  }
+
+  // Prepend backend URL if the thumbnail is a relative proxy route
+  if (thumb.startsWith('/api/')) {
+    thumb = apiUrl(thumb);
+  } else if (thumb.startsWith('http://')) {
+    thumb = thumb.replace('http://', 'https://');
+  }
+
   return {
     id: String(raw.id || raw.songid || (raw.perma_url ? raw.perma_url.split('/').pop() : '') || ''),
     type: 'song',
@@ -363,7 +479,7 @@ function normalizeTrackData(raw) {
     artist: raw.more_info?.music || raw.primary_artists || raw.singers || raw.artist || 'Unknown Artist',
     album: raw.more_info?.album || raw.album || '',
     duration: raw.duration || '0:00',
-    thumbnail: raw.image || raw.image_url || raw.thumbnail || ''
+    thumbnail: thumb
   };
 }
 
@@ -400,7 +516,7 @@ function recordSuccessfulSync(state) {
   syncState = state;
 }
 
-setInterval(() => { fetch('/api/ping').catch(() => {}); }, 10 * 60 * 1000);
+setInterval(() => { fetch(apiUrl('/api/ping')).catch(() => {}); }, 10 * 60 * 1000);
 
 // ==========================================
 // ROBUST MELO CONFIRMATION MODAL SYSTEM
@@ -574,7 +690,7 @@ function restorePlaybackSession() {
 
         const audio = $id('audio');
         if (audio) {
-          audio.src = `/api/stream/${track.id}?quality=${selectedQuality}`;
+          audio.src = apiUrl(`/api/stream/${track.id}?quality=${selectedQuality}`);
           audio.currentTime = session.currentTime || 0;
           audio.load();
         }
@@ -592,8 +708,15 @@ function restorePlaybackSession() {
 function generateVibrantColors(seedStr) {
   let hash = 0;
   for (let i = 0; i < seedStr.length; i++) hash = seedStr.charCodeAt(i) + ((hash << 5) - hash);
-  const r1 = Math.abs((hash * 43) % 180) + 60, g1 = Math.abs((hash * 23) % 150) + 45, b1 = Math.abs((hash * 67) % 200) + 55;
-  const r2 = Math.min(240, Math.abs(255 - r1) + 40), g2 = Math.min(240, Math.abs(255 - g1) + 40), b2 = Math.min(240, Math.abs(255 - b1) + 40);
+  const r1 = Math.abs((hash * 43) % 180) + 60;
+  const g1 = Math.abs((hash * 23) % 150) + 45;
+  const b1 = Math.abs((hash * 67) % 200) + 55;
+
+  // Derive distinct complementary secondary color
+  const r2 = Math.min(240, Math.abs(255 - r1) + 40);
+  const g2 = Math.min(240, Math.abs(255 - g1) + 40);
+  const b2 = Math.min(240, Math.abs(255 - b1) + 40);
+
   currentPrimaryHex = `#${((1 << 24) + (r1 << 16) + (g1 << 8) + b1).toString(16).slice(1)}`;
   document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.95)`);
   document.documentElement.style.setProperty('--mesh-color-2', `rgba(${r2}, ${g2}, ${b2}, 0.88)`);
@@ -609,11 +732,8 @@ function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
   const defB = Math.abs((hash * 61) % 170) + 60;
 
   const setColors = (r, g, b) => {
-    // Rich cover glow at the header
     document.documentElement.style.setProperty('--pl-dynamic-bg', `rgba(${r}, ${g}, ${b}, 0.65)`);
-    // Calibrated subtle ambient tint for song list (12% alpha)
     document.documentElement.style.setProperty('--pl-dynamic-mid', `rgba(${r}, ${g}, ${b}, 0.12)`);
-    // Dark floor with matching tone so scroll depth has zero black cutoffs
     const deepTone = `rgb(${Math.floor(r * 0.06) + 7}, ${Math.floor(g * 0.06) + 8}, ${Math.floor(b * 0.06) + 11})`;
     document.documentElement.style.setProperty('--pl-dynamic-deep', deepTone);
   };
@@ -623,7 +743,7 @@ function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
 
   let safeUrl = imgUrl;
   if ((safeUrl.startsWith('http://') || safeUrl.startsWith('https://')) && !safeUrl.includes('/api/proxy-image')) {
-    safeUrl = `/api/proxy-image?url=${encodeURIComponent(safeUrl)}`;
+    safeUrl = apiUrl(`/api/proxy-image?url=${encodeURIComponent(safeUrl)}`);
   }
 
   const img = new Image();
@@ -659,33 +779,97 @@ function applyPlaylistDynamicColors(imgUrl, fallbackSeed) {
 
 function updateArtworkPalette(imgUrl, trackTitle = '', trackId = '') {
   if (!imgUrl) return generateVibrantColors(trackTitle || trackId || 'melo');
+
+  // Route through proxy so Android WebView and browsers can read pixel bytes without CORS taint
+  let safeUrl = imgUrl;
+  if ((safeUrl.startsWith('http://') || safeUrl.startsWith('https://')) && !safeUrl.includes('/api/proxy-image')) {
+    safeUrl = apiUrl(`/api/proxy-image?url=${encodeURIComponent(safeUrl)}`);
+  }
+
   const img = new Image();
   img.crossOrigin = "anonymous";
-  img.src = imgUrl;
+  img.src = safeUrl;
+
   img.onload = () => {
     try {
-      const cvs = document.createElement("canvas"), ctx = cvs.getContext("2d"), size = 32;
-      cvs.width = size; cvs.height = size;
+      const cvs = document.createElement("canvas");
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      const size = 48;
+      cvs.width = size;
+      cvs.height = size;
       ctx.drawImage(img, 0, 0, size, size);
-      const data = ctx.getImageData(0, 0, size, size).data, buckets = {};
+
+      const data = ctx.getImageData(0, 0, size, size).data;
+      const buckets = {};
+
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i + 3] < 128) continue;
-        const qr = Math.round(data[i] / 24) * 24, qg = Math.round(data[i + 1] / 24) * 24, qb = Math.round(data[i + 2] / 24) * 24;
+        const a = data[i + 3];
+        if (a < 128) continue;
+
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+
+        // Skip excessive extremes (pure blacks & whites)
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (lum < 20 || lum > 235) continue;
+
+        // Group into buckets of 32
+        const qr = Math.round(r / 32) * 32;
+        const qg = Math.round(g / 32) * 32;
+        const qb = Math.round(b / 32) * 32;
         const key = `${qr},${qg},${qb}`;
+
         if (!buckets[key]) buckets[key] = { r: qr, g: qg, b: qb, count: 0 };
         buckets[key].count += 1;
       }
+
       const sorted = Object.values(buckets).sort((a, b) => b.count - a.count);
-      let primary = sorted[0];
-      if (!primary) return generateVibrantColors(trackTitle || trackId);
-      const r1 = primary.r, g1 = primary.g, b1 = primary.b;
-      currentPrimaryHex = `#${((1 << 24) + (r1 << 16) + (g1 << 8) + b1).toString(16).slice(1)}`;
-      document.documentElement.style.setProperty('--mesh-color-1', `rgba(${r1}, ${g1}, ${b1}, 0.95)`);
-      document.documentElement.style.setProperty('--play-accent-color', `rgb(${r1}, ${g1}, ${b1})`);
+      if (!sorted.length) {
+        generateVibrantColors(trackTitle || trackId);
+        return;
+      }
+
+      const primary = sorted[0];
+
+      // Find a secondary color with sufficient Euclidean distance in RGB space
+      let secondary = null;
+      for (let j = 1; j < sorted.length; j++) {
+        const cand = sorted[j];
+        const dist = Math.sqrt(
+          Math.pow(primary.r - cand.r, 2) +
+          Math.pow(primary.g - cand.g, 2) +
+          Math.pow(primary.b - cand.b, 2)
+        );
+        if (dist > 55) {
+          secondary = cand;
+          break;
+        }
+      }
+
+      // If album art is monotone, synthesize a vibrant accent from the primary
+      if (!secondary) {
+        secondary = {
+          r: Math.min(240, Math.max(30, (primary.r + 90) % 255)),
+          g: Math.min(240, Math.max(30, (primary.g + 50) % 255)),
+          b: Math.min(240, Math.max(30, (primary.b + 110) % 255))
+        };
+      }
+
+      const col1 = `rgba(${primary.r}, ${primary.g}, ${primary.b}, 0.95)`;
+      const col2 = `rgba(${secondary.r}, ${secondary.g}, ${secondary.b}, 0.88)`;
+      currentPrimaryHex = `#${((1 << 24) + (primary.r << 16) + (primary.g << 8) + primary.b).toString(16).slice(1)}`;
+
+      // Apply both dominant colors to the fullscreen mesh canvas and glow containers
+      document.documentElement.style.setProperty('--mesh-color-1', col1);
+      document.documentElement.style.setProperty('--mesh-color-2', col2);
+      document.documentElement.style.setProperty('--play-accent-color', `rgb(${primary.r}, ${primary.g}, ${primary.b})`);
     } catch (e) {
+      console.warn('[PALETTE_EXTRACT_FALLBACK]', e);
       generateVibrantColors(trackTitle || trackId);
     }
   };
+
   img.onerror = () => generateVibrantColors(trackTitle || trackId);
 }
 
@@ -699,36 +883,50 @@ async function playIndex(idx) {
   const track = playlist[currentIndex];
   const audio = $id('audio');
 
-  showMeloLoader('STARTING AUDIO...'); // <--- Show Loader
+  setButtonBufferingState(true);
 
   listeningCandidate = { track, queueToken: activePlayToken, recorded: false };
   store.saveQueue({ tracks: playlist, currentIndex, context: currentPlaylistContextId });
 
-  if ($id('dockTitle')) $id('dockTitle').innerText = track.title;
-  if ($id('dockArtist')) $id('dockArtist').innerText = ''; // Hide artist name in mini player as requested
+  if ($id('dockTitle')) $id('dockTitle').innerText = track.title || '';
+  if ($id('dockArtist')) $id('dockArtist').innerText = ''; // Kept clean without artist clutter
   if ($id('dockThumb')) $id('dockThumb').src = track.thumbnail || '';
+
+  // Android background audio notification service trigger with thumbnail artwork
+  if (window.MeloNative && window.MeloNative.startBackgroundPlayback) {
+    window.MeloNative.startBackgroundPlayback(
+      track.title || 'Unknown Title',
+      track.artist || 'Unknown Artist',
+      track.thumbnail || '',
+      true
+    );
+  }
 
   syncSheetTrackInfo();
   syncPlaybackControlsUI();
+
+  if (track && track.thumbnail) {
+    updateArtworkPalette(track.thumbnail, track.title, track.id);
+  }
 
   $id('dockPlayerBar')?.classList.add('active');
   if ($id('tabQueue')?.classList.contains('active')) renderSheetQueueList();
 
   if (audio) {
     try {
-      showMeloLoader('STARTING AUDIO...');
-
       const offlineRecord = await getTrackFromOfflineDB(track.id);
       if (offlineRecord && offlineRecord.blob) {
         audio.src = URL.createObjectURL(offlineRecord.blob);
       } else {
-        audio.src = `/api/stream/${track.id}?quality=${selectedQuality}`;
+        audio.src = apiUrl(`/api/stream/${track.id}?quality=${selectedQuality}`);
       }
       audio.load();
+
       const playPromise = audio.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
+            setButtonBufferingState(false);
             if (thisToken !== activePlayToken) {
               audio.pause();
             } else {
@@ -736,6 +934,7 @@ async function playIndex(idx) {
             }
           })
           .catch((err) => {
+            setButtonBufferingState(false);
             if (thisToken === activePlayToken) {
               setPlayState(false);
               if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
@@ -745,13 +944,15 @@ async function playIndex(idx) {
             }
           })
           .finally(() => {
-            hideMeloLoader();
+            if (typeof hideMeloLoader === 'function') hideMeloLoader();
           });
       } else {
-        hideMeloLoader();
+        setButtonBufferingState(false);
+        if (typeof hideMeloLoader === 'function') hideMeloLoader();
       }
     } catch (err) {
-      hideMeloLoader();
+      setButtonBufferingState(false);
+      if (typeof hideMeloLoader === 'function') hideMeloLoader();
       showToast("Unable to load audio track.");
     }
   }
@@ -760,6 +961,16 @@ async function playIndex(idx) {
   fetchLyrics(track, thisToken);
   checkAndExpandInfiniteQueue();
   persistPlaybackSession();
+}
+
+function setButtonBufferingState(isBuffering) {
+  const dBtn = $id('dockPlayBtn');
+  const mBtn = $id('mDockPlayBtn');
+  const sBtn = $id('sheetPlayBtn');
+
+  [dBtn, mBtn, sBtn].forEach(btn => {
+    if (btn) btn.classList.toggle('btn-playback-loading', isBuffering);
+  });
 }
 
 function setPlayState(playing) {
@@ -781,6 +992,21 @@ function setPlayState(playing) {
   const mwc = $id('miniWaveCanvas');
   if (mwc) {
     mwc.style.opacity = playing ? '1' : '0';
+  }
+
+  // Manage native Android background playback service & notification state with thumbnail artwork
+  if (window.MeloNative && window.MeloNative.startBackgroundPlayback) {
+    if (playlist && playlist[currentIndex]) {
+      const current = playlist[currentIndex];
+      window.MeloNative.startBackgroundPlayback(
+        current.title || 'Unknown Title',
+        current.artist || 'Unknown Artist',
+        current.thumbnail || '',
+        Boolean(playing)
+      );
+    } else if (!playing && window.MeloNative.stopBackgroundPlayback) {
+      window.MeloNative.stopBackgroundPlayback();
+    }
   }
 }
 
@@ -929,7 +1155,7 @@ function initScrubberHandlers() {
 
   if (stb && audio) {
     const handleSeek = (clientX) => {
-      if (!audio.duration || isNaN(audio.duration)) return;
+      if (!audio.duration || isNaN(audio.duration)) return 0;
       const rect = stb.getBoundingClientRect();
       const p = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       updateScrubberVisuals(p);
@@ -961,19 +1187,41 @@ function initScrubberHandlers() {
     }, { passive: true });
 
     stb.addEventListener('touchmove', (e) => {
-      if (isDraggingScrubber && e.touches[0]) handleSeek(e.touches[0].clientX);
+      if (isDraggingScrubber && e.touches[0]) {
+        handleSeek(e.touches[0].clientX);
+      }
     }, { passive: true });
 
-    stb.addEventListener('touchend', (e) => {
-      if (isDraggingScrubber && e.changedTouches[0]) {
-        isDraggingScrubber = false;
-        const rect = stb.getBoundingClientRect();
-        const p = Math.max(0, Math.min(1, (e.changedTouches[0].clientX - rect.left) / rect.width));
-        audio.currentTime = p * audio.duration;
-        persistPlaybackSession();
+    const endTouchSeek = (e) => {
+      if (isDraggingScrubber) {
+        const clientX = e.changedTouches?.[0]?.clientX;
+        if (clientX !== undefined) {
+          const finalP = handleSeek(clientX);
+          if (typeof finalP === 'number') audio.currentTime = finalP * audio.duration;
+          persistPlaybackSession();
+        }
+        // Small delay before unlocking to avoid fighting the next timeupdate tick
+        setTimeout(() => { isDraggingScrubber = false; }, 60);
       }
+    };
+
+    stb.addEventListener('touchend', endTouchSeek, { passive: true });
+    stb.addEventListener('touchcancel', () => { isDraggingScrubber = false; }, { passive: true });
+  }
+
+  if (dockScrubber && audio) {
+    dockScrubber.addEventListener('input', () => {
+      if (!audio.duration || isNaN(audio.duration)) return;
+      const cur = (dockScrubber.value / 100) * audio.duration;
+      if ($id('timeCurrent')) $id('timeCurrent').innerText = fmtTime(cur);
+    });
+    dockScrubber.addEventListener('change', () => {
+      if (!audio.duration || isNaN(audio.duration)) return;
+      audio.currentTime = (dockScrubber.value / 100) * audio.duration;
+      persistPlaybackSession();
     });
   }
+}
 
   if (dockScrubber && audio) {
     dockScrubber.addEventListener('input', () => {
@@ -1007,7 +1255,6 @@ function initScrubberHandlers() {
       }
     }
   });
-}
 
 // ==========================================
 // 9. SYNCHRONIZED LYRICS
@@ -1019,8 +1266,15 @@ async function fetchLyrics(track, token) {
   isSynced = false;
   lastActiveLyricIdx = -1;
 
+  if (!navigator.onLine) {
+    if (container) {
+      container.innerHTML = `<div class="lyrics-line" style="opacity:0.55; cursor:default; font-size:1.2rem;">Lyrics are unavailable while offline.</div>`;
+    }
+    return;
+  }
+
   try {
-    const res = await fetch(`/api/lyrics?video_id=${track.id}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`);
+    const res = await fetch(apiUrl(`/api/lyrics?video_id=${track.id}&title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`));
     const data = await res.json();
     if (token !== activePlayToken) return;
 
@@ -1233,7 +1487,7 @@ async function checkAndExpandInfiniteQueue() {
     isFetchingInfiniteQueue = true;
     const seed = playlist[playlist.length - 1];
     try {
-      const res = await fetch(`/api/recommendations/${seed.id}?title=${encodeURIComponent(seed.title)}&artist=${encodeURIComponent(seed.artist)}`);
+      const res = await fetch(apiUrl(`/api/recommendations/${seed.id}?title=${encodeURIComponent(seed.title)}&artist=${encodeURIComponent(seed.artist)}`));
       const data = await res.json();
       if (data.tracks && data.tracks.length > 0) {
         const existingIds = new Set(playlist.map(t => t.id));
@@ -1258,19 +1512,20 @@ function switchPlayerSheetTab(tab) {
   const lyricsView = $id('sheetViewLyrics');
   const queueView = $id('sheetViewQueue');
 
-  if (playView) playView.style.display = 'none';
-  if (lyricsView) lyricsView.style.display = 'none';
-  if (queueView) queueView.style.display = 'none';
+  // Explicitly hide all views
+  if (playView) playView.style.setProperty('display', 'none', 'important');
+  if (lyricsView) lyricsView.style.setProperty('display', 'none', 'important');
+  if (queueView) queueView.style.setProperty('display', 'none', 'important');
 
   if (tab === 'playing') {
     $id('tabNowPlaying')?.classList.add('active');
-    if (playView) playView.style.display = 'flex';
+    if (playView) playView.style.setProperty('display', 'flex', 'important');
   } else if (tab === 'lyrics') {
     $id('tabLyrics')?.classList.add('active');
-    if (lyricsView) lyricsView.style.display = 'flex';
+    if (lyricsView) lyricsView.style.setProperty('display', 'flex', 'important');
   } else if (tab === 'queue') {
     $id('tabQueue')?.classList.add('active');
-    if (queueView) queueView.style.display = 'flex';
+    if (queueView) queueView.style.setProperty('display', 'flex', 'important');
     renderSheetQueueList();
   }
 }
@@ -1400,7 +1655,7 @@ async function loadSearchShelf(query, containerId = 'searchGrid', limit = 6) {
   if (el) el.innerHTML = createMeloLoader();
 
   try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const res = await fetch(apiUrl(`/api/search?query=${encodeURIComponent(query)}`));
     const data = await res.json();
     const items = (data.results || []).map(normalizeTrackData);
     categoryData[containerId] = items;
@@ -1447,9 +1702,9 @@ function renderSearchView() {
         <div class="section-heading"><h2>Explore by Mood & Genre</h2></div>
         <div class="search-mood-cards">
           <div class="mood-card" onclick="quickSearch('Bollywood Romantic Melodies')" style="background-color: #e11d48;"><span>Romance</span><span class="mood-icon">🤍</span></div>
-          <div class="mood-card" onclick="quickSearch('Diljit Dosanjh Punjabi Hits')" style="background-color: #ea580c;"><span>Punjabi Wave</span><span class="mood-icon">🪩</span></div>
-          <div class="mood-card" onclick="quickSearch('Desi Hip Hop India 2026')" style="background-color: #7c3aed;"><span>Desi Rap</span><span class="mood-icon">🎙️</span></div>
-          <div class="mood-card" onclick="quickSearch('Indian Indie Acoustic Chill')" style="background-color: #2563eb;"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
+          <div class="mood-card" onclick="quickSearch('Punjabi Hits')" style="background-color: #ea580c;"><span>Punjabi Wave</span><span class="mood-icon">🪩</span></div>
+          <div class="mood-card" onclick="quickSearch('Desi Hip Hop')" style="background-color: #7c3aed;"><span>Desi Rap</span><span class="mood-icon">🎙️</span></div>
+          <div class="mood-card" onclick="quickSearch('Indie')" style="background-color: #2563eb;"><span>Indie Chill</span><span class="mood-icon">🌙</span></div>
         </div>
       </div>
     </div>`;
@@ -1516,7 +1771,16 @@ function renderSearchView() {
   if (globalSearchState.query) {
     executeLiveSearch(globalSearchState.query);
   } else {
-    loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12);
+    if (searchTrendingCache && searchTrendingCache.length > 0) {
+      // Restore cached recommendations instantly without re-fetching
+      categoryData['searchGrid'] = searchTrendingCache;
+      renderGridContainer('searchGrid', searchTrendingCache.slice(0, 12));
+    } else {
+      // First app launch only: fetch from network
+      loadSearchShelf('Bollywood Trending 2026', 'searchGrid', 12).then(() => {
+        searchTrendingCache = categoryData['searchGrid'] || null;
+      });
+    }
   }
 
   if (globalSearchState.scrollY > 0) {
@@ -1549,11 +1813,10 @@ async function executeLiveSearch(query) {
 
   // Only render the loader if the network request takes longer than 200ms
   const loaderTimer = setTimeout(() => {
-    area.innerHTML = createMeloLoader();
+    area.innerHTML = createSearchSkeleton();
   }, 200);
-
   try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`, { signal: currentSearchAbort.signal });
+    const res = await fetch(apiUrl(`/api/search?query=${encodeURIComponent(query)}`), { signal: currentSearchAbort.signal });
     const data = await res.json();
     clearTimeout(loaderTimer);
 
@@ -1600,12 +1863,14 @@ async function executeLiveSearch(query) {
     }
 
     if (isSongSearch) {
+      const songResults = items.slice(globalSearchState.filter === 'all' ? 1 : 0, 10);
+      window.__lovedTracks = songResults; // Set active tracklist to match visible list exactly
+
       html += `<div class="section-heading"><h2>Songs</h2></div><div style="margin-bottom:24px;">`;
-      items.slice(globalSearchState.filter === 'all' ? 1 : 0, 10).forEach((track, idx) => {
+      songResults.forEach((track, idx) => {
         html += libraryTrackRow(track, idx, { source: 'search_results' });
       });
       html += `</div>`;
-      window.__lovedTracks = items;
     }
 
     if (globalSearchState.filter === 'all' || globalSearchState.filter === 'albums') {
@@ -1680,7 +1945,7 @@ function openArtistView(artistName, thumb) {
       </div>
     </div>`;
   applyPlaylistDynamicColors(thumb, artistName);
-  fetch(`/api/search?query=${encodeURIComponent(artistName)}`).then(r => r.json()).then(d => {
+  fetch(apiUrl(`/api/search?query=${encodeURIComponent(artistName)}`)).then(r => r.json()).then(d => {
     const tks = (d.results || []).map(normalizeTrackData).slice(0, 10);
     window.__lovedTracks = tks;
     $id('artistTracksBox').innerHTML = tks.length ? tks.map((t, i) => libraryTrackRow(t, i, { source: 'search_results' })).join('') : '<p>No tracks found.</p>';
@@ -1717,7 +1982,7 @@ function openAlbumView(albumName, artistName, thumb) {
       </div>
     </div>`;
   applyPlaylistDynamicColors(thumb, albumName);
-  fetch(`/api/search?query=${encodeURIComponent(albumName + ' ' + artistName)}`).then(r => r.json()).then(d => {
+  fetch(apiUrl(`/api/search?query=${encodeURIComponent(albumName + ' ' + artistName)}`)).then(r => r.json()).then(d => {
     const tks = (d.results || []).map(normalizeTrackData).filter(t => t.album && t.album.includes(albumName)).slice(0, 15);
     window.__lovedTracks = tks.length ? tks : (d.results || []).map(normalizeTrackData).slice(0, 10);
     $id('albumTracksBox').innerHTML = window.__lovedTracks.length ? window.__lovedTracks.map((t, i) => libraryTrackRow(t, i, { source: 'search_results' })).join('') : '<p>No tracks found.</p>';
@@ -1784,6 +2049,116 @@ function renderRecentSearches() {
 }
 
 // ==========================================
+// MELO APP UPDATES & VERSION ENGINE
+// ==========================================
+function openUpdatesModal() {
+  const modal = $id('updatesModal');
+  if (!modal) return;
+  
+  const isAuto = localStorage.getItem('melo_auto_update') !== 'false';
+  const toggle = $id('autoUpdateToggle');
+  if (toggle) toggle.checked = isAuto;
+  updateAutoUpdateThumbUI(isAuto);
+
+  modal.classList.add('open');
+}
+
+function closeUpdatesModal(e) {
+  const modal = $id('updatesModal');
+  if (!modal) return;
+  if (!e || e.target === modal || e.target.classList.contains('drag-handle')) {
+    modal.classList.remove('open');
+  }
+}
+
+function toggleAutoUpdatePreference(checkbox) {
+  const val = checkbox.checked;
+  localStorage.setItem('melo_auto_update', val);
+  updateAutoUpdateThumbUI(val);
+  showToast(val ? "Automatic updates enabled" : "Automatic updates disabled");
+}
+
+function updateAutoUpdateThumbUI(val) {
+  const slider = $id('autoUpdateSlider');
+  const thumb = $id('autoUpdateThumb');
+  if (slider && thumb) {
+    slider.style.backgroundColor = val ? 'var(--accent)' : 'rgba(255, 255, 255, 0.15)';
+    thumb.style.transform = val ? 'translateX(20px)' : 'translateX(0)';
+  }
+}
+
+// Version of the currently installed app client
+const CURRENT_APP_VERSION = '2.6.7';
+
+// Utility to compare semver strings: e.g. "2.7.0" > "2.6.7"
+function isNewerVersion(remote, current) {
+  const rParts = (remote || '').split('.').map(Number);
+  const cParts = (current || '').split('.').map(Number);
+  for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
+    const r = rParts[i] || 0;
+    const c = cParts[i] || 0;
+    if (r > c) return true;
+    if (r < c) return false;
+  }
+  return false;
+}
+
+async function executeManualUpdateCheck(isBackgroundCheck = false) {
+  const btn = $id('checkUpdateBtn');
+  if (btn && !isBackgroundCheck) {
+    btn.disabled = true;
+    btn.innerText = "Checking servers...";
+  }
+
+  try {
+    const res = await fetch(apiUrl('/api/app-version'));
+    if (!res.ok) throw new Error('Update server unreachable');
+    const data = await res.json();
+
+    if (data.latest_version && isNewerVersion(data.latest_version, CURRENT_APP_VERSION)) {
+      promptUserToUpdate(data);
+    } else {
+      if (!isBackgroundCheck) {
+        showToast("You are on the latest version of MELO!");
+      }
+    }
+  } catch (err) {
+    if (!isBackgroundCheck) {
+      showToast("Unable to check for updates right now.");
+    }
+  } finally {
+    if (btn && !isBackgroundCheck) {
+      btn.disabled = false;
+      btn.innerText = "Check for Updates";
+    }
+  }
+}
+
+function promptUserToUpdate(updateInfo) {
+  showMeloConfirmation({
+    title: `New Update Available! (v${updateInfo.latest_version})`,
+    message: updateInfo.release_notes || "A fresh update with improvements is available.",
+    actionLabel: "Update Now",
+    danger: false,
+    action: () => {
+      // In Android Capacitor, window.open with '_system' hands the APK URL directly
+      // to Android's native browser / download manager to start the installation
+      if (window.Capacitor) {
+        window.open(updateInfo.download_url, '_system');
+      } else {
+        window.location.href = updateInfo.download_url;
+      }
+    }
+  });
+}
+
+// Expose globally
+window.openUpdatesModal = openUpdatesModal;
+window.closeUpdatesModal = closeUpdatesModal;
+window.toggleAutoUpdatePreference = toggleAutoUpdatePreference;
+window.executeManualUpdateCheck = executeManualUpdateCheck;
+
+// ==========================================
 // MINIMAL OFFLINE HOME VIEW (RESTORED SVG)
 // ==========================================
 function renderHomeOfflineView() {
@@ -1797,7 +2172,7 @@ function renderHomeOfflineView() {
       <!-- Standard Top Brand Bar -->
       <div class="home-brand-header">
         <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center;">
-          <img src="/static/images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
+          <img src="images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
         </div>
         <button class="sheet-icon-btn" onclick="openSettingsModal()" title="Settings">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
@@ -1856,8 +2231,6 @@ function renderHomeOfflineView() {
       </div>
     </div>
   `;
-
-  setupBottomGlowWatcher();
 }
 
 window.renderHomeOfflineView = renderHomeOfflineView;
@@ -1959,41 +2332,6 @@ window.scrollQuickPicksTo = scrollQuickPicksTo;
 window.updateQuickPicksDots = updateQuickPicksDots;
 window.initQuickPicksObserver = initQuickPicksObserver;
 
-// ==========================================
-// BOTTOM SCROLL RED GLOW ENGINE
-// ==========================================
-function setupBottomGlowWatcher() {
-  let glow = document.getElementById('homeBottomGlow');
-  if (!glow) {
-    glow = document.createElement('div');
-    glow.id = 'homeBottomGlow';
-    document.body.appendChild(glow);
-  }
-
-  const updateGlow = () => {
-    const vc = document.getElementById('viewContainer');
-    const scrollPositions = [
-      window.scrollY || 0,
-      document.documentElement.scrollTop || 0,
-      document.body.scrollTop || 0,
-      vc ? vc.scrollTop : 0
-    ];
-    const maxScroll = Math.max(...scrollPositions);
-
-    if (maxScroll > 20) {
-      glow.classList.add('visible');
-    } else {
-      glow.classList.remove('visible');
-    }
-  };
-
-  // The 'true' capture flag catches scrolling inside viewContainer or any nested div
-  window.removeEventListener('scroll', updateGlow, true);
-  window.addEventListener('scroll', updateGlow, true);
-  updateGlow();
-}
-window.setupBottomGlowWatcher = setupBottomGlowWatcher;
-
 // Global switchView router in case other buttons call it
 // Current view tracker
 let currentView = 'home';
@@ -2034,13 +2372,28 @@ function updateNavActiveStates(viewName) {
   activeIds.forEach(id => $id(id)?.classList.add('active'));
 }
 
+// Persistent view cache storage
+// Persistent snapshot cache & scroll memory
+const viewHtmlCache = {};
+const viewScrollCache = {};
+
 function switchView(view, pushState = true) {
   updateOfflinePlayerVisibility();
 
-  // If selecting a root tab from navigation bar, reset the stack
-  if (['home', 'search', 'favorites'].includes(view) && pushState) {
+  // 1. Determine direction vector
+  let animClass = 'nav-anim-tab';
+  const primaryTabs = ['home', 'search', 'favorites', 'library'];
+
+  if (pushState && !primaryTabs.includes(view)) {
+    animClass = 'nav-anim-forward';
+  } else if (!pushState) {
+    animClass = 'nav-anim-backward';
+  }
+
+  // 2. Manage navigation stack
+  if (primaryTabs.includes(view) && pushState) {
     viewStack = [view];
-  } else if (pushState && activeView !== view) {
+  } else if (pushState && activeView && activeView !== view) {
     viewStack.push(activeView);
   }
 
@@ -2048,67 +2401,55 @@ function switchView(view, pushState = true) {
   currentView = view;
   updateNavActiveStates(view);
 
-  const run = () => {
-    if (view === 'home') {
-      if (!navigator.onLine) {
-        renderHomeOfflineView();
-      } else {
-        renderHomeView();
-      }
-    } else if (view === 'search') {
-      if (!navigator.onLine) {
-        renderSearchOfflineView();
-      } else {
-        renderSearchView();
-      }
-    } else if (view === 'favorites' || view === 'library') {
-      if (!navigator.onLine) {
-        renderHubOfflineView();
-      } else {
-        renderFavoritesView();
-      }
-    } else if (view === 'loved') {
-      renderLovedTracks();
-    } else if (view === 'history') {
-      renderHistoryView();
-    } else if (view === 'offline') {
-      renderOfflineVault();
-    } else if (view === 'account') {
-      renderAccountView();
-    } else if (view === 'player' || view === 'nowplaying' || view === 'fullscreen') {
-      openFullscreenPlayer();
-    }
-
-    if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
-      document.documentElement.style.removeProperty('--pl-dynamic-bg');
-      document.documentElement.style.removeProperty('--pl-dynamic-mid');
-      document.documentElement.style.removeProperty('--pl-dynamic-deep');
-      document.documentElement.style.removeProperty('--pl-dynamic-accent');
-    }
-
-    if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
-      closeFullscreenPlayer();
-    }
-
-    const vp = $id('mainViewport');
-    if (vp) vp.scrollTop = 0;
-  };
-
-  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!reduceMotion && document.startViewTransition) {
-    try {
-      const transition = document.startViewTransition(run);
-      if (transition && transition.finished) {
-        transition.finished.catch(() => {
-          // Benign abort caused by rapid route switching
-        });
-      }
-    } catch (e) {
-      run();
-    }
-  } else {
-    run();
+  // 3. Render target screen
+  if (view === 'home') {
+    if (!navigator.onLine) renderHomeOfflineView();
+    else renderHomeView();
+  } else if (view === 'search') {
+    if (!navigator.onLine) renderSearchOfflineView();
+    else renderSearchView();
+  } else if (view === 'favorites' || view === 'library') {
+    if (!navigator.onLine) renderHubOfflineView();
+    else renderFavoritesView();
+  } else if (view === 'loved') {
+    renderLovedTracks();
+  } else if (view === 'history') {
+    renderHistoryView();
+  } else if (view === 'offline') {
+    renderOfflineVault();
+  } else if (view === 'account') {
+    renderAccountView();
+  } else if (view === 'player' || view === 'nowplaying' || view === 'fullscreen') {
+    openFullscreenPlayer();
   }
+
+  // 4. Reset dynamic backdrop color properties outside detail views
+  if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
+    document.documentElement.style.removeProperty('--pl-dynamic-bg');
+    document.documentElement.style.removeProperty('--pl-dynamic-mid');
+    document.documentElement.style.removeProperty('--pl-dynamic-deep');
+    document.documentElement.style.removeProperty('--pl-dynamic-accent');
+  }
+
+  if (view !== 'player' && view !== 'nowplaying' && view !== 'fullscreen') {
+    closeFullscreenPlayer();
+  }
+
+  // 5. Hardware-composited transition (No blocking offsetWidth reflows)
+  requestAnimationFrame(() => {
+    const stage = document.querySelector('.stage-content, .playlist-immersive-view');
+    if (stage) {
+      stage.classList.remove('nav-anim-forward', 'nav-anim-backward', 'nav-anim-tab');
+      stage.classList.add(animClass);
+
+      stage.addEventListener('animationend', () => {
+        stage.style.willChange = 'auto';
+      }, { once: true });
+    }
+  });
+
+  const vp = $id('mainViewport');
+  if (vp) vp.scrollTop = 0;
 }
 window.switchView = switchView;
 
@@ -2281,12 +2622,17 @@ window.renderHubOfflineView = renderHubOfflineView;
 window.playOfflineHubTrack = playOfflineHubTrack;
 window.playOfflineHubAll = playOfflineHubAll;
 
-// Syncs player visibility with network connectivity
+// Syncs page indicators with network connectivity without hiding playback controls
 function updateOfflinePlayerVisibility() {
   if (!navigator.onLine) {
     document.body.classList.add('is-offline');
   } else {
     document.body.classList.remove('is-offline');
+  }
+
+  // Ensure mini-player stays active if a downloaded song is loaded
+  if (currentIndex !== -1 && playlist.length > 0) {
+    $id('dockPlayerBar')?.classList.add('active');
   }
 }
 
@@ -2309,111 +2655,214 @@ function initFullscreenSwipeDown() {
   if (!sheet) return;
 
   let startY = 0;
-  let startX = 0;
   let currentY = 0;
   let isDragging = false;
-  let isGestureLocked = false;
-  let startTime = 0;
+  let animFrameId = null;
 
+  // 1. Also allow clicking the drag pill or header down arrow to close instantly
+  const dragPill = sheet.querySelector('.drag-handle');
+  if (dragPill) {
+    dragPill.onclick = (e) => {
+      e.stopPropagation();
+      closeFullscreenPlayer();
+    };
+  }
+
+  const chevronBtn = sheet.querySelector('#sheetDismissBtn') || sheet.querySelector('.circle-back-btn');
+  if (chevronBtn) {
+    chevronBtn.onclick = (e) => {
+      e.stopPropagation();
+      closeFullscreenPlayer();
+    };
+  }
+
+  // 2. High-performance touch listener
   sheet.addEventListener('touchstart', (e) => {
     if (!sheet.classList.contains('open')) return;
-    if (e.target.closest('#scrubberTrackBase, input[type="range"]')) return;
 
-    const scrollableParent = e.target.closest('.lyrics-scroll-container, #sheetViewLyrics, #sheetViewQueue');
-    if (scrollableParent && scrollableParent.scrollTop > 0) return;
+    // Do not interfere if user is scrubbing playback or volume
+    if (e.target.closest('#scrubberTrackBase, .scrubber-bar-container, .scrubber-thumb, input[type="range"], .mini-wave-canvas')) return;
+
+    // If inside lyrics or queue, only allow swipe-down when at top of list
+    const scrollContainer = e.target.closest('#sheetViewLyrics, #sheetViewQueue');
+    if (scrollContainer && scrollContainer.scrollTop > 5) return;
 
     startY = e.touches[0].clientY;
-    startX = e.touches[0].clientX;
     currentY = startY;
-    startTime = Date.now();
     isDragging = false;
-    isGestureLocked = false;
   }, { passive: true });
 
   sheet.addEventListener('touchmove', (e) => {
     if (!startY) return;
 
     const touchY = e.touches[0].clientY;
-    const touchX = e.touches[0].clientX;
-    const deltaY = touchY - startY;
-    const deltaX = Math.abs(touchX - startX);
+    const dy = touchY - startY;
 
-    if (!isGestureLocked) {
-      if (Math.abs(deltaY) > 8 && Math.abs(deltaY) > deltaX) {
-        if (deltaY > 0) {
-          isGestureLocked = true;
-          isDragging = true;
+    // Immediately start dragging if moving down
+    if (dy > 0) {
+      currentY = touchY;
+      isDragging = true;
+
+      if (!animFrameId) {
+        animFrameId = requestAnimationFrame(() => {
           sheet.classList.add('is-dragging');
-        } else {
-          startY = 0;
-          return;
-        }
-      } else if (deltaX > 10) {
-        startY = 0;
-        return;
+          // 1:1 finger tracking using hardware translate3d
+          sheet.style.transform = `translate3d(0, ${dy}px, 0)`;
+          animFrameId = null;
+        });
       }
     }
+  }, { passive: true });
 
-    if (!isDragging) return;
-
-    currentY = touchY;
-    const travel = Math.max(0, deltaY);
-    const progress = Math.min(travel / (window.innerHeight * 0.7), 1);
-
-    // 1:1 physical tracking
-    sheet.style.transform = `translateY(${travel}px) scale(${1 - progress * 0.08})`;
-    sheet.style.borderRadius = `${progress * 28}px`;
-    sheet.style.opacity = `${1 - progress * 0.25}`;
-  }, { passive: false });
-
-  const finishGesture = () => {
+  const endDrag = () => {
     if (!isDragging) {
       startY = 0;
       return;
     }
 
+    if (animFrameId) {
+      cancelAnimationFrame(animFrameId);
+      animFrameId = null;
+    }
+
+    isDragging = false;
     sheet.classList.remove('is-dragging');
-    const travel = currentY - startY;
-    const duration = Date.now() - startTime;
-    const velocity = travel / (duration || 1);
 
-    const shouldClose = travel > 120 || (velocity > 0.45 && travel > 30);
+    const totalMoved = currentY - startY;
 
-    if (shouldClose) {
-      // Smoothly animate the rest of the way down from where the finger was released
-      sheet.style.transition = 'transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.24s ease, border-radius 0.28s ease';
-      sheet.style.transform = 'translateY(100%) scale(0.92)';
-      sheet.style.opacity = '0';
-      sheet.style.borderRadius = '32px';
+    // If pulled more than 90px down, dismiss smoothly
+    if (totalMoved > 90) {
+      sheet.style.transition = 'transform 0.22s cubic-bezier(0.25, 1, 0.5, 1)';
+      sheet.style.transform = 'translate3d(0, 100%, 0)';
 
       setTimeout(() => {
         closeFullscreenPlayer();
-      }, 280);
+        sheet.style.transform = '';
+        sheet.style.transition = '';
+      }, 230);
     } else {
-      // Snap back up to fullscreen
-      sheet.style.transition = 'transform 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.15), opacity 0.2s ease, border-radius 0.32s ease';
-      sheet.style.transform = 'translateY(0px) scale(1)';
-      sheet.style.opacity = '1';
-      sheet.style.borderRadius = '0px';
+      // Rebound back up instantly
+      sheet.style.transition = 'transform 0.2s cubic-bezier(0.25, 1, 0.5, 1)';
+      sheet.style.transform = 'translate3d(0, 0, 0)';
 
       setTimeout(() => {
         sheet.style.transform = '';
-        sheet.style.opacity = '';
-        sheet.style.borderRadius = '';
         sheet.style.transition = '';
-      }, 320);
+      }, 210);
     }
 
     startY = 0;
-    isDragging = false;
-    isGestureLocked = false;
+    currentY = 0;
   };
 
-  sheet.addEventListener('touchend', finishGesture, { passive: true });
-  sheet.addEventListener('touchcancel', finishGesture, { passive: true });
+  sheet.addEventListener('touchend', endDrag, { passive: true });
+  sheet.addEventListener('touchcancel', endDrag, { passive: true });
 }
 
+function openCreatePlaylistModal() {
+  const modal = $id('addToPlaylistModal');
+  if (!modal) return;
+  
+  pendingTrackForPlaylist = null; // Empty playlist creation
+  
+  const titleEl = $id('addToPlaylistModalTitle');
+  if (titleEl) titleEl.innerText = "Create New Playlist";
+  
+  const titleInput = $id('newPlTitleInput');
+  const descInput = $id('newPlDescriptionInput');
+  if (titleInput) titleInput.value = '';
+  if (descInput) descInput.value = '';
+  
+  const preview = $id('coverUploadPreview');
+  if (preview) preview.style.display = 'none';
+  const coverText = $id('coverUploadText');
+  if (coverText) coverText.innerText = "Choose Custom Photo Cover (Optional)";
+  newPlaylistTempCover = null;
 
+  modal.classList.add('open');
+}
+window.openCreatePlaylistModal = openCreatePlaylistModal;
+
+async function loadPremadeAlbumsShelf(containerId = 'premadeAlbumsGrid') {
+  const container = $id(containerId);
+  if (!container) return;
+  container.innerHTML = createMeloLoader();
+
+  // Clean raw HTML entities returned by JioSaavn (e.g. &amp;, &#039;, &quot;)
+  const decodeJioSaavnText = (str) => {
+    if (!str) return '';
+    const txt = document.createElement('textarea');
+    txt.innerHTML = str;
+    return txt.value.trim();
+  };
+
+  // Ensure thumbnails are converted to high-res 500x500 and routed through apiUrl proxy
+  const formatSaavnThumb = (rawThumb) => {
+    if (!rawThumb) return '';
+    let clean = rawThumb.replace('50x50', '500x500').replace('150x150', '500x500');
+    if (clean.startsWith('/api/')) {
+      return apiUrl(clean);
+    }
+    if (clean.startsWith('http://') || clean.startsWith('https://')) {
+      return apiUrl(`/api/proxy-image?url=${encodeURIComponent(clean)}`);
+    }
+    return clean;
+  };
+
+  try {
+    const res = await fetch(apiUrl('/api/featured-albums'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const rawList = Array.isArray(data) ? data : (data.albums || data.results || data.data || []);
+
+    let albums = rawList.map(a => {
+      const moreInfo = a.more_info || {};
+      const albumTitle = decodeJioSaavnText(a.title || a.name || moreInfo.album || 'Soundtrack');
+      const artistName = decodeJioSaavnText(
+        a.artist || moreInfo.music || a.primary_artists || a.singers || moreInfo.artist || 'Bollywood'
+      );
+      const rawImage = a.thumbnail || a.image || moreInfo.image || '';
+      const albumId = String(a.id || moreInfo.album_id || a.albumid || '');
+
+      return {
+        id: albumId,
+        type: 'album',
+        title: albumTitle,
+        artist: artistName,
+        thumbnail: formatSaavnThumb(rawImage),
+        subtitle: artistName,
+        searchQuery: `${albumTitle} Album Songs`
+      };
+    }).filter(a => Boolean(a.title && a.thumbnail));
+
+    // Fallback if JioSaavn API returned an empty list
+    if (!albums || albums.length === 0) {
+      albums = [
+        { id: "animal-2023", type: "album", title: "Animal", artist: "Pritam, Harshavardhan", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F092%2FAnimal-Hindi-2023-20231124191036-500x500.jpg") },
+        { id: "kabir-singh-2019", type: "album", title: "Kabir Singh", artist: "Sachet-Parampara, Mithoon", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F352%2FKabir-Singh-Hindi-2019-20240416113101-500x500.jpg") },
+        { id: "aashiqui-2", type: "album", title: "Aashiqui 2", artist: "Mithoon, Ankit Tiwari", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F452%2FAashiqui-2-Hindi-2013-500x500.jpg") },
+        { id: "yjhd-2013", type: "album", title: "Yeh Jawaani Hai Deewani", artist: "Pritam", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F582%2FYeh-Jawaani-Hai-Deewani-Hindi-2013-500x500.jpg") },
+        { id: "rockstar-2011", type: "album", title: "Rockstar", artist: "A.R. Rahman", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F292%2FRockstar-Hindi-2011-20221212023029-500x500.jpg") }
+      ];
+    }
+
+    categoryData[containerId] = albums;
+    renderSimulatedGrid(containerId, albums, 'album');
+  } catch (err) {
+    console.warn('[ALBUMS_SHELF_FALLBACK]', err);
+    const fallbackAlbums = [
+      { id: "animal-2023", type: "album", title: "Animal", artist: "Pritam, Harshavardhan", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F092%2FAnimal-Hindi-2023-20231124191036-500x500.jpg") },
+      { id: "kabir-singh-2019", type: "album", title: "Kabir Singh", artist: "Sachet-Parampara, Mithoon", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F352%2FKabir-Singh-Hindi-2019-20240416113101-500x500.jpg") },
+      { id: "aashiqui-2", type: "album", title: "Aashiqui 2", artist: "Mithoon, Ankit Tiwari", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F452%2FAashiqui-2-Hindi-2013-500x500.jpg") },
+      { id: "yjhd-2013", type: "album", title: "Yeh Jawaani Hai Deewani", artist: "Pritam", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F582%2FYeh-Jawaani-Hai-Deewani-Hindi-2013-500x500.jpg") },
+      { id: "rockstar-2011", type: "album", title: "Rockstar", artist: "A.R. Rahman", thumbnail: apiUrl("/api/proxy-image?url=https%3A%2F%2Fc.saavncdn.com%2F292%2FRockstar-Hindi-2011-20221212023029-500x500.jpg") }
+    ];
+    categoryData[containerId] = fallbackAlbums;
+    renderSimulatedGrid(containerId, fallbackAlbums, 'album');
+  }
+}
+window.loadPremadeAlbumsShelf = loadPremadeAlbumsShelf;
 
 function renderHomeView() {
   // If offline, redirect directly to the offline view
@@ -2421,25 +2870,40 @@ function renderHomeView() {
 
   const vc = $id('viewContainer');
   if (!vc) return;
-  // ... rest of your code ...
 
-  const recentHistory = store.getHistory();
-  const validHistory = recentHistory.filter(e => e && e.track && e.track.artist);
-  
-  let seedArtist = "Top Bollywood Hits";
+  const recentHistory = store.getHistory() || [];
+  const validHistory = recentHistory.filter(e => e && e.track && (e.track.artist || e.track.title));
+  const favoritesList = Object.values(store.getFavorites() || {});
+
+  let subtext = 'Because you listened to';
+  let displayName = 'Arijit Singh';
+  let searchQuery = 'Arijit Singh Hits';
+
   if (validHistory.length > 0) {
-    seedArtist = validHistory[validHistory.length - 1].track.artist;
+    const lastTrack = validHistory[validHistory.length - 1].track;
+    const primaryArtist = (lastTrack.artist || '').split(',')[0].trim();
+    displayName = lastTrack.title ? lastTrack.title : (primaryArtist || 'Recent Favorite');
+    searchQuery = primaryArtist ? `${primaryArtist} Hits` : `${lastTrack.title} Song`;
+  } else if (favoritesList.length > 0) {
+    const favTrack = favoritesList[favoritesList.length - 1];
+    const primaryArtist = (favTrack.artist || '').split(',')[0].trim();
+    displayName = favTrack.title ? favTrack.title : (primaryArtist || 'Loved Favorite');
+    searchQuery = primaryArtist ? `${primaryArtist} Hits` : `${favTrack.title} Song`;
+  } else {
+    displayName = 'Trending Hits';
+    searchQuery = 'Top Bollywood Songs 2026';
   }
-  const artistEsc = accountText(seedArtist).replace(/'/g, "\\'");
+
+  const queryEsc = accountText(searchQuery).replace(/'/g, "\\'");
 
   const quickPicksHtml = `
     <div class="quick-picks-spotlight" id="quickPicksSpotlightBox">
       <div class="quick-picks-header-wrap">
         <div class="quick-picks-titles">
-          <span class="qp-subtext">${validHistory.length > 0 ? 'Because you listened to' : 'Recommended For You'}</span>
-          <h2 class="qp-artist-name" title="${accountText(seedArtist)}">${accountText(seedArtist)}</h2>
+          <span class="qp-subtext">${subtext}</span>
+          <h2 class="qp-artist-name" title="${accountText(displayName)}">${accountText(displayName)}</h2>
         </div>
-        <button type="button" onclick="refreshQuickPicks('${artistEsc}')" title="Refresh" class="shelf-refresh-btn" aria-label="Refresh Quick Picks">
+        <button type="button" onclick="refreshQuickPicks('${queryEsc}')" title="Refresh" class="shelf-refresh-btn" aria-label="Refresh Quick Picks">
           <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
         </button>
       </div>
@@ -2452,23 +2916,26 @@ function renderHomeView() {
     <div class="stage-content">
       <div class="home-brand-header">
         <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center;">
-          <img src="/static/images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
+          <img src="images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
         </div>
         <button class="sheet-icon-btn" onclick="openSettingsModal()" title="Settings">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         </button>
       </div>
+
       <div class="for-you-spotlight">
-        <div class="for-you-header">
-          <div class="for-you-title">Made For You</div>
-          <button class="pill-action-btn" onclick="playForYouAll()" style="padding: 5px 12px; font-size: 0.76rem;">
+        <div class="for-you-header" style="display: flex !important; justify-content: space-between !important; align-items: center !important; margin-bottom: 14px !important; width: 100% !important;">
+          <div class="for-you-title" style="margin: 0 !important;">Made For You</div>
+          <button class="pill-action-btn" onclick="playForYouAll()" style="padding: 6px 14px; font-size: 0.76rem; margin: 0 !important;">
             <svg viewBox="0 0 24 24" style="width: 12px; height: 12px; fill:#000;"><path d="M8 5v14l11-7z"/></svg>
             <span>Play Mix</span>
           </button>
         </div>
         <div class="capsule-grid" id="forYouGrid" style="margin-bottom:0;"></div>
       </div>
+
       ${quickPicksHtml}
+
       <div class="section-heading" id="trendingShelf">
         <h2>Trending Across India</h2>
         <a onclick="loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid')" title="Refresh" class="shelf-refresh-btn" style="display:inline-flex;align-items:center;cursor:pointer;color:var(--text-muted);padding:4px;flex-shrink:0;">
@@ -2476,42 +2943,49 @@ function renderHomeView() {
         </a>
       </div>
       <div class="capsule-grid" id="trendingGrid"></div>
+
       <div class="section-heading" id="bollywoodShelf"><h2>Bollywood Chartbusters</h2></div>
       <div class="capsule-grid" id="bollywoodGrid"></div>
+
       <div class="section-heading" id="punjabiShelf"><h2>Punjabi Banger Wave</h2></div>
       <div class="capsule-grid" id="punjabiGrid"></div>
+
       <div class="section-heading" id="indieShelf"><h2>Desi Indie & Acoustic Chill</h2></div>
       <div class="capsule-grid" id="indieGrid"></div>
+
+      <!-- Placed statically at the end of content flow -->
     </div>
-    <div class="home-bottom-glow" id="homeBottomGlow"></div>
   `;
 
-  // Attach dynamic scroll watcher to viewContainer and window
-  const glowEl = $id('homeBottomGlow');
-  const checkGlow = () => {
-    const top = vc.scrollTop || window.scrollY || document.documentElement.scrollTop || 0;
-    if (glowEl) {
-      if (top > 25) {
-        glowEl.classList.add('visible');
-      } else {
-        glowEl.classList.remove('visible');
-      }
+  // Detach old scroll watchers to keep thread unblocked
+  vc.onscroll = null;
+  window.onscroll = null;
+
+  if (!hasInitializedHomeShelves) {
+    // Initial fetch on app start
+    hasInitializedHomeShelves = true;
+    loadPersonalizedForYou('Flow');
+    loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
+    loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
+    loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
+    loadShelfCategory('Indian Indie Songs', 'indieGrid');
+    loadShelfCategory(searchQuery, 'quickPicksGrid').then(() => {
+      if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
+      if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
+    });
+  } else {
+    // Instant restore from cached data while navigating tabs
+    if (forYouTracks.length) renderForYouCompactGrid('forYouGrid', forYouTracks);
+    if (categoryData['trendingGrid']) renderGridContainer('trendingGrid', categoryData['trendingGrid'].slice(0, 6));
+    if (categoryData['bollywoodGrid']) renderGridContainer('bollywoodGrid', categoryData['bollywoodGrid'].slice(0, 6));
+    if (categoryData['punjabiGrid']) renderGridContainer('punjabiGrid', categoryData['punjabiGrid'].slice(0, 6));
+    if (categoryData['indieGrid']) renderGridContainer('indieGrid', categoryData['indieGrid'].slice(0, 6));
+    if (categoryData['quickPicksGrid']) {
+      renderGridContainer('quickPicksGrid', categoryData['quickPicksGrid'].slice(0, 6));
+      if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
+      if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
     }
-  };
-
-  vc.onscroll = checkGlow;
-  window.onscroll = checkGlow;
-
-  loadPersonalizedForYou('Flow');
-  loadShelfCategory('Top Hindi Songs 2026', 'trendingGrid');
-  loadShelfCategory('Bollywood Romantic Hits', 'bollywoodGrid');
-  loadShelfCategory('Punjabi Hits 2026', 'punjabiGrid');
-  loadShelfCategory('Indian Indie Songs', 'indieGrid');
-  loadShelfCategory(seedArtist, 'quickPicksGrid').then(() => {
-    if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
-    if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
-  });
-  setupBottomGlowWatcher();
+  }
 }
 
 function renderSearchOfflineView() {
@@ -2576,34 +3050,50 @@ function renderHomePagePlaylists() {
   }
 }
 
+// ==========================================
+// MADE FOR YOU - TITLE ONLY & 10 SONGS
+// ==========================================
 function loadPersonalizedForYou() {
-  const history = store.getHistory();
-  const favoritesObj = store.getFavorites();
-  const searchHistory = store.getSearchHistory();
-  
+  const history = store.getHistory() || [];
+  const favoritesObj = store.getFavorites() || {};
+  const searchHistory = store.getSearchHistory() || [];
+
   let tasteKeywords = [];
   Object.values(favoritesObj).forEach(t => { if (t.artist) tasteKeywords.push(t.artist.split(',')[0].trim()); });
   history.forEach(h => { if (h.track?.artist) tasteKeywords.push(h.track.artist.split(',')[0].trim()); });
   searchHistory.forEach(s => { if (s.query) tasteKeywords.push(s.query); });
-  tasteKeywords = [...new Set(tasteKeywords)];
+  tasteKeywords = [...new Set(tasteKeywords.filter(Boolean))];
 
-  let query = 'Acoustic Bollywood Indie Hits';
+  // Default fallback if brand new account with no history
+  let query = 'Arijit Singh Romantic Hits';
   if (tasteKeywords.length > 0) {
     const seed = tasteKeywords[Math.floor(Math.random() * tasteKeywords.length)];
     query = `${seed} Hits`;
   }
 
   const c = $id('forYouGrid');
-  if (c) c.innerHTML = createMeloLoader();
+  if (c) c.innerHTML = createFymSkeleton(4);
 
-  fetch(`/api/search?query=${encodeURIComponent(query)}`)
+  fetch(apiUrl(`/api/search?query=${encodeURIComponent(query)}`))
     .then(res => res.json())
     .then(data => {
-      forYouTracks = (data.results || []).map(normalizeTrackData);
-      categoryData['forYouGrid'] = forYouTracks.slice(0, 10);
-      renderForYouCompactGrid('forYouGrid', forYouTracks.slice(0, 10));
+      // Ensure we extract full array of tracks up to 10
+      const rawResults = data.results || [];
+      forYouTracks = rawResults.map(normalizeTrackData).slice(0, 10);
+      categoryData['forYouGrid'] = forYouTracks;
+      renderForYouCompactGrid('forYouGrid', forYouTracks);
     })
-    .catch(() => { if (c) c.innerHTML = ''; });
+    .catch(() => {
+      // Fallback secondary query if first query failed
+      fetch(apiUrl(`/api/search?query=Top%20Hindi%20Songs%202026`))
+        .then(r => r.json())
+        .then(d => {
+          forYouTracks = (d.results || []).map(normalizeTrackData).slice(0, 10);
+          categoryData['forYouGrid'] = forYouTracks;
+          renderForYouCompactGrid('forYouGrid', forYouTracks);
+        })
+        .catch(() => { if (c) c.innerHTML = ''; });
+    });
 }
 
 function loadForYouCatalog() {
@@ -2626,20 +3116,27 @@ function renderForYouCompactGrid(containerId, items) {
   const c = $id(containerId);
   if (!c) return;
   c.innerHTML = '';
+
+  if (!items || !items.length) {
+    c.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;padding:10px;">Finding mixes for you...</span>';
+    return;
+  }
+
   items.forEach((track, i) => {
     window.__contextTrackMap[track.id] = track;
     const item = document.createElement('div');
     item.className = 'for-you-mini-card';
     item.onclick = () => {
       currentPlaylistContextId = null;
-      playlist = categoryData[containerId] || items;
+      playlist = items;
       playIndex(i);
     };
+
+    // ONLY Title is rendered here - Artist line is completely removed
     item.innerHTML = `
-      <img class="fym-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+      <img class="fym-thumb" src="${track.thumbnail || ''}" referrerpolicy="no-referrer" loading="lazy" />
       <div class="fym-info">
-        <div class="fym-title">${accountText(track.title)}</div>
-        <div class="fym-artist">${accountText(track.artist)}</div>
+        <div class="fym-title" title="${accountText(track.title)}">${accountText(track.title)}</div>
       </div>
       <div class="fym-play-icon">▶</div>
     `;
@@ -2658,7 +3155,7 @@ async function loadShelfCategory(query, containerId) {
   if (c) c.innerHTML = createMeloLoader();
 
   try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(query)}`);
+    const res = await fetch(apiUrl(`/api/search?query=${encodeURIComponent(query)}`));
     const data = await res.json();
     let items = (data.results || []).map(normalizeTrackData);
     // Shuffle items so refresh gives a fresh selection every time
@@ -2681,7 +3178,7 @@ async function refreshQuickPicks(artist) {
   grid.style.transition = 'opacity 0.2s ease';
 
   try {
-    const res = await fetch(`/api/search?query=${encodeURIComponent(artist)}`);
+    const res = await fetch(apiUrl(`/api/search?query=${encodeURIComponent(artist)}`));
     const data = await res.json();
     let items = (data.results || []).map(normalizeTrackData);
     items.sort(() => Math.random() - 0.5);
@@ -2719,7 +3216,7 @@ function renderGridContainer(containerId, items) {
     };
     item.innerHTML = `
       <div class="poster-wrap">
-        <img class="poster-img" src="${track.thumbnail || ''}" loading="lazy" />
+        <img class="poster-img" src="${track.thumbnail || ''}" referrerpolicy="no-referrer" loading="lazy" />
         <div class="play-bubble"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
       </div>
       <div class="poster-title">${accountText(track.title)}</div>
@@ -2728,7 +3225,6 @@ function renderGridContainer(containerId, items) {
     c.appendChild(item);
   });
 
-  // Automatically initialize slide dots and visibility pause observer for Quick Picks
   if (containerId === 'quickPicksGrid') {
     if (typeof initQuickPicksDots === 'function') initQuickPicksDots();
     if (typeof initQuickPicksObserver === 'function') initQuickPicksObserver();
@@ -2750,7 +3246,7 @@ function renderFavoritesView() {
   let playlistsHtml = '';
   if (userPlaylists.length > 0) {
     playlistsHtml = `
-      <div class="section-heading"><h2>Your Playlists</h2><a onclick="actionOpenAddToPlaylist(null)">+ Create</a></div>
+      <div class="section-heading"><h2>Your Playlists</h2><a onclick="openCreatePlaylistModal()">+ Create</a></div>
       <div class="capsule-grid" id="customPlaylistsGrid" style="margin-bottom: 32px;">
         ${userPlaylists.map(pl => `
           <div class="poster-item" onclick="openPlaylistDetails('${pl.id}')">
@@ -2762,7 +3258,7 @@ function renderFavoritesView() {
       </div>`;
   } else {
     playlistsHtml = `
-      <div class="section-heading"><h2>Your Playlists</h2><a onclick="actionOpenAddToPlaylist(null)">+ Create</a></div>
+      <div class="section-heading"><h2>Your Playlists</h2><a onclick="openCreatePlaylistModal()">+ Create</a></div>
       <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:32px;">No custom playlists created yet. Tap "+ Create" above.</p>`;
   }
 
@@ -2903,7 +3399,7 @@ function libraryTrackRow(track, index, options = {}) {
   return `
     <div class="track-row library-track-row" onclick="playLibraryTrack(${index}, '${options.source || 'loved'}')">
       <div class="tr-num">${index + 1}</div>
-      <img class="tr-thumb" src="${track.thumbnail || ''}" loading="lazy" />
+      <img class="tr-thumb" src="${track.thumbnail || ''}" referrerpolicy="no-referrer" loading="lazy" />
       <div class="tr-info"><div class="tr-title">${accountText(track.title || 'Unknown Track')}</div><div class="tr-artist">${accountText(track.artist || 'Unknown Artist')}</div></div>
       <div class="tr-album">${accountText(track.album || 'Single')}</div>
       <div class="tr-time">${options.meta || track.duration || ''}</div>
@@ -3001,19 +3497,48 @@ function handleCoverFileSelected(e) {
 }
 
 function confirmCreateAndAddToPlaylist() {
-  const title = $id('newPlTitleInput') ? $id('newPlTitleInput').value.trim() : '';
-  if (!title) return showToast("Please enter a playlist title.");
-  const id = 'pl-' + Date.now(), now = new Date().toISOString();
-  playlists[id] = { id, name: title, description: $id('newPlDescriptionInput')?.value.trim() || '', tracks: pendingTrackForPlaylist ? [pendingTrackForPlaylist] : [], customCover: newPlaylistTempCover || null, created_at: now, updated_at: now };
+  const titleInput = $id('newPlTitleInput');
+  const descInput = $id('newPlDescriptionInput');
+  const title = titleInput ? titleInput.value.trim() : '';
+
+  if (!title) {
+    showToast("Please enter a playlist title.");
+    return;
+  }
+
+  const id = 'pl-' + Date.now();
+  const now = new Date().toISOString();
+
+  playlists[id] = {
+    id: id,
+    name: title,
+    description: descInput ? descInput.value.trim() : '',
+    tracks: pendingTrackForPlaylist ? [pendingTrackForPlaylist] : [],
+    customCover: newPlaylistTempCover || null,
+    created_at: now,
+    updated_at: now
+  };
+
   store.savePlaylists(playlists);
-  showToast(`Created & Saved to "${title}"!`);
-  if ($id('newPlTitleInput')) $id('newPlTitleInput').value = '';
-  if ($id('newPlDescriptionInput')) $id('newPlDescriptionInput').value = '';
+  store.restoreGlobals();
+  showToast(`Created playlist "${title}"!`);
+
+  if (titleInput) titleInput.value = '';
+  if (descInput) descInput.value = '';
   newPlaylistTempCover = null;
-  if ($id('coverUploadPreview')) $id('coverUploadPreview').style.display = 'none';
-  if ($id('coverUploadText')) $id('coverUploadText').innerText = "Choose Custom Photo Cover (Optional)";
+
+  const preview = $id('coverUploadPreview');
+  if (preview) preview.style.display = 'none';
+  const coverText = $id('coverUploadText');
+  if (coverText) coverText.innerText = "Choose Custom Photo Cover (Optional)";
+
   closeAddToPlaylistModal();
-  if (activeView === 'favorites') renderFavoritesView();
+
+  if (activeView === 'favorites' || activeView === 'library') {
+    renderFavoritesView();
+  } else if (activeView === 'home') {
+    renderHomePagePlaylists();
+  }
 }
 
 function openPlaylistActionMenu(plId) {
@@ -3052,7 +3577,7 @@ function actionFromMenuAddSongs() {
         if (currentSearchAbort) currentSearchAbort.abort();
         currentSearchAbort = new AbortController();
         try {
-          const res = await fetch(`/api/search?query=${encodeURIComponent(q)}`, { signal: currentSearchAbort.signal });
+          const res = await fetch(apiUrl(`/api/search?query=${encodeURIComponent(q)}`), { signal: currentSearchAbort.signal });
           const data = await res.json();
           const items = data.results || [];
           if (!items.length) {
@@ -3065,22 +3590,40 @@ function actionFromMenuAddSongs() {
             window.__contextTrackMap[normalizedTrack.id] = normalizedTrack;
             const row = document.createElement('div'); row.className = 'queue-row';
             row.innerHTML = `<div class="queue-left-block"><img class="queue-thumb" src="${normalizedTrack.thumbnail}" loading="lazy" /><div class="queue-info"><div class="queue-title">${accountText(normalizedTrack.title)}</div><div class="queue-artist">${accountText(normalizedTrack.artist)}</div></div></div><button class="queue-action-btn" style="background:var(--accent); color:#fff;">+</button>`;
-            row.onclick = async () => {
+            const addBtn = row.querySelector('.queue-action-btn');
+
+            row.onclick = async (ev) => {
+              ev.stopPropagation();
+              if (addBtn && addBtn.dataset.added === 'true') {
+                showToast(`Already added to playlist.`);
+                return;
+              }
+
               if (currentEditingPlId === 'pl-downloads') {
                 showToast(`Downloading "${normalizedTrack.title}" offline...`);
                 try {
-                  const resp = await fetch(`/api/download/${normalizedTrack.id}?title=${encodeURIComponent(normalizedTrack.title)}&artist=${encodeURIComponent(normalizedTrack.artist)}`);
+                  const resp = await fetch(apiUrl(`/api/download/${normalizedTrack.id}?title=${encodeURIComponent(normalizedTrack.title)}&artist=${encodeURIComponent(normalizedTrack.artist)}`));
                   if (!resp.ok) throw new Error("Download failed");
                   await saveTrackToOfflineDB(normalizedTrack, await resp.blob());
                   await syncDownloadedPlaylist();
+                  if (addBtn) {
+                    addBtn.dataset.added = 'true';
+                    addBtn.style.background = '#10b981';
+                    addBtn.style.color = '#ffffff';
+                    addBtn.innerHTML = '✓';
+                  }
                   showToast(`Downloaded & added!`);
-                  openPlaylistDetails('pl-downloads');
                 } catch (err) { showToast("Failed to download track."); }
               } else if (playlists[currentEditingPlId]) {
                 playlists[currentEditingPlId].tracks.push(normalizedTrack);
                 store.savePlaylists(playlists);
+                if (addBtn) {
+                  addBtn.dataset.added = 'true';
+                  addBtn.style.background = '#10b981';
+                  addBtn.style.color = '#ffffff';
+                  addBtn.innerHTML = '✓';
+                }
                 showToast(`Added to "${playlists[currentEditingPlId].name}"!`);
-                openPlaylistDetails(currentEditingPlId);
               }
             };
             results.appendChild(row);
@@ -3216,7 +3759,7 @@ async function addTrackToSpecificPlaylist(plId) {
     showToast(`Downloading "${trackToSave.title}" for offline storage...`);
     closeAddToPlaylistModal();
     try {
-      const resp = await fetch(`/api/download/${trackToSave.id}?title=${encodeURIComponent(trackToSave.title)}&artist=${encodeURIComponent(trackToSave.artist)}`);
+      const resp = await fetch(apiUrl(`/api/download/${trackToSave.id}?title=${encodeURIComponent(trackToSave.title)}&artist=${encodeURIComponent(trackToSave.artist)}`));
       if (!resp.ok) throw new Error("Stream fetch failed");
       await saveTrackToOfflineDB(trackToSave, await resp.blob());
       await syncDownloadedPlaylist();
@@ -3287,7 +3830,7 @@ async function actionDownloadSong() {
   showToast(`Downloading "${track.title}"...`);
 
   try {
-    const streamUrl = `/api/download/${track.id}?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}&quality=${selectedQuality}`;
+    const streamUrl = apiUrl(`/api/download/${track.id}?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}&quality=${selectedQuality}`);
     const resp = await fetch(streamUrl);
     if (!resp.ok) throw new Error("Stream fetch failed");
 
@@ -3340,26 +3883,85 @@ async function actionDownloadSong() {
 function promptImportSelection() { closeSettingsModal(); $id('importModal')?.classList.add('open'); }
 function closeImportModal(e) { if (!e || e.target === $id('importModal') || e.target.classList.contains('drag-handle')) $id('importModal')?.classList.remove('open'); }
 async function executePlaylistImport() {
-  const input = $id('importPlaylistUrlInput'), btn = $id('executeImportBtn'), url = input ? input.value.trim() : '';
-  if (!url) return showToast("Please enter a playlist link.");
-  if (btn) { btn.disabled = true; btn.innerText = "Analyzing & importing tracks..."; }
+  const input = $id('importPlaylistUrlInput');
+  const btn = $id('executeImportBtn');
+  const inputSection = $id('importInputSection');
+  const progressSection = $id('importProgressSection');
+  const progressBar = $id('importProgressBarLine');
+  const progressStatus = $id('importProgressStatus');
+
+  const url = input ? input.value.trim() : '';
+  if (!url) return showToast("Please paste a playlist link.");
+
+  // Switch to progress view
+  if (inputSection) inputSection.style.display = 'none';
+  if (progressSection) progressSection.style.display = 'block';
+
+  let progress = 20;
+  if (progressBar) progressBar.style.width = '20%';
+  if (progressStatus) progressStatus.innerText = 'Connecting to playlist source...';
+
+  const progressInterval = setInterval(() => {
+    if (progress < 85) {
+      progress += Math.floor(Math.random() * 15) + 5;
+      if (progressBar) progressBar.style.width = `${progress}%`;
+      if (progress >= 50 && progressStatus) {
+        progressStatus.innerText = 'Extracting and matching high-fidelity tracks...';
+      }
+    }
+  }, 400);
+
   try {
-    const res = await fetch("/api/import-playlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    const res = await fetch(apiUrl("/api/import-playlist"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
+    
+    clearInterval(progressInterval);
     const data = await res.json();
+
     if (res.ok && data.success && data.tracks && data.tracks.length > 0) {
+      if (progressBar) progressBar.style.width = '100%';
+      if (progressStatus) progressStatus.innerText = 'Done!';
+
       const plId = 'pl-import-' + Date.now();
-      playlists[plId] = { id: plId, name: data.name || "Imported Playlist", tracks: data.tracks, customCover: null, description: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      const now = new Date().toISOString();
+      const normalizedTracks = data.tracks.map(normalizeTrackData);
+
+      playlists[plId] = {
+        id: plId,
+        name: data.name || "Imported Playlist",
+        tracks: normalizedTracks,
+        customCover: normalizedTracks[0]?.thumbnail || null,
+        description: `Imported with ${normalizedTracks.length} tracks`,
+        created_at: now,
+        updated_at: now
+      };
+
       store.savePlaylists(playlists);
-      closeImportModal();
-      showToast(`Imported "${data.name}" (${data.tracks.length} tracks)!`);
-      if (activeView === 'favorites') renderFavoritesView(); else switchView('favorites');
+      store.restoreGlobals();
+
+      setTimeout(() => {
+        closeImportModal();
+        showToast(`Imported "${data.name}" (${normalizedTracks.length} tracks)!`);
+        if (activeView === 'favorites') renderFavoritesView();
+        else switchView('favorites');
+      }, 500);
     } else {
-      showToast(data.detail || "Unable to import playlist.");
+      showToast(data.detail || "Unable to import playlist. Ensure link is public.");
+      resetImportUI();
     }
   } catch (err) {
+    clearInterval(progressInterval);
     showToast("Network error importing playlist.");
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerText = "Import to MELO Hub"; }
+    resetImportUI();
+  }
+
+  function resetImportUI() {
+    if (inputSection) inputSection.style.display = 'flex';
+    if (progressSection) progressSection.style.display = 'none';
+    if (progressBar) progressBar.style.width = '0%';
   }
 }
 
@@ -3367,19 +3969,15 @@ function openFullscreenPlayer() {
   const overlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
   if (!overlay) return;
 
-  if (overlay._animTimer) {
-    clearTimeout(overlay._animTimer);
-    overlay._animTimer = null;
-  }
+  document.body.classList.add('player-expanded');
 
-  // Clear any residual inline drag styles so CSS classes take over cleanly
+  // Clear manual drag values so CSS class drives the smooth spring animation
   overlay.style.transform = '';
   overlay.style.opacity = '';
   overlay.style.borderRadius = '';
-  overlay.style.transition = '';
 
-  // Trigger CSS-driven upward slide
-  overlay.classList.add('open', 'active');
+  overlay.classList.remove('is-dragging');
+  overlay.classList.add('open');
 
   const current = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : window.currentTrack;
   if (current) {
@@ -3395,43 +3993,17 @@ window.openFullscreenPlayer = openFullscreenPlayer;
 
 function closeFullscreenPlayer() {
   const overlay = $id('fullscreenPlayerOverlay') || $id('fullscreenPlayer') || $id('playerOverlay');
-  if (!overlay || (!overlay.classList.contains('open') && !overlay.classList.contains('active'))) return;
+  if (!overlay) return;
 
-  if (overlay._animTimer) {
-    clearTimeout(overlay._animTimer);
-    overlay._animTimer = null;
-  }
+  document.body.classList.remove('player-expanded');
 
-  // 1. Immediately drop pointer-events so clicks/touches pass through to the mini-player without waiting
-  overlay.style.pointerEvents = 'none';
+  overlay.classList.remove('is-dragging');
+  overlay.classList.remove('open');
 
-  // 2. Remove state classes
-  overlay.classList.remove('open', 'active');
-
-  // 3. Clear any manual dragging inline styles
+  // Clear inline transforms to let it slide into the dock position cleanly
   overlay.style.transform = '';
   overlay.style.opacity = '';
   overlay.style.borderRadius = '';
-  overlay.style.transition = '';
-
-  // 4. Force immediate tap responsiveness on the mini player
-  const miniPlayer = $id('miniPlayer') || $id('miniPlayerBar') || document.querySelector('.mini-player');
-  if (miniPlayer) {
-    miniPlayer.style.pointerEvents = 'auto';
-  }
-
-  // 5. Reset global dragging / swiping gesture flags if defined
-  if (typeof isDraggingPlayer !== 'undefined') isDraggingPlayer = false;
-  if (typeof isSwipingDown !== 'undefined') isSwipingDown = false;
-  if (typeof isPlayerGestureActive !== 'undefined') isPlayerGestureActive = false;
-
-  // 6. Reset overlay pointer-events when the CSS transition finishes completely
-  const onTransitionEnd = (e) => {
-    if (e.target !== overlay) return;
-    overlay.removeEventListener('transitionend', onTransitionEnd);
-    overlay.style.pointerEvents = '';
-  };
-  overlay.addEventListener('transitionend', onTransitionEnd, { once: true });
 }
 window.closeFullscreenPlayer = closeFullscreenPlayer;
 
@@ -3685,14 +4257,14 @@ async function handlePasswordRecoverySubmit() {
   const email = emailInput?.value.trim();
 
   if (!email) {
-    showToast("Please enter your account email.");
+    setAuthBanner('Please enter your account email.', 'error');
     return;
   }
 
   if (btn) { btn.disabled = true; btn.innerText = "Sending..."; }
 
   try {
-    const res = await fetch('/api/auth/forgot-password', {
+    const res = await fetch(apiUrl('/api/auth/forgot-password'), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -3700,15 +4272,24 @@ async function handlePasswordRecoverySubmit() {
     });
 
     if (res.ok) {
-      showToast("Reset link sent! Please check your inbox.");
-      hidePasswordRecoveryView();
-      closeAuthModal();
+      if (typeof showVerificationSuccessView === 'function') {
+        showVerificationSuccessView(email);
+        const verifyView = $id('authVerifyView');
+        if (verifyView) {
+          const h2 = verifyView.querySelector('h2');
+          const p = verifyView.querySelector('p');
+          if (h2) h2.innerText = 'Reset Link Sent!';
+          if (p) p.innerHTML = `We sent password reset instructions to <span id="authVerifyTargetEmail">${accountText(email)}</span>. Click the link in your email to reset your password.`;
+        }
+      } else {
+        setAuthBanner(`<strong>Reset Link Sent!</strong><br>Check <em>${email}</em> for your password reset link.`, 'success');
+      }
     } else {
       const data = await res.json().catch(() => ({}));
-      showToast(data.detail || "Unable to send reset email. Verify email address.");
+      setAuthBanner(data.detail || 'Unable to send reset email. Please verify your email address.', 'error');
     }
   } catch (e) {
-    showToast("Network error. Please try again.");
+    setAuthBanner('Network error. Please check your connection.', 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.innerText = "Send Recovery Link"; }
   }
@@ -3735,10 +4316,8 @@ async function handleAuthSubmit() {
   const name = $id('authName')?.value.trim();
   const btn = $id('authSubmitBtn');
 
-  // 1. Reset any previous alert messages
   if (typeof setAuthBanner === 'function') setAuthBanner(null);
 
-  // 2. Client-side input validations
   if (!email || !password || (isRegisterMode && !name)) {
     setAuthBanner('Please fill in all required fields.', 'error');
     return;
@@ -3761,13 +4340,12 @@ async function handleAuthSubmit() {
     }
   }
 
-  // 3. Set pending state on action button
   if (btn) {
     btn.disabled = true;
     btn.innerText = isRegisterMode ? 'Creating Account...' : 'Logging in...';
   }
 
-  const endpoint = isRegisterMode ? '/api/auth/signup' : '/api/auth/login';
+  const endpoint = isRegisterMode ? apiUrl('/api/auth/signup') : apiUrl('/api/auth/login');
   const payload = isRegisterMode 
     ? { email, password, display_name: name } 
     : { email, password };
@@ -3783,13 +4361,12 @@ async function handleAuthSubmit() {
     const data = await res.json().catch(() => ({}));
 
     if (res.ok) {
-      // Persist session token if provided by the backend response
-      const token = data.session_token || data.token;
+      const token = data.session_token || data.token || data.access_token;
       if (token) {
         localStorage.setItem('session_token', token);
       }
 
-      // If user registered and needs email activation
+      // ONLY signup mode triggers email verification
       if (isRegisterMode && (data.requires_verification || !token)) {
         if (typeof showVerificationSuccessView === 'function') {
           showVerificationSuccessView(email);
@@ -3802,12 +4379,21 @@ async function handleAuthSubmit() {
         return;
       }
 
-      // Successful instant login or auto-verified account
-      closeAuthModal();
-      showToast('Logged in successfully!');
-      await checkAuthStatus();
+      // Standard Login Flow: immediate state hydration with NO extra page
+      if (data.user) {
+        currentUser = data.user;
+        await store.switchProfile(currentUser);
+      }
 
-      // Check for guest library migration
+      closeAuthModal();
+      updateAccountUI();
+
+      // If user was already on the account view, re-render their authenticated profile;
+      // otherwise, keep them exactly where they were listening/browsing!
+      if (activeView === 'account') {
+        renderAccountView();
+      }
+
       const guestData = store.readScope('guest') || {};
       const hasLocalFavs = Object.keys(guestData.favorites || {}).length > 0;
       const hasLocalPls = Object.keys(guestData.playlists || {}).filter(k => !['pl-favorites', 'pl-downloads'].includes(k)).length > 0;
@@ -3815,21 +4401,15 @@ async function handleAuthSubmit() {
       if (hasLocalFavs || hasLocalPls) {
         $id('migrationModal')?.classList.add('open');
       } else {
-        await store.pullFromCloud();
+        store.pullFromCloud();
       }
     } else {
-      // Handle distinct backend HTTP status codes
-      if (res.status === 403) {
-        setAuthBanner(
-          `<strong>Verification Required</strong><br>Check <em>${email}</em> for your activation link, or click above to resend.`,
-          'warning'
-        );
-      } else if (res.status === 401) {
+      if (res.status === 401) {
         setAuthBanner('Incorrect email or password. Please try again.', 'error');
       } else if (res.status === 409 || (data.detail && data.detail.toLowerCase().includes('already registered'))) {
-        setAuthBanner('An account with this email already exists. Try logging in instead.', 'error');
+        setAuthBanner('An account with this email already exists.', 'error');
       } else {
-        setAuthBanner(data.detail || 'Authentication failed. Please verify your credentials.', 'error');
+        setAuthBanner(data.detail || 'Authentication failed.', 'error');
       }
     }
   } catch (err) {
@@ -3847,13 +4427,15 @@ async function checkAuthStatus() {
   try {
     const token = localStorage.getItem('session_token') || localStorage.getItem('token');
     const headers = {
-      'Accept': 'application/json'
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
     };
+
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const res = await fetch('/api/auth/me', { 
+    const res = await fetch(apiUrl('/api/auth/me'), {
       method: 'GET',
       credentials: 'include',
       headers: headers
@@ -3864,12 +4446,15 @@ async function checkAuthStatus() {
       loadLastSyncedAt();
       await store.switchProfile(currentUser);
     } else {
-      currentUser = null;
-      await store.switchProfile(null);
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem('session_token');
+        localStorage.removeItem('token');
+        currentUser = null;
+        await store.switchProfile(null);
+      }
     }
   } catch (e) {
-    currentUser = null;
-    await store.switchProfile(null);
+    console.warn('[AUTH_CHECK_FAILED]', e);
   }
   updateAccountUI();
 }
@@ -3886,101 +4471,272 @@ function updateAccountUI() {
   }
 }
 
+// ==========================================
+// RELIABLE ACCOUNT VIEW MOUNTING
+// ==========================================
 function openAccountView() {
-  if (!currentUser) return openAuthModal();
-  switchView('account');
+  if (!currentUser) {
+    openAuthModal();
+  } else {
+    switchView('account');
+  }
 }
+window.openAccountView = openAccountView;
+
+let isCheckingAuth = false;
 
 function renderAccountView() {
   const vc = $id('viewContainer');
-  if (!vc || !currentUser) return;
+  if (!vc) return;
 
-  const syncTimeStr = lastSyncedAt 
-    ? `${Math.max(0, Math.round((Date.now() - lastSyncedAt.getTime()) / 60000))} min ago`
-    : 'Not synced yet';
+  // Unauthenticated Guest View
+  if (!currentUser) {
+    vc.innerHTML = `
+      <div class="stage-content account-stage">
+        <div class="top-action-bar">
+          <button class="circle-back-btn" onclick="goBack()" title="Back">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          </button>
+          <h1>Account</h1>
+        </div>
 
-  const syncClass = syncState === 'syncing' ? 'sync-syncing'
-    : syncState === 'queued' ? 'sync-queued'
-    : syncState === 'paused' ? 'sync-paused'
-    : 'sync-synced';
+        <div style="text-align:center; padding: 48px 18px;">
+          <div class="melo-avatar-halo" style="width: 76px; height: 76px; margin: 0 auto 16px auto;">
+            <svg viewBox="0 0 160 140" style="width:48px; height:48px;" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M50 48 C 30 46, 20 68, 25 90 C 28 100, 39 104, 46 95 C 52 87, 50 68, 50 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+              <path d="M110 48 C 130 46, 140 68, 135 90 C 132 100, 121 104, 114 95 C 108 87, 110 68, 110 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+              <path d="M52 54 C 52 40, 108 40, 108 54 C 114 65, 116 82, 110 98 C 102 114, 58 114, 50 98 C 44 82, 46 65, 52 54 Z" fill="#0f1117" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round"/>
+              <path d="M60 70 C 64 64, 70 64, 73 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+              <path d="M87 70 C 90 64, 96 64, 100 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+              <path d="M75 80 C 75 77, 85 77, 85 80 C 85 85, 80 88, 80 88 C 80 88, 75 85, 75 80 Z" fill="#ffffff"/>
+              <path d="M74 88 C 74 93, 80 95, 80 95 C 80 95, 86 93, 86 88" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+              <path d="M76 94 C 76 102, 84 102, 84 94 Z" fill="#fa2d48"/>
+              <ellipse cx="53" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+              <ellipse cx="107" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+            </svg>
+          </div>
+          <h2 style="font-size: 1.35rem; font-weight: 800; margin: 0 0 6px 0; color: #fff;">Connect to MELO Cloud</h2>
+          <p style="color: var(--text-muted); font-size: 0.86rem; margin: 0 auto 24px auto; max-width: 300px; line-height: 1.4;">
+            Log in to sync your favorite songs, customized playlists, and listening history.
+          </p>
+          <button class="pill-action-btn" onclick="openAuthModal()" style="padding: 10px 32px; font-size: 0.92rem; font-weight: 700; margin: 0 auto;">
+            Sign In / Create Account
+          </button>
+        </div>
+      </div>
+    `;
 
-  const syncLabel = syncState === 'syncing' ? 'Syncing library…'
-    : syncState === 'queued' ? 'Changes queued'
-    : syncState === 'paused' ? 'Sync paused (offline)'
-    : 'Library synced';
+    if (!isCheckingAuth) {
+      isCheckingAuth = true;
+      checkAuthStatus()
+        .then(() => {
+          if (currentUser && activeView === 'account') renderAccountView();
+        })
+        .finally(() => {
+          isCheckingAuth = false;
+        });
+    }
+    return;
+  }
+
+  // Telemetry Metrics
+  const lovedCount = Object.keys(store.getFavorites() || {}).length;
+  const historyCount = (store.getHistory() || []).length;
+  const playlistCount = Object.values(store.getPlaylists() || {}).filter(
+    pl => !['pl-favorites', 'pl-downloads'].includes(pl.id)
+  ).length;
+
+  const syncTimeStr = lastSyncedAt
+    ? `${Math.max(0, Math.round((Date.now() - lastSyncedAt.getTime()) / 60000))}m ago`
+    : 'Never';
+
+  const isSyncing = syncState === 'syncing';
+  const syncLabel = isSyncing ? 'Syncing Library…'
+    : syncState === 'queued' ? 'Unsaved Offline Edits'
+    : syncState === 'paused' ? 'Sync Paused (Offline)'
+    : 'Cloud Synced';
 
   vc.innerHTML = `
     <div class="stage-content account-stage">
       <div class="top-action-bar">
-        <button class="circle-back-btn" onclick="goBack()" title="Back"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
-        <h1>MELO Account</h1>
+        <button class="circle-back-btn" onclick="goBack()" title="Back">
+          <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h1>Account</h1>
       </div>
 
-      <div class="account-profile-card">
-        <div class="account-avatar">${accountText(currentUser.display_name?.charAt(0).toUpperCase() || 'M')}</div>
-        <div class="account-identity">
-          <div class="account-name">${accountText(currentUser.display_name)}</div>
-          <div class="account-email">${accountText(currentUser.email)}</div>
+      <!-- Identity Banner with Puppy SVG and Extra Rounded Curves -->
+      <div class="melo-account-hero">
+        <div class="melo-avatar-halo">
+          <svg viewBox="0 0 160 140" class="melo-puppy-avatar-svg" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <ellipse cx="80" cy="80" rx="55" ry="38" fill="rgba(250, 45, 72, 0.15)" filter="blur(10px)" />
+            <path d="M42 55 C 42 22, 118 22, 118 55" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <rect x="34" y="52" width="9" height="18" rx="4.5" fill="#ffffff"/>
+            <rect x="117" y="52" width="9" height="18" rx="4.5" fill="#ffffff"/>
+            <path d="M50 48 C 30 46, 20 68, 25 90 C 28 100, 39 104, 46 95 C 52 87, 50 68, 50 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+            <path d="M110 48 C 130 46, 140 68, 135 90 C 132 100, 121 104, 114 95 C 108 87, 110 68, 110 48 Z" fill="#14161f" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+            <path d="M52 54 C 52 40, 108 40, 108 54 C 114 65, 116 82, 110 98 C 102 114, 58 114, 50 98 C 44 82, 46 65, 52 54 Z" fill="#0f1117" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round"/>
+            <path d="M60 70 C 64 64, 70 64, 73 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <path d="M87 70 C 90 64, 96 64, 100 70" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+            <path d="M75 80 C 75 77, 85 77, 85 80 C 85 85, 80 88, 80 88 C 80 88, 75 85, 75 80 Z" fill="#ffffff"/>
+            <path d="M74 88 C 74 93, 80 95, 80 95 C 80 95, 86 93, 86 88" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
+            <path d="M76 94 C 76 102, 84 102, 84 94 Z" fill="#fa2d48"/>
+            <ellipse cx="53" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+            <ellipse cx="107" cy="80" rx="4" ry="2.2" fill="rgba(250, 45, 72, 0.45)"/>
+            <path d="M126 36 Q 130 36 130 32 Q 130 36 134 36 Q 130 36 130 40 Q 130 36 126 36 Z" fill="#ffffff"/>
+          </svg>
+        </div>
+        <div class="melo-account-meta">
+          <h2 class="melo-account-name">${accountText(currentUser.display_name || 'Melo Listener')}</h2>
+          <div class="melo-account-email">${accountText(currentUser.email || '')}</div>
         </div>
       </div>
 
-      <div class="account-section">
-        <div class="section-heading"><h2>Sync Engine</h2></div>
-        <div class="sync-card ${syncClass}">
-          <div class="sync-status">
-            <div class="sync-icon">☁</div>
-            <div>
-              <strong>${syncLabel}</strong>
-              <small>Last synced: ${syncTimeStr}</small>
+      <!-- Quick Metrics -->
+      <div class="melo-telemetry-row">
+        <div class="melo-telemetry-tile" onclick="switchView('loved')">
+          <span class="melo-telemetry-val">${lovedCount}</span>
+          <span class="melo-telemetry-lbl">Favorites</span>
+        </div>
+        <div class="melo-telemetry-tile" onclick="switchView('favorites')">
+          <span class="melo-telemetry-val">${playlistCount}</span>
+          <span class="melo-telemetry-lbl">Playlists</span>
+        </div>
+        <div class="melo-telemetry-tile" onclick="switchView('history')">
+          <span class="melo-telemetry-val">${historyCount}</span>
+          <span class="melo-telemetry-lbl">Plays</span>
+        </div>
+      </div>
+
+      <!-- Sync Console -->
+      <div class="section-heading"><h2>Cloud Vault</h2></div>
+      <div class="melo-sync-console">
+        <div class="melo-sync-detail">
+          <div class="melo-sync-indicator ${isSyncing ? 'sync-active' : ''}">
+            <svg viewBox="0 0 24 24">
+              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+            </svg>
+          </div>
+          <div class="melo-sync-text">
+            <h4>${syncLabel}</h4>
+            <p>Last recorded: ${syncTimeStr}</p>
+          </div>
+        </div>
+        <button class="melo-sync-action-btn" onclick="store.pushToCloud(); showToast('Syncing with MELO Cloud…');">
+          Sync Now
+        </button>
+      </div>
+
+      <!-- Security & Credentials -->
+      <div class="section-heading"><h2>Security</h2></div>
+      <div class="melo-group-card">
+        <button class="melo-group-item" onclick="togglePasswordPanel()">
+          <div class="melo-group-left">
+            <div class="melo-group-icon">
+              <svg viewBox="0 0 24 24">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <div class="melo-group-content">
+              <strong>Change Password</strong>
             </div>
           </div>
-          <button class="pill-action-btn account-sync-button" onclick="store.pushToCloud(); showToast('Syncing with MELO Cloud…');">Sync Now</button>
-        </div>
-      </div>
-
-      <div class="account-section">
-        <div class="section-heading"><h2>Security & Credentials</h2></div>
-        <div class="account-list">
-          <button class="account-row" onclick="togglePasswordPanel()">
-            <span class="account-row-icon">🔒</span>
-            <span>
-              <strong>Change Password</strong>
-              <small>Update your account login password</small>
-            </span>
-            <span class="account-row-arrow" id="accountPasswordArrow">›</span>
-          </button>
-          <div class="account-password-panel" id="accountPasswordPanel" style="display:none;">
-            <input type="password" id="oldPassInput" class="themed-pl-input" placeholder="Current Password" />
-            <input type="password" id="newPassInput" class="themed-pl-input" placeholder="New Password (min 6 characters)" />
-            <button class="pill-action-btn" onclick="executeChangePassword()">Save New Password</button>
+          <div class="melo-group-arrow" id="accountPasswordArrow">
+            <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
           </div>
+        </button>
+
+        <div class="melo-password-tray" id="accountPasswordPanel" style="display:none;">
+          <input type="password" id="oldPassInput" class="melo-input-field" placeholder="Current Password" autocomplete="current-password" />
+          <input type="password" id="newPassInput" class="melo-input-field" placeholder="New Password (min 6 characters)" autocomplete="new-password" />
+          <button class="pill-action-btn" onclick="executeChangePassword()" style="margin-top:12px; width:100%; justify-content:center; padding:10px;">
+            Save Password
+          </button>
         </div>
+
+        <button class="melo-group-item" onclick="openUpdatesModal()">
+          <div class="melo-group-left">
+            <div class="melo-group-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+            </div>
+            <div class="melo-group-content">
+              <strong>App Updates</strong>
+              <small>v${CURRENT_APP_VERSION}</small>
+            </div>
+          </div>
+          <div class="melo-group-arrow">
+            <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </button>
       </div>
 
-      <div class="account-section">
-        <div class="section-heading"><h2>Session & Data</h2></div>
-        <div class="account-list">
-          <button class="account-row" onclick="executeLogout()">
-            <span class="account-row-icon">↪</span>
-            <span>
+      <!-- Account Management -->
+      <div class="section-heading"><h2>Account Management</h2></div>
+      <div class="melo-group-card">
+        <button class="melo-group-item" onclick="promptLogoutConfirmation()">
+          <div class="melo-group-left">
+            <div class="melo-group-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </div>
+            <div class="melo-group-content">
               <strong>Log Out</strong>
-              <small>Sign out on this device</small>
-            </span>
-            <span class="account-row-arrow">›</span>
-          </button>
-          <button class="account-row account-row-danger" onclick="executeDeleteAccount()">
-            <span class="account-row-icon">🗑</span>
-            <span>
+            </div>
+          </div>
+          <div class="melo-group-arrow">
+            <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </button>
+
+        <button class="melo-group-item is-danger" onclick="promptDeleteAccountConfirmation()">
+          <div class="melo-group-left">
+            <div class="melo-group-icon">
+              <svg viewBox="0 0 24 24">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </div>
+            <div class="melo-group-content">
               <strong>Delete Account</strong>
-              <small>Permanently delete account and cloud library</small>
-            </span>
-            <span class="account-row-arrow">›</span>
-          </button>
-        </div>
+            </div>
+          </div>
+          <div class="melo-group-arrow">
+            <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </button>
       </div>
     </div>
   `;
 }
+
+function promptLogoutConfirmation() {
+  showMeloConfirmation({
+    title: 'Log Out of MELO?',
+    message: 'You can sign back in anytime to restore your library.',
+    actionLabel: 'Log Out',
+    danger: true,
+    action: () => executeLogout()
+  });
+}
+
+function promptDeleteAccountConfirmation() {
+  showMeloConfirmation({
+    title: 'Permanently Delete Account?',
+    message: 'This will erase your account profile and synced cloud data. Downloaded offline songs will remain stored on your device.',
+    actionLabel: 'Delete Forever',
+    danger: true,
+    action: () => executeDeleteAccount()
+  });
+}
+
+window.promptLogoutConfirmation = promptLogoutConfirmation;
+window.promptDeleteAccountConfirmation = promptDeleteAccountConfirmation;
 
 function togglePasswordPanel() {
   const p = $id('accountPasswordPanel');
@@ -3997,7 +4753,7 @@ async function executeChangePassword() {
   if (!old_password || !new_password) return showToast("Please fill in both password fields.");
   if (new_password.length < 6) return showToast("New password must be at least 6 characters.");
   try {
-    const res = await fetch('/api/auth/change-password', {
+    const res = await fetch(apiUrl('/api/auth/change-password'), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -4018,7 +4774,7 @@ async function executeChangePassword() {
 }
 
 async function executeLogout() {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  await fetch(apiUrl('/api/auth/logout'), { method: 'POST', credentials: 'include' });
   localStorage.removeItem('session_token');
   localStorage.removeItem('token');
   currentUser = null;
@@ -4036,7 +4792,7 @@ function executeDeleteAccount() {
     danger: true,
     action: async () => {
       try {
-        const res = await fetch('/api/auth/delete-account', {
+        const res = await fetch(apiUrl('/api/auth/delete-account'), {
           method: 'POST',
           credentials: 'include',
         });
@@ -4202,9 +4958,9 @@ function renderLovedTracks() {
               <option value="artist">Artist</option>
             </select>
           </div>
-          <div style="display:flex; gap:10px; margin-left:auto;">
+          <div style="display:flex; gap:8px; margin-left:auto; align-items:center;">
             <button class="pill-action-btn" onclick="playLovedTracks(false)">
-              <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
+              <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#000;"><path d="M8 5v14l11-7z"/></svg>
               <span>Play All</span>
             </button>
             <button class="filter-chip" onclick="playLovedTracks(true)">Shuffle</button>
@@ -4501,9 +5257,6 @@ async function closeCinematicMode() {
   } catch (err) {}
 }
 
-// Current App Build Version (bump this string whenever you deploy updates)
-const CURRENT_APP_VERSION = '2.6.7';
-
 async function autoUpdateCache() {
   const savedVersion = localStorage.getItem('melo_app_version');
 
@@ -4551,8 +5304,9 @@ async function autoUpdateCache() {
   }
 }
 
-// Run update check immediately
-autoUpdateCache();
+if (!window.location.origin.includes('capacitor') && !window.location.origin.includes('localhost')) {
+  autoUpdateCache();
+}
 
 // ==========================================
 // MELO THEMED LOADER CONTROLLER
@@ -4575,57 +5329,69 @@ function hideMeloLoader() {
 window.actionOpenCinematicMode = actionOpenCinematicMode;
 window.closeCinematicMode = closeCinematicMode;
 
-document.addEventListener('DOMContentLoaded', () => {
+function initApp() {
+  const appStartTime = Date.now();
+  window.appStartTime = appStartTime;
+
   const audio = $id('audio');
   const mwc = $id('miniWaveCanvas');
   const swc = $id('scrubberWaveCanvas');
 
+  function dismissLaunchScreen() {
+    const splash = document.getElementById('meloAppLoader') || document.getElementById('meloLaunchScreen');
+    if (!splash || splash.classList.contains('dismissed')) return;
+
+    const elapsed = Date.now() - (window.appStartTime || Date.now());
+    const remaining = Math.max(0, 300 - elapsed);
+
+    setTimeout(() => {
+      splash.classList.add('dismissed');
+      setTimeout(() => {
+        if (splash.parentNode) splash.remove();
+      }, 320);
+    }, remaining);
+  }
+
+  // CORE STORAGE, AUTH & PLAYER RESTORATION
   syncDownloadedPlaylist();
   checkAuthStatus();
-  // Check if user just verified via email link (?verified=1)
+
+  setTimeout(() => {
+    if (typeof executeManualUpdateCheck === 'function') {
+      executeManualUpdateCheck(true);
+    }
+  }, 3500);
+
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('verified') === '1') {
     showToast("Email verified successfully! Welcome to MELO.");
     window.history.replaceState({}, document.title, window.location.pathname);
   }
+
   initScrubberHandlers();
   initLyricsUserScroll();
   initFullscreenSwipeDown();
   restorePlaybackSession();
 
-  // ==========================================
   // PLAYLIST CARD EVENT DELEGATION
-  // ==========================================
   document.body.addEventListener('click', (e) => {
     const card = e.target.closest('.playlist-card') || e.target.closest('[data-playlist-id]');
     if (card) {
       e.preventDefault();
       const playlistId = card.getAttribute('data-playlist-id') || card.dataset.id;
-      if (playlistId) {
-        if (typeof openPlaylistDetails === 'function') {
-          openPlaylistDetails(playlistId);
-        } else if (typeof switchView === 'function') {
-          switchView('playlist-detail', true, { id: playlistId });
-        } else if (typeof loadPlaylist === 'function') {
-          loadPlaylist(playlistId);
-        }
+      if (playlistId && typeof openPlaylistDetails === 'function') {
+        openPlaylistDetails(playlistId);
       }
     }
   });
-  // ==========================================
-  // MINI PLAYER CONTROLS & SWIPE-SAFE DELEGATION
-  // ==========================================
-  // ==========================================
-  // MINI PLAYER CONTROLS & TAP-TO-EXPAND
-  // ==========================================
-  const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
 
+  // MINI PLAYER CONTROLS & TAP-TO-EXPAND
+  const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
   if (dockPlayer) {
     let startY = 0;
     let startX = 0;
     let isTouchMove = false;
 
-    // Distinguish scrolling gestures from taps
     dockPlayer.addEventListener('touchstart', (e) => {
       const t = e.touches[0];
       startY = t.clientY;
@@ -4641,13 +5407,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }, { passive: true });
 
     dockPlayer.addEventListener('click', (e) => {
-      // Abort if finger was swiping or scrolling
       if (isTouchMove) {
         isTouchMove = false;
         return;
       }
-
-      // 1. Play / Pause button tap
       const playBtn = e.target.closest('#dockPlayBtn, #mDockPlayBtn');
       if (playBtn) {
         e.preventDefault();
@@ -4655,72 +5418,93 @@ document.addEventListener('DOMContentLoaded', () => {
         togglePlay();
         return;
       }
-
-      // 2. Previous track button tap
       const prevBtn = e.target.closest('.ctrl-btn[title="Previous"], .mini-ctrl-btn[onclick*="prevTrack"]');
-      if (prevBtn) {
-        return; // Allows inline onclick to handle prevTrack without opening fullscreen
-      }
-
-      // 3. Next track button tap
+      if (prevBtn) return;
       const nextBtn = e.target.closest('.ctrl-btn[title="Next"], .mini-ctrl-btn[onclick*="nextTrack"]');
-      if (nextBtn) {
-        return; // Allows inline onclick to handle nextTrack without opening fullscreen
-      }
+      if (nextBtn) return;
+      if (e.target.closest('input[type="range"]')) return;
 
-      // 4. Scrubber & volume sliders (desktop only)
-      if (e.target.closest('input[type="range"]')) {
-        return;
-      }
-
-      // 5. Tapping anywhere else on the mini player expands fullscreen
       e.preventDefault();
       openFullscreenPlayer();
     });
   }
 
-  // ==========================================
-  // ANDROID HARDWARE BACK BUTTON SUPPORT
-  // ==========================================
-  window.addEventListener('popstate', (e) => {
-  const fsOverlay = $id('fullscreenPlayerOverlay');
-  if (fsOverlay && fsOverlay.classList.contains('open')) {
-    closeFullscreenPlayer();
-    return;
+  // NATIVE ANDROID HARDWARE BACK & GESTURE ROUTER
+  let lastBackPressTime = 0;
+  function handleNativeBackAction() {
+    const fsOverlay = $id('fullscreenPlayerOverlay');
+    if (fsOverlay && (fsOverlay.classList.contains('open') || fsOverlay.classList.contains('active'))) {
+      closeFullscreenPlayer();
+      return true;
+    }
+    const cineOverlay = $id('cinematicOverlay');
+    if (cineOverlay && cineOverlay.classList.contains('open')) {
+      closeCinematicMode();
+      return true;
+    }
+    const activeModal = document.querySelector('.context-action-modal.open');
+    if (activeModal) {
+      activeModal.classList.remove('open');
+      return true;
+    }
+    if (['playlist-detail', 'album-detail', 'artist-detail', 'loved', 'history', 'offline'].includes(activeView)) {
+      goBack();
+      return true;
+    }
+    if (['favorites', 'search', 'account'].includes(activeView)) {
+      switchView('home', false);
+      return true;
+    }
+    if (activeView === 'home' || !activeView) {
+      const now = Date.now();
+      if (now - lastBackPressTime < 2000) return false;
+      lastBackPressTime = now;
+      showToast("Press back again to exit");
+      return true;
+    }
+    return false;
   }
-  
-  if (activeView === 'favorites' || activeView === 'search' || activeView === 'history' || activeView === 'offline' || activeView === 'account') {
-    switchView('home', false);
-  } else if (activeView === 'playlist-detail' || activeView === 'album-detail' || activeView === 'artist-detail') {
-    goBack();
-  } else {
-    goBack();
-  }
-});
 
-  window.addEventListener('online', () => { 
-  if (currentUser) store.pushToCloud();
-  if (activeView === 'home') renderHomeView();
-});
-window.addEventListener('offline', () => { 
-  if (currentUser) setSyncState('paused');
-  if (activeView === 'home') renderHomeOfflineView();
-});
+  const registerNativeBackHandler = async () => {
+    let AppPlugin = window.Capacitor?.Plugins?.App;
+    if (!AppPlugin && window.Capacitor) {
+      try {
+        const mod = await import('@capacitor/app');
+        AppPlugin = mod.App;
+      } catch (e) {}
+    }
+    if (AppPlugin) {
+      AppPlugin.removeAllListeners?.('backButton');
+      AppPlugin.addListener('backButton', () => {
+        if (!handleNativeBackAction()) {
+          AppPlugin.exitApp();
+        }
+      });
+    }
+  };
+  registerNativeBackHandler();
 
+  window.addEventListener('popstate', () => {
+    if (!handleNativeBackAction() && activeView !== 'home') {
+      switchView('home', false);
+    }
+  });
+
+  window.addEventListener('online', () => {
+    if (currentUser) store.pushToCloud();
+    if (activeView === 'home') renderHomeView();
+  });
+
+  window.addEventListener('offline', () => {
+    if (currentUser) setSyncState('paused');
+    if (activeView === 'home') renderHomeOfflineView();
+  });
+
+  // AUDIO ELEMENT LISTENERS
   if (audio) {
-    // Show loader when the network is buffering, seeking, or track stalls
-    audio.addEventListener('waiting', () => {
-      showMeloLoader('BUFFERING STREAM...');
-    });
-
-    // Dismiss loader when audio resumes playing or becomes ready
-    audio.addEventListener('playing', () => {
-      hideMeloLoader();
-    });
-
-    audio.addEventListener('canplay', () => {
-      hideMeloLoader();
-    });
+    audio.addEventListener('waiting', () => showMeloLoader('BUFFERING STREAM...'));
+    audio.addEventListener('playing', () => hideMeloLoader());
+    audio.addEventListener('canplay', () => hideMeloLoader());
 
     audio.addEventListener('timeupdate', () => {
       if (audio.paused || isNaN(audio.duration)) return;
@@ -4761,7 +5545,7 @@ window.addEventListener('offline', () => {
     });
   }
 
-  // Mini-player tidal wave visualizer
+  // CANVAS VISUALIZERS
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const miniCtx = mwc ? mwc.getContext('2d') : null;
   let wavePhase = 0, colorShift = 0, currentAmplitude = 1.0;
@@ -4786,7 +5570,6 @@ window.addEventListener('offline', () => {
     const midY = h / 2;
     const targetAmp = isPlaying ? 5.6 : 1.4;
     currentAmplitude += (targetAmp - currentAmplitude) * 0.08;
-
     colorShift = (colorShift + 0.25) % 360;
     wavePhase += isPlaying ? 0.018 : 0.008;
 
@@ -4836,7 +5619,6 @@ window.addEventListener('offline', () => {
   }
   setTimeout(() => { resizeMiniWave(); renderTidalLightWave(); }, 60);
 
-  // Scrubber live wave
   const scrubberWaveCtx = swc ? swc.getContext('2d') : null;
   let scrubberWavePhase = 0;
 
@@ -4874,7 +5656,6 @@ window.addEventListener('offline', () => {
   }
   setTimeout(renderScrubberLiveWave, 80);
 
-  // Fluid blob mesh background
   const fluidCanvases = [$id('fluidMeshCanvas'), $id('cinematicMeshCanvas')];
   let fluidTime = 0;
   let lastFluidFrame = 0;
@@ -4894,7 +5675,6 @@ window.addEventListener('offline', () => {
     if ((!isSheetOpen && !isCinematicActive) || prefersReducedMotion || document.hidden) {
       return requestAnimationFrame(renderLiveFluidMesh);
     }
-
     if (timestamp - lastFluidFrame < 33) {
       return requestAnimationFrame(renderLiveFluidMesh);
     }
@@ -4920,7 +5700,7 @@ window.addEventListener('offline', () => {
       fCtx.fillRect(0, 0, w, h);
 
       const cx2 = w * (0.65 + 0.25 * Math.cos(fluidTime * 1.1));
-      const cy2 = h * (0.55 + 0.25 * Math.sin(fluidTime * 0.7)); // Changed to 0.55 so gradient remains bounded
+      const cy2 = h * (0.55 + 0.25 * Math.sin(fluidTime * 0.7));
       const g2 = fCtx.createRadialGradient(cx2, cy2, 0, cx2, cy2, w * 0.9);
       g2.addColorStop(0, color2);
       g2.addColorStop(1, 'transparent');
@@ -4932,6 +5712,18 @@ window.addEventListener('offline', () => {
   }
   requestAnimationFrame(renderLiveFluidMesh);
 
-  // Initialize Home View cleanly
-  switchView('home', false);
-});
+  // INITIAL VIEW MOUNT & CLEAN LAUNCH SCREEN EXIT
+  // INITIAL VIEW MOUNT
+  try {
+    switchView('home', false);
+  } catch (err) {
+    console.error('[INIT_SWITCHVIEW_ERROR]', err);
+  }
+}
+
+// Ensure execution whether DOM is loading or already parsed
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}

@@ -2,34 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#07080b" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>MELO MUSIC</title>
-  
-  <!-- Browser Tab Favicon (New Separate Image) -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/images/favicon.png?v=2.6.7" />
-  <link rel="shortcut icon" type="image/png" href="/static/images/favicon.png?v=2.6.7" />
 
-  <!-- Mobile / Apple Touch Icon (Keeps MELO App Logo) -->
-  <link rel="apple-touch-icon" sizes="180x180" href="/static/images/logo.png?v=2.6.7" />
-  <link rel="manifest" href="/static/manifest.json" />
-  <link rel="stylesheet" href="/static/css/app.css?v=2.6.7" />
+  <!-- Icons -->
+  <link rel="icon" type="image/png" sizes="32x32" href="images/favicon.png" />
+  <link rel="shortcut icon" type="image/png" href="images/favicon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="images/logo.png" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="css/app.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
 </head>
 <body>
+  <!-- SMOOTH AMBIENT APP BOOT LOADER -->
 
+  
   <div id="app">
     <!-- Desktop Sidebar -->
     <aside class="sidebar">
       <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
-        <img src="/static/images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
+        <img src="images/melo-text.png" alt="MELO" style="height: 34px; width: auto; object-fit: contain;" />
         
-        <!-- User Account Indicator (Desktop) -->
         <button id="navAccountBtn" class="pill-action-btn" style="padding:6px 12px; font-size:0.75rem; background:rgba(255,255,255,0.1); color:#fff; gap:6px;">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
           <span>Sign In</span>
@@ -73,11 +72,12 @@
       <div id="viewContainer"></div>
     </main>
 
+    <!-- Mini-Player Bar -->
     <footer class="dock-player" id="dockPlayerBar">
       <canvas class="miniplayer-canvas-waveform" id="miniWaveCanvas"></canvas>
 
       <div class="player-meta">
-        <img id="dockThumb" class="dock-thumb" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' fill='%23222'/>" />
+        <img id="dockThumb" class="dock-thumb" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' fill='%23222'/>" referrerpolicy="no-referrer" />
         <div class="dock-details">
           <div class="dock-title" id="dockTitle">Ready to Play</div>
           <div class="dock-artist" id="dockArtist">Choose any song</div>
@@ -124,125 +124,90 @@
       </div>
     </footer>
 
-    <!-- Mobile Nav -->
+    <!-- Native Bottom Pill Navigation -->
     <div class="mobile-nav-container">
-      <nav class="obsidian-pill-nav" aria-label="Main Navigation">
+      <nav class="obsidian-pill-nav">
         <button class="pill-nav-item active" id="mNavHome" onclick="switchView('home')">
-          <div class="pill-active-bg"></div>
-          <svg viewBox="0 0 24 24"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1h-5v-6h-6v6H4a1 1 0 01-1-1V9.5z"/></svg>
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
         </button>
-
         <button class="pill-nav-item" id="mNavSearch" onclick="switchView('search')">
-          <div class="pill-active-bg"></div>
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </button>
-
         <button class="pill-nav-item" id="mNavFavs" onclick="switchView('favorites')">
-          <div class="pill-active-bg"></div>
-          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
         </button>
       </nav>
     </div>
   </div>
 
-  <!-- AUTHENTICATION MODAL -->
   <!-- AUTH MODAL -->
-  <!-- AUTH MODAL -->
-<div id="authModal" class="context-action-modal" onclick="closeAuthModal(event)">
-  <div class="context-modal-sheet" onclick="event.stopPropagation()">
-    <div class="drag-handle" onclick="closeAuthModal()"></div>
+  <div id="authModal" class="context-action-modal" onclick="closeAuthModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeAuthModal()"></div>
 
-    <!-- 1. LOGIN / REGISTER VIEW -->
-    <div id="authMainView">
-      <h2 id="authTitle" style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Welcome to MELO</h2>
-      <p id="authSubtitle" style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Sign in to sync your library across devices.</p>
+      <div id="authMainView">
+        <h2 id="authTitle" style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Welcome to MELO</h2>
+        <p id="authSubtitle" style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Sign in to sync your library across devices.</p>
 
-      <div class="auth-inputs-wrap">
-        <!-- Name (Sign Up only) -->
-        <input type="text" id="authName" class="themed-pl-input" placeholder="Your Name" style="display:none; margin-bottom:12px;" autocomplete="name" />
+        <div class="auth-inputs-wrap">
+          <input type="text" id="authName" class="themed-pl-input" placeholder="Your Name" style="display:none; margin-bottom:12px;" autocomplete="name" />
+          <input type="email" id="authEmail" class="themed-pl-input" placeholder="Email Address" style="margin-bottom:12px;" autocomplete="email" />
 
-        <!-- Email -->
-        <input type="email" id="authEmail" class="themed-pl-input" placeholder="Email Address" style="margin-bottom:12px;" autocomplete="email" />
+          <div class="auth-input-group" style="position:relative; margin-bottom:12px;">
+            <input type="password" id="authPassword" class="themed-pl-input auth-validated-input" placeholder="Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="current-password" />
+            <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authPassword', this)" title="Show/Hide Password">
+              <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
 
-        <!-- Password -->
-        <div class="auth-input-group" style="position:relative; margin-bottom:12px;">
-          <input type="password" id="authPassword" class="themed-pl-input auth-validated-input" placeholder="Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="current-password" />
-          <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authPassword', this)" title="Show/Hide Password">
-            <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
+          <div id="authConfirmGroup" class="auth-input-group" style="position:relative; margin-bottom:12px; display:none;">
+            <input type="password" id="authConfirmPassword" class="themed-pl-input auth-validated-input" placeholder="Confirm Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="new-password" />
+            <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authConfirmPassword', this)" title="Show/Hide Password">
+              <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+
+          <div id="authStatusBanner" class="auth-status-banner" style="display:none;"></div>
+
+          <div id="authForgotRow" style="text-align:right; margin-bottom:14px;">
+            <a onclick="showPasswordRecoveryView()" style="color:var(--text-muted); font-size:0.8rem; cursor:pointer; text-decoration:underline;">Forgot password?</a>
+          </div>
+
+          <button type="button" id="authSubmitBtn" class="pill-action-btn" onclick="handleAuthSubmit()" style="width:100%; justify-content:center; padding:12px; margin-top:4px;">Log In</button>
+
+          <a id="authToggleLink" onclick="toggleAuthMode()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
+            Don't have an account? Sign up
+          </a>
         </div>
+      </div>
 
-        <!-- Confirm Password (Sign Up only) -->
-        <div id="authConfirmGroup" class="auth-input-group" style="position:relative; margin-bottom:12px; display:none;">
-          <input type="password" id="authConfirmPassword" class="themed-pl-input auth-validated-input" placeholder="Confirm Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="new-password" />
-          <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authConfirmPassword', this)" title="Show/Hide Password">
-            <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
+      <div id="authVerifyView" style="display: none; text-align: center; padding: 12px 6px;">
+        <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(250, 45, 72, 0.12); border: 1px solid rgba(250, 45, 72, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+          <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; fill: none; stroke: #fa2d48; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
+        <h2 style="font-size: 1.4rem; font-weight: 800; color: #fff; margin: 0 0 8px;">Check Your Inbox</h2>
+        <p style="color: rgba(255, 255, 255, 0.7); font-size: 0.92rem; line-height: 1.5; margin: 0 0 20px;">
+          We've sent an activation link to<br><strong id="authVerifyTargetEmail" style="color: #fff;"></strong>
+        </p>
+        <button type="button" class="pill-action-btn" onclick="returnToLoginAfterVerify()" style="width: 100%; justify-content: center; padding: 13px;">
+          Back to Log In
+        </button>
+      </div>
 
-        <!-- Place inside #authMainView right before the inputs or submit button -->
-        <div id="authStatusBanner" class="auth-status-banner" style="display:none;"></div>
-
-        <!-- Forgot Password Link (Login mode only) -->
-        <div id="authForgotRow" style="text-align:right; margin-bottom:14px;">
-          <a onclick="showPasswordRecoveryView()" style="color:var(--text-muted); font-size:0.8rem; cursor:pointer; text-decoration:underline;">Forgot password?</a>
+      <div id="authRecoveryView" style="display:none;">
+        <h2 style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Reset Password</h2>
+        <p style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Enter your account email to receive a password reset link.</p>
+        <div class="auth-inputs-wrap">
+          <input type="email" id="recoveryEmail" class="themed-pl-input" placeholder="Enter your email" style="margin-bottom:16px;" autocomplete="email" />
+          <button type="button" id="recoverySubmitBtn" class="pill-action-btn" onclick="handlePasswordRecoverySubmit()" style="width:100%; justify-content:center; padding:12px;">Send Recovery Link</button>
+          <a onclick="hidePasswordRecoveryView()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">Back to Login</a>
         </div>
-
-        <!-- Submit Button -->
-        <button type="button" id="authSubmitBtn" class="pill-action-btn" onclick="handleAuthSubmit()" style="width:100%; justify-content:center; padding:12px; margin-top:4px;">Log In</button>
-
-        <!-- Toggle Switch Link -->
-        <a id="authToggleLink" onclick="toggleAuthMode()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
-          Don't have an account? Sign up
-        </a>
       </div>
     </div>
-
-    <!-- Beautiful Inline Email Verification State -->
-<div id="authVerifyView" style="display: none; text-align: center; padding: 12px 6px;">
-  <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(250, 45, 72, 0.12); border: 1px solid rgba(250, 45, 72, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
-    <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; fill: none; stroke: #fa2d48; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;">
-      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-      <polyline points="22,6 12,13 2,6"/>
-    </svg>
   </div>
-
-  <h2 style="font-size: 1.4rem; font-weight: 800; color: #fff; margin: 0 0 8px;">Check Your Inbox</h2>
-  <p style="color: rgba(255, 255, 255, 0.7); font-size: 0.92rem; line-height: 1.5; margin: 0 0 20px;">
-    We've sent an activation link to<br>
-    <strong id="authVerifyTargetEmail" style="color: #fff;"></strong>
-  </p>
-
-  <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 14px 16px; margin-bottom: 24px; text-align: left;">
-    <div style="display: flex; gap: 10px; align-items: flex-start;">
-      <span style="font-size: 1.1rem;">💡</span>
-      <span style="color: rgba(255, 255, 255, 0.55); font-size: 0.82rem; line-height: 1.4;">
-        Tap the <strong>Verify & Log In</strong> button inside the email to immediately start streaming. Check your Spam folder if it doesn't appear within 2 minutes.
-      </span>
-    </div>
-  </div>
-
-  <button type="button" class="pill-action-btn" onclick="returnToLoginAfterVerify()" style="width: 100%; justify-content: center; padding: 13px;">
-    Back to Log In
-  </button>
-</div>
-
-    <!-- 2. RECOVERY VIEW -->
-    <div id="authRecoveryView" style="display:none;">
-      <h2 style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Reset Password</h2>
-      <p style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Enter your account email to receive a password reset link.</p>
-
-      <div class="auth-inputs-wrap">
-        <input type="email" id="recoveryEmail" class="themed-pl-input" placeholder="Enter your email" style="margin-bottom:16px;" autocomplete="email" />
-        <button type="button" id="recoverySubmitBtn" class="pill-action-btn" onclick="handlePasswordRecoverySubmit()" style="width:100%; justify-content:center; padding:12px;">Send Recovery Link</button>
-        <a onclick="hidePasswordRecoveryView()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
-          Back to Login
-        </a>
-      </div>
-    </div>
-
-  </div>
-</div>
 
   <div class="context-action-modal" id="meloConfirmModal" onclick="closeMeloConfirmation(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align:center;">
@@ -260,7 +225,6 @@
       <div style="font-size: 3rem; margin-bottom: 16px;">☁️</div>
       <h2 style="font-size: 1.4rem; font-weight: 800; margin-bottom: 8px;">Sync Local Library</h2>
       <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px;">We found local playlists and favorites on this device. Do you want to securely sync them to your MELO Cloud account?</p>
-      
       <div style="display:flex; gap:12px;">
         <button class="filter-chip" onclick="closeMigrationModal()" style="flex:1; padding: 14px;">Not Now</button>
         <button class="pill-action-btn" onclick="executeLocalToCloudMigration()" style="flex:1; justify-content:center; background:var(--accent); color:#fff; border:none;">Sync Library</button>
@@ -270,8 +234,6 @@
 
   <!-- FULLSCREEN PLAYER -->
   <div class="lyrics-overlay" id="fullscreenPlayerOverlay">
-    <div class="drag-handle" onclick="closeFullscreenPlayer()"></div>
-    
     <canvas class="live-fluid-mesh-canvas" id="fluidMeshCanvas"></canvas>
 
     <div class="player-sheet-header">
@@ -291,10 +253,11 @@
     </div>
 
     <div class="sheet-body-container">
+      <!-- 1. Track Tab -->
       <div class="sheet-nowplaying-view" id="sheetViewPlaying">
         <div class="sheet-top-artwork-box">
           <div class="sheet-cover-container" id="sheetCoverBox">
-            <img class="sheet-cover-art" id="sheetCover" src="" />
+            <img class="sheet-cover-art" id="sheetCover" src="" referrerpolicy="no-referrer" />
           </div>
         </div>
 
@@ -330,19 +293,15 @@
             <button class="sheet-ctrl-icon" id="sheetShuffleBtn" onclick="toggleShuffle()" title="Shuffle">
               <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
             </button>
-
             <button class="sheet-ctrl-icon ctrl-jump-btn" onclick="prevTrack()" title="Previous">
               <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
             </button>
-
             <button class="sheet-play-large" id="sheetPlayBtn" onclick="togglePlay()" title="Play / Pause">
               <svg id="sheetPlayBtnSvg" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
             </button>
-
             <button class="sheet-ctrl-icon ctrl-jump-btn" onclick="nextTrack()" title="Next">
               <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
             </button>
-
             <button class="sheet-ctrl-icon" id="sheetRepeatBtn" onclick="toggleRepeatMode()" title="Repeat Mode">
               <span class="loop-badge-tag" id="loopBadge">ALL</span>
               <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
@@ -350,8 +309,12 @@
           </div>
         </div>
       </div>
-      <div class="sheet-lyrics-view" id="sheetViewLyrics"></div>
-      <div class="sheet-queue-view" id="sheetViewQueue"></div>
+
+      <!-- 2. Lyrics Tab -->
+      <div class="sheet-lyrics-view" id="sheetViewLyrics" style="display:none;"></div>
+
+      <!-- 3. Queue Tab -->
+      <div class="sheet-queue-view" id="sheetViewQueue" style="display:none;"></div>
     </div>
   </div>
 
@@ -364,7 +327,7 @@
     <div class="cinematic-stage-layout">
       <div class="cinematic-left-art">
         <div class="cinematic-art-halo" id="cinematicArtHalo"></div>
-        <img class="cinematic-art-img" id="cinematicArtImg" src="" />
+        <img class="cinematic-art-img" id="cinematicArtImg" src="" referrerpolicy="no-referrer" />
         <div class="cinematic-meta-box">
           <div class="cinematic-track-title" id="cinematicTitle">—</div>
           <div class="cinematic-track-artist" id="cinematicArtist">—</div>
@@ -385,7 +348,6 @@
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span style="color:var(--accent); font-weight:700;">Cinematic Ambient View</span>
         </div>
-
         <div class="context-action-row" onclick="actionPlayContextTrack()">
           <svg viewBox="0 0 24 24"><polygon points="8 5 19 12 8 19 8 5"/></svg>
           <span>Play</span>
@@ -398,10 +360,7 @@
           <svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h10M4 18h10M18 8v8M14 12h8"/></svg>
           <span>Add to Queue</span>
         </div>
-        
-        <!-- Offline Download Button Slot -->
         <div class="context-action-row" id="ctxDownloadRow"></div>
-        
         <div class="context-action-row" onclick="actionAddToFavorites()">
           <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
           <span id="ctxFavText">Save to Favorites</span>
@@ -426,16 +385,20 @@
     </div>
   </div>
 
-  <!-- OTHER EXISTING MODALS RETAINED EXACTLY -->
   <!-- SETTINGS MODAL -->
   <div class="context-action-modal" id="settingsModal" onclick="closeSettingsModal(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()">
       <div class="drag-handle" onclick="closeSettingsModal()"></div>
       <div class="context-modal-title">MELO Settings</div>
       <div class="context-action-list">
-        <div class="context-action-row" onclick="window.closeSettingsModal(); window.openAccountView()">
+        <div class="context-action-row" onclick="closeSettingsModal(); openAccountView();">
           <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          <span>Account Settings</span>
+          <span>Account & Profile</span>
+        </div>
+        <!-- NEW UPDATES ENTRY ROW -->
+        <div class="context-action-row" onclick="closeSettingsModal(); openUpdatesModal();">
+          <svg viewBox="0 0 24 24"><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11m-3 0h6m0 0v6m0-6L10 14"/></svg>
+          <span>App Updates & Version</span>
         </div>
         <div class="context-action-row" onclick="promptQualitySelection()">
           <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
@@ -449,18 +412,76 @@
     </div>
   </div>
 
+  <!-- UPDATES & VERSION MODAL -->
+  <div class="context-action-modal" id="updatesModal" onclick="closeUpdatesModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align: left;">
+      <div class="drag-handle" onclick="closeUpdatesModal()"></div>
+      <div class="context-modal-title" style="text-align: center; margin-bottom: 20px;">App Updates</div>
+      
+      <div style="display: flex; flex-direction: column; gap: 14px; padding: 4px 0;">
+        <!-- Version Info Card -->
+        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-size: 0.98rem; font-weight: 800; color: #fff;">MELO Music Core</div>
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;" id="currentVersionLabel">Version 2.6.7 (Production)</div>
+          </div>
+          <span id="updateBadgeStatus" style="font-size: 0.7rem; font-weight: 800; padding: 4px 10px; border-radius: 99px; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Up to Date</span>
+        </div>
+
+        <!-- Auto-Update Toggle Row -->
+        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-size: 0.88rem; font-weight: 700; color: #fff;">Automatic Background Updates</div>
+            <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 2px;">Silently download latest security & feature patches</div>
+          </div>
+          <label style="position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; margin-left: 12px;">
+            <input type="checkbox" id="autoUpdateToggle" onchange="toggleAutoUpdatePreference(this)" style="opacity: 0; width: 0; height: 0;" />
+            <span id="autoUpdateSlider" style="position: absolute; cursor: pointer; inset: 0; background-color: rgba(255, 255, 255, 0.15); transition: .25s; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.1);"></span>
+            <span id="autoUpdateThumb" style="position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .25s; border-radius: 50%;"></span>
+          </label>
+        </div>
+
+        <!-- Release Notes / Changelog -->
+        <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 16px;">
+          <div style="font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 8px;">Latest Changelog (v2.6.7)</div>
+          <ul style="margin: 0; padding-left: 16px; font-size: 0.82rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; line-height: 1.4;">
+            <li>True edge-to-edge immersive full-screen display layout</li>
+            <li>Optimized JioSaavn CDN image proxy bypass (No-referrer policy)</li>
+            <li>Advanced native Android hardware back-button routing engine</li>
+          </ul>
+        </div>
+
+        <!-- Action Button -->
+        <button class="pill-action-btn" id="checkUpdateBtn" onclick="executeManualUpdateCheck()" style="width: 100%; justify-content: center; padding: 13px; background: #fff; color: #000; border-radius: 99px; margin-top: 4px;">
+          Check for Updates
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- IMPORT PLAYLIST MODAL WITH PROGRESS BAR -->
   <div class="context-action-modal" id="importModal" onclick="closeImportModal(event)">
     <div class="context-modal-sheet" onclick="event.stopPropagation()">
       <div class="drag-handle" onclick="closeImportModal()"></div>
       <div class="context-modal-title">Import Playlist</div>
       <p style="color:var(--text-muted); font-size:0.85rem; text-align:center; margin-bottom:16px;">
-        Paste your YouTube, YouTube Music, or Spotify playlist link below.
+        Paste your Spotify, YouTube Music, or YouTube playlist link below.
       </p>
-      <div style="display:flex; flex-direction:column; gap:12px;">
-        <input type="text" id="importPlaylistUrlInput" placeholder="Paste playlist link here..." style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
+      
+      <div id="importInputSection" style="display:flex; flex-direction:column; gap:12px;">
+        <input type="text" id="importPlaylistUrlInput" placeholder="https://open.spotify.com/playlist/..." style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
         <button class="pill-action-btn" id="executeImportBtn" onclick="executePlaylistImport()" style="width:100%; justify-content:center; padding:12px; background:var(--accent); color:#fff;">
           Import to MELO Hub
         </button>
+      </div>
+
+      <!-- Clean Animated Progress Bar (Visible during import) -->
+      <div id="importProgressSection" style="display:none; padding:16px 0 8px 0; text-align:center;">
+        <div style="font-size:0.88rem; font-weight:700; color:#fff; margin-bottom:6px;" id="importProgressStatus">Connecting & analyzing playlist...</div>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:14px;">Matching audio tracks with high-bitrate streaming sources</div>
+        <div style="width:100%; height:6px; background:rgba(255,255,255,0.1); border-radius:999px; overflow:hidden; position:relative;">
+          <div id="importProgressBarLine" style="height:100%; width:30%; background:linear-gradient(90deg, #fa2d48, #c026d3); border-radius:999px; transition:width 0.4s ease;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -588,7 +609,6 @@
   <div id="meloToast" class="melo-toast"></div>
   <audio id="audio" preload="auto"></audio>
 
-  <!-- External JavaScript Files with Cache Busting -->
-  <script src="/static/js/app.js?v=2.6.7"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>

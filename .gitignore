@@ -1,29 +1,36 @@
-# Virtual Environments
+# Dependencies
+node_modules/
 .venv/
-.venv-*/
 venv/
-env/
+ENV/
 
-# Python Cache & Bytecode
+# Environment Variables & Secrets
+.env
+*.env
+
+# Python Cache & Build
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.egg-info/
 
-# Local Databases & State
+# Local Databases & Session Data
 *.db
 *.sqlite3
 melo_cloud.db
-
-# Sensitive Credentials & Session Tokens
 cookies.txt
-.env
-.env.*
 
-# VS Code (Keeps configuration, ignores personal editor state)
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
+# Android, Gradle & Capacitor
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+.capacitor/
 
-# Operating System Files
+# IDE & Operating System Files
 .DS_Store
 Thumbs.db
+.vscode/
+*.iml
