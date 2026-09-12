@@ -77,44 +77,68 @@ public class MainActivity extends BridgeActivity {
         // 6-parameter version receiving duration & position for the lockscreen/notification scrubber
         @JavascriptInterface
         public void startBackgroundPlayback(String title, String artist, String thumbnail, boolean isPlaying, double durationMs, double positionMs) {
-            Intent intent = new Intent(context, MeloAudioService.class);
-            intent.setAction(MeloAudioService.ACTION_START);
-            intent.putExtra("title", title);
-            intent.putExtra("artist", artist);
-            intent.putExtra("thumbnail", thumbnail);
-            intent.putExtra("isPlaying", isPlaying);
-            intent.putExtra("duration", (long) durationMs);
-            intent.putExtra("position", (long) positionMs);
+            try {
+                Intent intent = new Intent(context, MeloAudioService.class);
+                intent.setAction(MeloAudioService.ACTION_START);
+                intent.putExtra("title", title);
+                intent.putExtra("artist", artist);
+                intent.putExtra("thumbnail", thumbnail);
+                intent.putExtra("isPlaying", isPlaying);
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent);
-            } else {
-                context.startService(intent);
+                long pos = Double.isNaN(positionMs) || positionMs < 0 ? -1L : (long) positionMs;
+                long dur = Double.isNaN(durationMs) || durationMs < 0 ? -1L : (long) durationMs;
+
+                intent.putExtra("duration", dur);
+                intent.putExtra("position", pos);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent);
+                } else {
+                    context.startService(intent);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }
 
-        // Backward-compatible 4-parameter version
+        // Backward-compatible 4-parameter version: passes -1L so MeloAudioService preserves current position
         @JavascriptInterface
         public void startBackgroundPlayback(String title, String artist, String thumbnail, boolean isPlaying) {
-            startBackgroundPlayback(title, artist, thumbnail, isPlaying, 0L, 0L);
+            startBackgroundPlayback(title, artist, thumbnail, isPlaying, -1.0, -1.0);
         }
 
         // Continuous progress updates from JavaScript to keep system notification in sync
         @JavascriptInterface
         public void updatePlaybackProgress(double positionMs, double durationMs, boolean isPlaying) {
-            Intent intent = new Intent(context, MeloAudioService.class);
-            intent.setAction(MeloAudioService.ACTION_UPDATE_PROGRESS);
-            intent.putExtra("position", (long) positionMs);
-            intent.putExtra("duration", (long) durationMs);
-            intent.putExtra("isPlaying", isPlaying);
-            context.startService(intent);
+            try {
+                long pos = Double.isNaN(positionMs) || positionMs < 0 ? 0L : (long) positionMs;
+                long dur = Double.isNaN(durationMs) || durationMs < 0 ? 0L : (long) durationMs;
+
+                Intent intent = new Intent(context, MeloAudioService.class);
+                intent.setAction(MeloAudioService.ACTION_UPDATE_PROGRESS);
+                intent.putExtra("position", pos);
+                intent.putExtra("duration", dur);
+                intent.putExtra("isPlaying", isPlaying);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent);
+                } else {
+                    context.startService(intent);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
 
         @JavascriptInterface
         public void stopBackgroundPlayback() {
-            Intent intent = new Intent(context, MeloAudioService.class);
-            intent.setAction(MeloAudioService.ACTION_STOP);
-            context.startService(intent);
+            try {
+                Intent intent = new Intent(context, MeloAudioService.class);
+                intent.setAction(MeloAudioService.ACTION_STOP);
+                context.startService(intent);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 }

@@ -1,36 +1,64 @@
-# Dependencies
-node_modules/
-.venv/
-venv/
-ENV/
-
-# Environment Variables & Secrets
+# ==========================================
+# Secrets & Sensitive Files (CRITICAL)
+# ==========================================
 .env
 *.env
+cookies.txt
+*.jks
+*.keystore
+*.p12
 
-# Python Cache & Build
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-
-# Local Databases & Session Data
+# ==========================================
+# Database & Runtime State
+# ==========================================
 *.db
 *.sqlite3
 melo_cloud.db
-cookies.txt
 
-# Android, Gradle & Capacitor
+# ==========================================
+# Python & Virtual Environment
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# ==========================================
+# Node & Web Dependencies
+# ==========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# Android Builds, Binaries & SDK Config
+# ==========================================
 android/.gradle/
+android/.idea/
+android/local.properties
 android/build/
 android/app/build/
-android/local.properties
-android/.idea/
-.capacitor/
+android/app/release/
+*.apk
+*.aab
+*.ap_
+*.dm
 
-# IDE & Operating System Files
+# Capacitor generated outputs
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+
+# ==========================================
+# IDE & System Files
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
-.vscode/
-*.iml

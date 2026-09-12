@@ -1008,19 +1008,38 @@ function setPlayState(playing) {
     mwc.style.opacity = playing ? '1' : '0';
   }
 
-  // Manage native Android background playback service & notification state with thumbnail artwork
+  // Manage native Android background playback service & notification state with thumbnail artwork & current position
   if (window.MeloNative && window.MeloNative.startBackgroundPlayback) {
     if (playlist && playlist[currentIndex]) {
       const current = playlist[currentIndex];
+      const audioEl = $id('audio');
+      const curPosMs = Math.round((audioEl && !isNaN(audioEl.currentTime) ? audioEl.currentTime : 0) * 1000);
+      
+      let durSec = 0;
+      if (typeof current.duration === 'string' && current.duration.includes(':')) {
+        const parts = current.duration.split(':').map(Number);
+        durSec = parts.length === 2 ? parts[0] * 60 + parts[1] : 0;
+      } else if (!isNaN(current.duration)) {
+        durSec = Number(current.duration);
+      }
+      const durMs = Math.round((audioEl && audioEl.duration ? audioEl.duration : durSec) * 1000);
+
       window.MeloNative.startBackgroundPlayback(
         current.title || 'Unknown Title',
         current.artist || 'Unknown Artist',
         current.thumbnail || '',
-        Boolean(playing)
+        Boolean(playing),
+        durMs,
+        curPosMs
       );
     } else if (!playing && window.MeloNative.stopBackgroundPlayback) {
       window.MeloNative.stopBackgroundPlayback();
     }
+  }
+
+  // Ensure system MediaSession keeps current position when pausing
+  if (typeof updateSystemMediaPosition === 'function') {
+    updateSystemMediaPosition();
   }
 }
 
@@ -1150,6 +1169,7 @@ function syncPlaybackControlsUI() {
 function syncSheetTrackInfo() {
   if (currentIndex === -1 || !playlist[currentIndex]) return;
   const track = playlist[currentIndex];
+  
   if ($id('sheetCover')) $id('sheetCover').src = track.thumbnail || '';
   if ($id('sheetTitle')) {
     $id('sheetTitle').innerText = track.title;
@@ -1160,12 +1180,20 @@ function syncSheetTrackInfo() {
     }, 50);
   }
   if ($id('sheetArtist')) $id('sheetArtist').innerText = track.artist;
-  const isFav = !!favorites[track.id];
-  if ($id('playerSheetFavIcon')) {
-    $id('playerSheetFavIcon').innerText = isFav ? '♥' : '♡';
-    $id('playerSheetFavIcon').style.color = isFav ? 'var(--accent)' : '#fff';
+  
+  // Read directly from store to eliminate stale variable delay
+  const isFav = Boolean(store.getFavorites()[String(track.id)]);
+  const favIcon = $id('playerSheetFavIcon');
+  if (favIcon) {
+    favIcon.innerText = isFav ? '♥' : '♡';
+    favIcon.style.color = isFav ? 'var(--accent, #fa2d48)' : '#ffffff';
   }
-  updateArtworkPalette(track.thumbnail, track.title, track.id);
+
+  // Update canvas mesh palette only if artwork actually changed
+  if (track.thumbnail && window.__lastSyncedPaletteTrackId !== track.id) {
+    window.__lastSyncedPaletteTrackId = track.id;
+    updateArtworkPalette(track.thumbnail, track.title, track.id);
+  }
 }
 
 // ==========================================
@@ -1467,8 +1495,8 @@ function updateSystemMediaPosition() {
   if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
     try {
       navigator.mediaSession.setPositionState({
-        duration: audio.duration,
-        playbackRate: audio.playbackRate || 1.0,
+        duration: Math.max(0, audio.duration),
+        playbackRate: audio.paused ? 0 : (audio.playbackRate || 1.0),
         position: Math.min(Math.max(0, audio.currentTime), audio.duration)
       });
     } catch (e) {}
@@ -2096,36 +2124,15 @@ function renderRecentSearches() {
 }
 
 // ==========================================
-// MELO APP UPDATES & VERSION ENGINE (REMASTERED)
+// REMASTERED MATERIAL YOU / PLAY STORE OTA ENGINE
 // ==========================================
-const CURRENT_APP_VERSION = '2.8.0';
+const CURRENT_APP_VERSION = '2.7.0'; // Base installed version
 
 let updateSession = {
   state: 'idle', // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'latest'
   payload: null,
   simTimer: null
 };
-
-// Open Update Modal and sync current version chips
-function openUpdatesModal() {
-  const modal = $id('updateModal');
-  if (!modal) return;
-
-  const currentBadge = $id('updateCurrentVerBadge');
-  const targetBadge = $id('updateTargetVerBadge');
-  if (currentBadge) currentBadge.textContent = `v${CURRENT_APP_VERSION}`;
-  if (targetBadge) targetBadge.textContent = '—';
-  
-  modal.style.display = 'flex';
-  executeOTAUpdateCheck();
-}
-
-function closeUpdatesModal() {
-  const modal = $id('updateModal');
-  if (modal) modal.style.display = 'none';
-  if (updateSession.simTimer) clearInterval(updateSession.simTimer);
-  updateSession.state = 'idle';
-}
 
 function isNewerVersion(current, remote) {
   const cParts = (current || '').replace(/^v/, '').split('.').map(Number);
@@ -2139,39 +2146,116 @@ function isNewerVersion(current, remote) {
   return false;
 }
 
-// Check backend endpoint for release status
+function ensureRemasteredUpdateModal() {
+  let modal = $id('updateModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'updateModal';
+    modal.className = 'update-modal-overlay';
+    document.body.appendChild(modal);
+  }
+
+  modal.innerHTML = `
+    <div class="update-sheet" onclick="event.stopPropagation()">
+      <div class="update-header-drag"></div>
+      
+      <div class="update-hero" id="updateHeroArea">
+        <div class="update-radar" id="updateRadar">
+          <div class="radar-ring" id="updateRadarRing"></div>
+          <div class="radar-core" id="updateRadarCore">
+            <svg id="updateStatusIcon" viewBox="0 0 24 24" style="width:24px;height:24px;fill:currentColor;">
+              <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+            </svg>
+          </div>
+        </div>
+        <h3 class="update-title" id="updateTitle">Checking for Updates</h3>
+        <p class="update-subtitle" id="updateSubtitle">Connecting to update servers…</p>
+      </div>
+
+      <div class="update-body-scroll" id="updateBodyScroll" style="display: none;">
+        <div class="changelog-box" id="updateChangelogBox"></div>
+
+        <div class="progress-container" id="updateProgressWrap">
+          <div class="progress-track">
+            <div class="progress-fill" id="updateProgressBar"></div>
+          </div>
+          <div class="progress-labels">
+            <span id="updateProgressLabel">Downloading package…</span>
+            <span id="updateProgressPercent">0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="update-actions">
+        <button class="update-action-btn" id="updateActionBtn" style="display: none;">
+          <span>Download Update</span>
+        </button>
+        <button class="update-secondary-btn" id="updateDismissBtn" onclick="closeUpdatesModal()">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  `;
+  modal.onclick = closeUpdatesModal;
+  return modal;
+}
+
+function openUpdatesModal() {
+  const modal = ensureRemasteredUpdateModal();
+  modal.classList.add('active');
+  executeOTAUpdateCheck();
+}
+
+function closeUpdatesModal() {
+  const modal = $id('updateModal');
+  if (modal) modal.classList.remove('active');
+  if (updateSession.simTimer) clearInterval(updateSession.simTimer);
+  updateSession.state = 'idle';
+}
+
 async function executeOTAUpdateCheck() {
-  const iconWrap = $id('updateIconWrap');
-  const title = $id('updateModalTitle');
-  const changelog = $id('updateChangelogText');
-  const actionBtn = $id('updateActionBtn');
-  const targetBadge = $id('updateTargetVerBadge');
-  const progressPanel = $id('updateProgressPanel');
+  const modal = ensureRemasteredUpdateModal();
+  const ring = $id('updateRadarRing');
+  const core = $id('updateRadarCore');
+  const icon = $id('updateStatusIcon');
+  const title = $id('updateTitle');
+  const subtitle = $id('updateSubtitle');
+  const bodyScroll = $id('updateBodyScroll');
   const changelogBox = $id('updateChangelogBox');
+  const progressWrap = $id('updateProgressWrap');
+  const actionBtn = $id('updateActionBtn');
   const dismissBtn = $id('updateDismissBtn');
 
   updateSession.state = 'checking';
-  if (iconWrap) iconWrap.classList.add('is-checking');
-  if (title) title.textContent = 'Checking for updates…';
-  if (changelog) changelog.textContent = 'Connecting to GitHub distribution nodes…';
-  if (changelogBox) changelogBox.style.display = 'block';
-  if (progressPanel) progressPanel.style.display = 'none';
-  if (dismissBtn) dismissBtn.style.display = 'inline-flex';
-  if (actionBtn) {
-    actionBtn.disabled = true;
-    actionBtn.textContent = 'Checking…';
-    actionBtn.style.background = '#fa2d48';
-    actionBtn.style.color = '#fff';
+  if (ring) {
+    ring.style.display = 'block';
+    ring.style.borderColor = 'transparent';
+    ring.style.borderTopColor = '#fa2d48';
+    ring.style.borderRightColor = '#fa2d48';
   }
+  if (core) {
+    core.style.background = 'rgba(250, 45, 72, 0.14)';
+    core.style.color = '#ff4d6d';
+  }
+  if (icon) {
+    icon.innerHTML = '<path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>';
+    icon.style.animation = 'spinRing 1s linear infinite';
+  }
+  if (title) title.textContent = 'Checking for Updates';
+  if (subtitle) subtitle.textContent = 'Looking for the latest software…';
+  if (bodyScroll) bodyScroll.style.display = 'none';
+  if (progressWrap) progressWrap.style.display = 'none';
+  if (actionBtn) actionBtn.style.display = 'none';
+  if (dismissBtn) dismissBtn.textContent = 'Dismiss';
 
   try {
-    // 1. First try checking GitHub Releases API directly
     let latest = CURRENT_APP_VERSION;
-    let notes = '• Bug fixes and performance improvements.';
-    let downloadUrl = 'https://github.com/ayushkumar2812/melomusic-app/releases/latest/download/app-release.apk';
+    let notes = '• Modern playback optimizations and fixes.\n• High-fidelity streaming stability.';
+    let downloadUrl = 'https://github.com/7VLabs-Git/melomusic-app/releases/latest/download/app-release.apk';
 
+    // 1. Fetch public release info directly
     try {
-      const ghRes = await fetch('https://api.github.com/repos/ayushkumar2812/melomusic-app/releases/latest', {
+      const ghRes = await fetch('https://api.github.com/repos/7VLabs-Git/melomusic-app/releases/latest', {
         headers: { 'Accept': 'application/vnd.github.v3+json' }
       });
       if (ghRes.ok) {
@@ -2181,7 +2265,6 @@ async function executeOTAUpdateCheck() {
         const apkAsset = (ghData.assets || []).find(a => a.name.endsWith('.apk'));
         if (apkAsset) downloadUrl = apkAsset.browser_download_url;
       } else {
-        // Fallback to internal backend if repo is private
         const res = await fetch(apiUrl('/api/app-version'), { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
@@ -2191,120 +2274,147 @@ async function executeOTAUpdateCheck() {
         }
       }
     } catch (e) {
-      // Secondary fallback
       const res = await fetch(apiUrl('/api/app-version'), { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      latest = data.latest_version || CURRENT_APP_VERSION;
-      notes = data.release_notes || notes;
-      downloadUrl = data.download_url || downloadUrl;
+      if (res.ok) {
+        const data = await res.json();
+        latest = data.latest_version || CURRENT_APP_VERSION;
+        notes = data.release_notes || notes;
+        downloadUrl = data.download_url || downloadUrl;
+      }
     }
 
     updateSession.payload = { latest_version: latest, release_notes: notes, download_url: downloadUrl };
-
-    if (targetBadge) targetBadge.textContent = `v${latest}`;
     const hasNewer = isNewerVersion(CURRENT_APP_VERSION, latest);
 
-    if (iconWrap) iconWrap.classList.remove('is-checking');
+    // Keep scanner active briefly for visual smoothness
+    await new Promise(r => setTimeout(r, 600));
+
+    if (icon) icon.style.animation = 'none';
+    if (ring) ring.style.display = 'none';
 
     if (hasNewer) {
       updateSession.state = 'available';
-      if (title) title.textContent = 'New Update Available!';
-      if (changelog) changelog.textContent = notes;
-      if (actionBtn) {
-        actionBtn.disabled = false;
-        actionBtn.textContent = 'Update Now';
-        actionBtn.style.background = '#00e676';
-        actionBtn.style.color = '#0b0f14';
+      if (core) {
+        core.style.background = 'rgba(250, 45, 72, 0.16)';
+        core.style.color = '#fa2d48';
       }
+      if (icon) {
+        icon.innerHTML = '<path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/>';
+      }
+      if (title) title.textContent = `Update to v${latest.replace(/^v/, '')}`;
+      if (subtitle) subtitle.textContent = 'A new performance release is available.';
+
+      // Strip repo references and format bullet points
+      const cleanNotes = notes
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.toLowerCase().includes('github') && !l.startsWith('http'))
+        .map(l => `
+          <div class="changelog-item">
+            <div class="changelog-dot"></div>
+            <div>${l.replace(/^[•\-\*]\s*/, '')}</div>
+          </div>
+        `).join('');
+
+      if (changelogBox) changelogBox.innerHTML = cleanNotes || '<div class="changelog-item"><div class="changelog-dot"></div><div>Bug fixes and performance improvements.</div></div>';
+      if (bodyScroll) bodyScroll.style.display = 'block';
+
+      if (actionBtn) {
+        actionBtn.style.display = 'flex';
+        actionBtn.className = 'update-action-btn';
+        actionBtn.disabled = false;
+        actionBtn.innerHTML = `<span>Download Update</span>`;
+        actionBtn.onclick = beginDownloadAndInstall;
+      }
+      if (dismissBtn) dismissBtn.textContent = 'Not Now';
     } else {
       updateSession.state = 'latest';
-      if (title) title.textContent = 'You are on the latest version';
-      if (changelog) changelog.textContent = 'Your installed build is fully up to date with the newest features, audio enhancements, and security improvements.';
-      if (actionBtn) {
-        actionBtn.disabled = false;
-        actionBtn.textContent = 'Check Again';
-        actionBtn.style.background = '#fa2d48';
-        actionBtn.style.color = '#fff';
+      if (core) {
+        core.style.background = 'rgba(16, 185, 129, 0.16)';
+        core.style.color = '#10b981';
       }
+      if (icon) {
+        icon.innerHTML = '<path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>';
+      }
+      if (title) title.textContent = "You're Up to Date";
+      if (subtitle) subtitle.textContent = `MELO Music is on the latest build (v${CURRENT_APP_VERSION})`;
+      if (dismissBtn) dismissBtn.textContent = 'Done';
     }
-  } catch (err) {
-    console.error('[MELO:OTA] Check failed:', err);
-    if (iconWrap) iconWrap.classList.remove('is-checking');
-    if (title) title.textContent = 'Update Check Failed';
-    if (changelog) changelog.textContent = 'Unable to reach update server. If you are already on the latest version, no action is needed.';
-    if (actionBtn) {
-      actionBtn.disabled = false;
-      actionBtn.textContent = 'Retry';
-      actionBtn.style.background = '#fa2d48';
-      actionBtn.style.color = '#fff';
-    }
-  }
-}
 
-function handleUpdateActionClick() {
-  if (updateSession.state === 'available') {
-    beginDownloadAndInstall();
-  } else if (updateSession.state === 'ready') {
-    launchPackageInstaller();
-  } else {
-    executeOTAUpdateCheck();
+  } catch (err) {
+    console.error('[OTA Check Error]', err);
+    if (ring) ring.style.display = 'none';
+    if (icon) {
+      icon.style.animation = 'none';
+      icon.innerHTML = '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>';
+    }
+    if (core) {
+      core.style.background = 'rgba(239, 68, 68, 0.15)';
+      core.style.color = '#ef4444';
+    }
+    if (title) title.textContent = 'Connection Problem';
+    if (subtitle) subtitle.textContent = 'Unable to reach servers. Please try again later.';
+    if (dismissBtn) dismissBtn.textContent = 'Close';
   }
 }
 
 function beginDownloadAndInstall() {
   updateSession.state = 'downloading';
 
-  const progressPanel = $id('updateProgressPanel');
-  const changelogBox = $id('updateChangelogBox');
   const actionBtn = $id('updateActionBtn');
   const dismissBtn = $id('updateDismissBtn');
+  const progressWrap = $id('updateProgressWrap');
   const progressBar = $id('updateProgressBar');
-  const progressPct = $id('updateProgressPercent');
-  const statusText = $id('updateProgressStatusText');
-  const dSize = $id('updateDownloadedSize');
-  const tSize = $id('updateTotalSize');
+  const progressPercent = $id('updateProgressPercent');
+  const progressLabel = $id('updateProgressLabel');
 
-  if (progressPanel) progressPanel.style.display = 'flex';
-  if (changelogBox) changelogBox.style.display = 'none';
+  const downloadUrl = updateSession.payload?.download_url ||
+    'https://github.com/7VLabs-Git/melomusic-app/releases/latest/download/app-release.apk';
+
   if (actionBtn) {
     actionBtn.disabled = true;
-    actionBtn.textContent = 'Downloading…';
+    actionBtn.style.opacity = '0.6';
+    actionBtn.innerHTML = `<span>Downloading…</span>`;
   }
   if (dismissBtn) dismissBtn.style.display = 'none';
-
-  const totalBytesMB = 24.6;
-  if (tSize) tSize.textContent = `/ ${totalBytesMB} MB`;
+  if (progressWrap) progressWrap.style.display = 'flex';
 
   let currentPercent = 0;
+  const totalMB = 28.4;
 
   updateSession.simTimer = setInterval(() => {
-    const increment = Math.floor(Math.random() * 8) + 4;
-    currentPercent = Math.min(100, currentPercent + increment);
-
-    const downloadedMB = ((currentPercent / 100) * totalBytesMB).toFixed(1);
+    currentPercent = Math.min(100, currentPercent + Math.floor(Math.random() * 9) + 4);
 
     if (progressBar) progressBar.style.width = `${currentPercent}%`;
-    if (progressPct) progressPct.textContent = `${currentPercent}%`;
-    if (dSize) dSize.textContent = `${downloadedMB} MB`;
+    if (progressPercent) progressPercent.textContent = `${currentPercent}%`;
+    if (progressLabel) {
+      const downloadedMB = ((currentPercent / 100) * totalMB).toFixed(1);
+      progressLabel.textContent = `Downloading update… ${downloadedMB} MB / ${totalMB} MB`;
+    }
 
     if (currentPercent >= 100) {
       clearInterval(updateSession.simTimer);
       updateSession.state = 'ready';
-      if (statusText) statusText.textContent = 'Ready to Install';
-      if (actionBtn) {
-        actionBtn.disabled = false;
-        actionBtn.textContent = 'Install Package';
-        actionBtn.style.background = '#00e676';
-      }
-      launchPackageInstaller();
+
+      setTimeout(() => {
+        if (progressWrap) progressWrap.style.display = 'none';
+        if (dismissBtn) dismissBtn.style.display = 'block';
+
+        if (actionBtn) {
+          actionBtn.disabled = false;
+          actionBtn.style.opacity = '1';
+          actionBtn.className = 'update-action-btn install-state';
+          actionBtn.innerHTML = `<span>Install Update</span>`;
+          actionBtn.onclick = launchPackageInstaller;
+        }
+      }, 400);
     }
-  }, 160);
+  }, 180);
 }
 
 function launchPackageInstaller() {
-  const downloadUrl = updateSession.payload?.download_url || 
-    'https://github.com/ayushkumar2812/melomusic-app/releases/latest/download/app-release.apk';
+  const downloadUrl = updateSession.payload?.download_url ||
+    'https://github.com/7VLabs-Git/melomusic-app/releases/latest/download/app-release.apk';
 
   if (window.Capacitor?.Plugins?.Browser) {
     window.Capacitor.Plugins.Browser.open({ url: downloadUrl });
@@ -2316,7 +2426,6 @@ function launchPackageInstaller() {
 // Global window bindings
 window.openUpdatesModal = openUpdatesModal;
 window.closeUpdatesModal = closeUpdatesModal;
-window.handleUpdateActionClick = handleUpdateActionClick;
 window.executeOTAUpdateCheck = executeOTAUpdateCheck;
 
 // ==========================================
@@ -3059,6 +3168,7 @@ async function triggerInlineCloudSync() {
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Syncing…';
+    btn.style.opacity = '0.75';
   }
   if (header) header.textContent = 'Syncing with MELO Cloud…';
 
@@ -3068,19 +3178,20 @@ async function triggerInlineCloudSync() {
       success = await store.pushToCloud({ skipRerender: true });
     }
 
-    lastSyncedAt = new Date();
+    recordSuccessfulSync('synced');
     if (header) header.textContent = 'Cloud Synced';
     if (sub) sub.textContent = 'Last recorded: Just now';
 
     if (btn) {
       btn.textContent = 'Synced ✓';
-      btn.style.setProperty('background-color', '#10b981', 'important');
+      btn.style.setProperty('background', '#10b981', 'important');
       btn.style.setProperty('border-color', '#10b981', 'important');
       btn.style.setProperty('color', '#ffffff', 'important');
+      btn.style.opacity = '1';
 
       setTimeout(() => {
         btn.textContent = 'Sync Now';
-        btn.style.removeProperty('background-color');
+        btn.style.removeProperty('background');
         btn.style.removeProperty('border-color');
         btn.style.removeProperty('color');
         btn.disabled = false;
@@ -3092,7 +3203,14 @@ async function triggerInlineCloudSync() {
     if (sub) sub.textContent = 'Could not reach server';
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Sync Now';
+      btn.textContent = 'Sync Failed';
+      btn.style.setProperty('background', '#ef4444', 'important');
+      btn.style.setProperty('color', '#ffffff', 'important');
+      setTimeout(() => {
+        btn.textContent = 'Sync Now';
+        btn.style.removeProperty('background');
+        btn.style.removeProperty('color');
+      }, 3000);
     }
   } finally {
     if (icon) icon.classList.remove('sync-active');
@@ -4017,12 +4135,39 @@ function openMenuForTrack(trackId) {
   if (track) openContextMenu(track);
 }
 
+function updateContextMenuFavState(isFav) {
+  const favRow = document.querySelector('#contextModal .context-action-row[onclick*="actionAddToFavorites"]');
+  const favText = $id('ctxFavText');
+  if (favRow) {
+    const svg = favRow.querySelector('svg');
+    if (isFav) {
+      favRow.style.color = 'var(--accent, #fa2d48)';
+      if (svg) {
+        svg.style.fill = 'var(--accent, #fa2d48)';
+        svg.style.stroke = 'var(--accent, #fa2d48)';
+      }
+      if (favText) favText.textContent = 'Remove from Favorites';
+    } else {
+      favRow.style.color = '#ffffff';
+      if (svg) {
+        svg.style.fill = 'none';
+        svg.style.stroke = 'currentColor';
+      }
+      if (favText) favText.textContent = 'Save to Favorites';
+    }
+  }
+}
+
 function openContextMenu(trackOverride = null) {
   const track = trackOverride || (currentIndex !== -1 ? playlist[currentIndex] : null);
   if (!track) return;
   contextTrack = track;
   if ($id('ctxModalSongTitle')) $id('ctxModalSongTitle').innerText = track.title;
-  if ($id('ctxFavText')) $id('ctxFavText').innerText = favorites[track.id] ? "Remove from Favorites" : "Save to Favorites";
+  
+  // Set accurate initial heart color and label
+  const isFav = Boolean(store.getFavorites()[String(track.id)]);
+  updateContextMenuFavState(isFav);
+
   const dlRow = $id('ctxDownloadRow');
   if (dlRow) {
     if (downloadedTrackIds.has(String(track.id))) {
@@ -4247,11 +4392,31 @@ function openSettingsModal() { $id('settingsModal')?.classList.add('open'); }
 function closeSettingsModal() { $id('settingsModal')?.classList.remove('open'); }
 
 function toggleCurrentTrackFavorite() {
-  const track = contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
-  if (!track) return;
-  store.setFavorite(track);
-  syncSheetTrackInfo();
+  const track = (currentIndex !== -1 && playlist[currentIndex]) ? playlist[currentIndex] : contextTrack;
+  if (!track || !track.id) return;
+
+  const trackId = String(track.id);
+  const willLove = !store.getFavorites()[trackId];
+
+  // 1. Immediately toggle in store
+  store.setFavorite(track, willLove);
+  favorites = store.getFavorites();
+
+  // 2. Instant visual feedback on the sheet button (Zero delay)
+  const icon = $id('playerSheetFavIcon');
+  if (icon) {
+    icon.textContent = willLove ? '♥' : '♡';
+    icon.style.color = willLove ? 'var(--accent, #fa2d48)' : '#ffffff';
+    icon.style.transform = 'scale(1.25)';
+    setTimeout(() => { icon.style.transform = 'scale(1)'; }, 180);
+  }
+
+  showToast(willLove ? 'Added to Loved Tracks ♥' : 'Removed from Favorites');
+
+  // 3. Update 3-dot context menu row if open
+  updateContextMenuFavState(willLove);
 }
+window.toggleCurrentTrackFavorite = toggleCurrentTrackFavorite;
 
 function actionAddToFavorites() { toggleCurrentTrackFavorite(); closeContextMenu(); }
 function actionPlayContextTrack() {
@@ -4283,20 +4448,71 @@ function actionAddToQueue() {
   closeContextMenu();
 }
 
-function actionShareSong() {
+async function actionShareSong() {
   closeContextMenu();
-  if (currentIndex === -1 || !playlist[currentIndex]) return;
-  const shareData = {
-    title: playlist[currentIndex].title,
-    text: `Listen to "${playlist[currentIndex].title}" by ${playlist[currentIndex].artist} on MELO!`,
-    url: window.location.origin
-  };
-  if (navigator.share) navigator.share(shareData).catch(() => {});
-  else {
-    navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
-    showToast("Song link copied to clipboard!");
+  const track = contextTrack || (currentIndex !== -1 ? playlist[currentIndex] : null);
+  if (!track) return;
+
+  const shareTitle = track.title || 'MELO Music';
+  const shareText = `Listening to "${track.title}" by ${track.artist || 'Unknown'} on MELO Music 🎵`;
+  const shareUrl = `https://melomusic.onrender.com`;
+
+  // 1. Try Native Capacitor Share (Android OS Sheet)
+  if (window.Capacitor?.Plugins?.Share) {
+    try {
+      await window.Capacitor.Plugins.Share.share({
+        title: shareTitle,
+        text: shareText,
+        url: shareUrl,
+        dialogTitle: 'Share track via'
+      });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+
+  // 2. Try Web Share API with clean web URL
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: shareTitle,
+        text: shareText,
+        url: shareUrl
+      });
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+    }
+  }
+
+  // 3. Guaranteed Clipboard Fallback
+  const copyContent = `${shareText}\n${shareUrl}`;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(copyContent)
+      .then(() => showToast("Song link copied to clipboard!"))
+      .catch(() => fallbackCopy(copyContent));
+  } else {
+    fallbackCopy(copyContent);
   }
 }
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast("Song info copied to clipboard!");
+  } catch (e) {
+    showToast("Unable to share song.");
+  }
+  document.body.removeChild(ta);
+}
+window.actionShareSong = actionShareSong;
 
 function actionViewCredits() {
   closeContextMenu();
@@ -6014,15 +6230,22 @@ function initApp() {
   }
 }
 
-// ROBUST BOOTSTRAPPER: Guarantees DOM presence before rendering
+// ROBUST BOOTSTRAPPER: Guarantees DOM presence and mounts Home View
 function startMeloEngine() {
-  initApp();
+  try {
+    initApp();
+  } catch (err) {
+    console.error('[MELO_INIT_ERROR]', err);
+  }
+
+  // Fail-safe view mounter: If viewContainer is empty, force render Home
   setTimeout(() => {
     const vc = $id('viewContainer');
     if (vc && (!vc.children.length || !vc.innerHTML.trim())) {
+      console.warn('[MELO] Mounting fallback Home view...');
       switchView('home', false);
     }
-  }, 40);
+  }, 50);
 }
 
 window.togglePlay = togglePlay;

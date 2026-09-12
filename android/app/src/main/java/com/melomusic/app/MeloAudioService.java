@@ -90,7 +90,7 @@ public class MeloAudioService extends Service {
 
             @Override
             public void onSeekTo(long pos) {
-                currentPositionMs = pos;
+                currentPositionMs = Math.max(0L, pos);
                 updatePlaybackState();
                 double seconds = pos / 1000.0;
                 MainActivity.sendJSEvent("seekToPosition:" + seconds);
@@ -112,19 +112,24 @@ public class MeloAudioService extends Service {
             String artist = intent.getStringExtra("artist");
             String thumb = intent.getStringExtra("thumbnail");
             boolean playing = intent.getBooleanExtra("isPlaying", true);
-            long duration = intent.getLongExtra("duration", 0L);
-            long position = intent.getLongExtra("position", 0L);
+            long duration = intent.getLongExtra("duration", -1L);
+            long position = intent.getLongExtra("position", -1L);
 
             if (title != null && !title.isEmpty()) currentTitle = title;
             if (artist != null && !artist.isEmpty()) currentArtist = artist;
             isPlaying = playing;
             if (duration > 0) currentDurationMs = duration;
-            currentPositionMs = position;
+            
+            // Only overwrite position if valid non-negative value is provided
+            if (position >= 0) {
+                currentPositionMs = position;
+            }
 
             if (wakeLock != null && !wakeLock.isHeld()) {
                 wakeLock.acquire();
             }
 
+            syncMediaMetadata();
             updatePlaybackState();
 
             if (thumb != null && !thumb.isEmpty() && !thumb.equals(currentThumbnailUrl)) {
@@ -134,10 +139,17 @@ public class MeloAudioService extends Service {
                 publishNotification();
             }
         } else if (ACTION_UPDATE_PROGRESS.equals(action)) {
-            currentPositionMs = intent.getLongExtra("position", currentPositionMs);
-            long dur = intent.getLongExtra("duration", 0L);
-            if (dur > 0) currentDurationMs = dur;
+            long pos = intent.getLongExtra("position", -1L);
+            if (pos >= 0) {
+                currentPositionMs = pos;
+            }
+            long dur = intent.getLongExtra("duration", -1L);
+            if (dur > 0) {
+                currentDurationMs = dur;
+            }
             isPlaying = intent.getBooleanExtra("isPlaying", isPlaying);
+            
+            syncMediaMetadata();
             updatePlaybackState();
         } else if (ACTION_PLAY_PAUSE.equals(action)) {
             if (isPlaying) {
@@ -162,6 +174,20 @@ public class MeloAudioService extends Service {
         return START_STICKY;
     }
 
+    private void syncMediaMetadata() {
+        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs > 0 ? currentDurationMs : -1L);
+
+        if (currentArtBitmap != null) {
+            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtBitmap);
+            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, currentArtBitmap);
+        }
+
+        mediaSession.setMetadata(metaBuilder.build());
+    }
+
     private void updatePlaybackState() {
         long actions = PlaybackStateCompat.ACTION_PLAY
                 | PlaybackStateCompat.ACTION_PAUSE
@@ -171,6 +197,7 @@ public class MeloAudioService extends Service {
                 | PlaybackStateCompat.ACTION_SEEK_TO;
 
         int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        // When paused, playback speed must be strictly 0.0f to lock Android system scrubber
         float speed = isPlaying ? 1.0f : 0.0f;
 
         mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
@@ -195,23 +222,12 @@ public class MeloAudioService extends Service {
             }
 
             currentArtBitmap = bmp;
+            syncMediaMetadata();
             publishNotification();
         });
     }
 
     private void publishNotification() {
-        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
-                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs > 0 ? currentDurationMs : -1L);
-
-        if (currentArtBitmap != null) {
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtBitmap);
-            metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, currentArtBitmap);
-        }
-
-        mediaSession.setMetadata(metaBuilder.build());
-
         Notification notification = buildMediaNotification();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
@@ -227,7 +243,6 @@ public class MeloAudioService extends Service {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, launchIntent, flags);
 
-        // Use MediaButtonReceiver pending intents to bypass background service launch limitations on Android 12+
         PendingIntent prevIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
         PendingIntent playPauseIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_PLAY_PAUSE);
         PendingIntent nextIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT);

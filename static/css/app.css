@@ -3139,122 +3139,6 @@ body.player-expanded #dockPlayerBar {
 /* =========================================================
    SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
    ========================================================= */
-/* =========================================================
-   SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
-   ========================================================= */
-
-/* The scrollable pill container */
-.vibe-chips-row,
-.search-tabs,
-.search-filters,
-.search-categories,
-.search-filter-pills,
-#searchFiltersRow,
-#searchFilterContainer {
-  display: flex !important;
-  align-items: center !important;
-  gap: 10px !important;
-  padding: 8px 2px 8px 2px !important;
-  margin-bottom: 0 !important;
-  overflow-x: auto !important;
-  scrollbar-width: none !important;
-  -webkit-overflow-scrolling: touch !important;
-  width: 100% !important;
-}
-
-.vibe-chips-row::-webkit-scrollbar,
-.search-tabs::-webkit-scrollbar,
-#searchFiltersRow::-webkit-scrollbar {
-  display: none !important;
-}
-
-/* Default / Inactive category button */
-.vibe-chip,
-.search-tab,
-.search-filter-btn,
-.search-pill,
-.search-filter,
-.search-category-btn,
-button[data-category],
-button[data-filter] {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  background: rgba(255, 255, 255, 0.05) !important;
-  color: var(--text-muted, #9496a1) !important;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)) !important;
-  border-radius: 9999px !important;
-  padding: 8px 18px !important;
-  font-size: 0.85rem !important;
-  font-weight: 600 !important;
-  font-family: inherit !important;
-  cursor: pointer !important;
-  white-space: nowrap !important;
-  outline: none !important;
-  user-select: none !important;
-  backdrop-filter: blur(14px) !important;
-  -webkit-backdrop-filter: blur(14px) !important;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
-  -webkit-tap-highlight-color: transparent !important;
-}
-
-/* Hover state */
-@media (hover: hover) {
-  .vibe-chip:hover,
-  .search-tab:hover,
-  .search-filter-btn:hover {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--text-main, #ffffff) !important;
-    border-color: var(--border-glow, rgba(255, 255, 255, 0.18)) !important;
-    transform: translateY(-2px) !important;
-  }
-}
-
-/* Tap active bounce */
-.vibe-chip:active,
-.search-tab:active {
-  transform: scale(0.95) !important;
-}
-
-/* Selected / Active category button (Melo Red Accent) */
-.vibe-chip.active,
-.search-tab.active,
-.search-filter-btn.active {
-  background: var(--accent, #fa2d48) !important;
-  color: #ffffff !important;
-  border-color: var(--accent, #fa2d48) !important;
-  font-weight: 700 !important;
-  box-shadow: 0 4px 16px var(--accent-glow, rgba(250, 45, 72, 0.45)) !important;
-  transform: translateY(-1px) !important;
-}
-
-/* Tighten spacing between filters and dynamic search results */
-#dynamicSearchResultsArea {
-  margin-top: 0 !important;
-  padding-top: 0 !important;
-}
-
-#dynamicSearchResultsArea .section-heading,
-#dynamicSearchResultsArea #searchResultsHeading {
-  margin-top: 6px !important;
-  margin-bottom: 10px !important;
-}
-
-#dynamicSearchResultsArea .hub-vault-card {
-  margin-top: 4px !important;
-  margin-bottom: 16px !important;
-}
-
-/* When closed or closing */
-#fullscreen-player:not(.active),
-.fullscreen-player-modal:not(.open) {
-  transform: translateY(100%);
-  pointer-events: none !important; /* Immediately releases clicks to elements underneath */
-}
-
-/* =========================================================
-   SEARCH CATEGORY FILTER TABS / PILLS (MELO THEME)
-   ========================================================= */
 
 /* The scrollable pill container */
 .vibe-chips-row,
@@ -4741,149 +4625,6 @@ body.player-docked .stage-content {
   display: none !important;
 }
 
-/* ==========================================
-   APP UPDATES DIALOG (MODERN MODAL OVERLAY)
-   ========================================== */
-#updateModal {
-  position: fixed !important;
-  inset: 0 !important;
-  width: 100vw !important;
-  height: 100vh !important;
-  height: 100dvh !important;
-  background: rgba(0, 0, 0, 0.85) !important;
-  backdrop-filter: blur(20px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
-  z-index: 999999 !important;
-  display: none; /* Display is controlled via 'flex' in JavaScript */
-  align-items: center !important;
-  justify-content: center !important;
-  padding: 20px !important;
-  box-sizing: border-box !important;
-}
-
-/* Modal Inner Card */
-#updateModal .update-dialog-card {
-  position: relative !important;
-  width: 100% !important;
-  max-width: 340px !important;
-  background: #12141c !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  border-radius: 24px !important;
-  padding: 24px 20px !important;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9) !important;
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
-  text-align: center !important;
-  gap: 12px !important;
-  box-sizing: border-box !important;
-  animation: modalScaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
-}
-
-@keyframes modalScaleIn {
-  from {
-    transform: scale(0.92);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-/* Update Version Badges */
-.update-badges-row {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 8px !important;
-  width: 100% !important;
-  margin-top: 2px !important;
-}
-
-.update-version-badge {
-  padding: 4px 10px !important;
-  border-radius: 999px !important;
-  font-size: 0.72rem !important;
-  font-weight: 700 !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  color: #fff !important;
-}
-
-/* Changelog Note Box */
-#updateChangelogBox {
-  width: 100% !important;
-  background: rgba(255, 255, 255, 0.03) !important;
-  border: 1px solid rgba(255, 255, 255, 0.07) !important;
-  border-radius: 14px !important;
-  padding: 12px 14px !important;
-  font-size: 0.8rem !important;
-  color: var(--text-muted, #9496a1) !important;
-  text-align: left !important;
-  max-height: 110px !important;
-  overflow-y: auto !important;
-  white-space: pre-wrap !important;
-  box-sizing: border-box !important;
-  line-height: 1.4 !important;
-}
-
-/* Download Progress Bar */
-#updateProgressPanel {
-  width: 100% !important;
-  box-sizing: border-box !important;
-}
-
-#updateProgressBar {
-  background: #00e676 !important;
-  border-radius: 999px !important;
-}
-
-/* Actions Row at Bottom */
-.update-actions-row {
-  display: flex !important;
-  align-items: center !important;
-  gap: 10px !important;
-  width: 100% !important;
-  margin-top: 4px !important;
-}
-
-#updateDismissBtn {
-  flex: 1 !important;
-  height: 42px !important;
-  padding: 0 14px !important;
-  border-radius: 999px !important;
-  font-size: 0.84rem !important;
-  font-weight: 600 !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  color: #ffffff !important;
-  cursor: pointer !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  outline: none !important;
-}
-
-#updateDismissBtn:active {
-  background: rgba(255, 255, 255, 0.12) !important;
-}
-
-#updateActionBtn {
-  flex: 1.4 !important;
-  height: 42px !important;
-  padding: 0 16px !important;
-  border-radius: 999px !important;
-  font-size: 0.84rem !important;
-  font-weight: 700 !important;
-  cursor: pointer !important;
-  border: none !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  outline: none !important;
-}
-
 /* Unified bottom edge clearance — calibrated to clear the floating mini-player */
 .stage-content,
 .account-stage {
@@ -4901,4 +4642,265 @@ body.player-docked .stage-content {
 body.has-mini-player .stage-content,
 body.player-docked .stage-content {
   padding-bottom: 175px !important;
+}
+
+/* ============================================================
+   REMASTERED MATERIAL YOU / PLAY STORE STYLE UPDATER MODAL (MELO RED THEME)
+   ============================================================ */
+/* ============================================================
+   REMASTERED MATERIAL YOU / PLAY STORE STYLE UPDATER MODAL (MELO RED THEME)
+   ============================================================ */
+.update-modal-overlay,
+#updateModal {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 999999;
+  display: none !important; /* <--- CRITICAL: Do not render or capture touches when closed */
+  align-items: flex-end;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.update-modal-overlay.active,
+#updateModal.active {
+  display: flex !important; /* <--- Only render in DOM when opened */
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.update-sheet {
+  width: 100%;
+  max-width: 480px;
+  background: #12141a;
+  border-top-left-radius: 28px;
+  border-top-right-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  padding: 28px 24px;
+  color: #fff;
+  transform: translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (min-width: 640px) {
+  .update-modal-overlay,
+  #updateModal {
+    align-items: center;
+  }
+  .update-sheet {
+    border-radius: 28px;
+    transform: scale(0.92);
+  }
+  .update-modal-overlay.active .update-sheet,
+  #updateModal.active .update-sheet {
+    transform: scale(1);
+  }
+}
+
+.update-modal-overlay.active .update-sheet,
+#updateModal.active .update-sheet {
+  transform: translateY(0);
+}
+
+.update-header-drag {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 0 auto 20px;
+}
+
+/* Status hero container */
+.update-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 12px 0 18px;
+}
+
+.update-radar {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.radar-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent, #fa2d48);
+  border-right-color: var(--accent, #fa2d48);
+  animation: spinRing 1.2s linear infinite;
+}
+
+.radar-core {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(250, 45, 72, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ff4d6d;
+}
+
+@keyframes spinRing {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.update-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 6px 0;
+}
+
+.update-subtitle {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+}
+
+/* Body Content */
+.update-body-scroll {
+  overflow-y: auto;
+  margin: 16px 0 24px;
+  padding: 0 4px;
+  flex: 1;
+}
+
+.changelog-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 16px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.changelog-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.changelog-item:last-child {
+  margin-bottom: 0;
+}
+
+.changelog-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent, #fa2d48);
+  margin-top: 7px;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px rgba(250, 45, 72, 0.5);
+}
+
+/* Material Download Progress */
+.progress-container {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.progress-track {
+  height: 8px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #fa2d48, #c026d3);
+  border-radius: 999px;
+  box-shadow: 0 0 12px rgba(250, 45, 72, 0.4);
+  transition: width 0.2s ease;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Action Buttons */
+.update-action-btn {
+  width: 100%;
+  padding: 14px 20px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #ff1744 0%, #fa2d48 50%, #c9002a 100%);
+  color: #ffffff;
+  transition: all 0.25s ease;
+  box-shadow: 0 6px 20px rgba(250, 45, 72, 0.35);
+}
+
+.update-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(250, 45, 72, 0.5);
+}
+
+.update-action-btn:active {
+  transform: scale(0.98);
+}
+
+.update-action-btn.install-state {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+  animation: pulseGreen 2s infinite;
+}
+
+@keyframes pulseGreen {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.update-secondary-btn {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  padding: 12px;
+  font-size: 13.5px;
+  cursor: pointer;
+  margin-top: 6px;
+  transition: color 0.2s ease;
+}
+
+.update-secondary-btn:hover {
+  color: rgba(255, 255, 255, 0.85);
 }
