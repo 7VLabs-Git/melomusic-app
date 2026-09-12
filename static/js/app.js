@@ -2098,7 +2098,7 @@ function renderRecentSearches() {
 // ==========================================
 // MELO APP UPDATES & VERSION ENGINE (REMASTERED)
 // ==========================================
-const CURRENT_APP_VERSION = '2.7.0';
+const CURRENT_APP_VERSION = '2.8.0';
 
 let updateSession = {
   state: 'idle', // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'latest'
