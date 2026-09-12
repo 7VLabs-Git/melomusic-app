@@ -1061,8 +1061,8 @@ async def shutdown_event():
 # APP VERSION & IN-APP UPDATE SYSTEM
 # ==========================================
 # Whenever you release a new APK, update these 3 variables:
-LATEST_APP_VERSION = os.getenv("LATEST_APP_VERSION", "2.7.0")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "ayushkumar2812/melomusic-app")
+LATEST_APP_VERSION = os.getenv("LATEST_APP_VERSION", "2.8.0")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "7VLabs-Git/melomusic-app")
 FALLBACK_APK_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download/app-release.apk"
 
 @app.get("/api/app-version")
