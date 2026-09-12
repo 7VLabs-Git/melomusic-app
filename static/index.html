@@ -413,48 +413,41 @@
   </div>
 
   <!-- UPDATES & VERSION MODAL -->
-  <div class="context-action-modal" id="updatesModal" onclick="closeUpdatesModal(event)">
-    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align: left;">
-      <div class="drag-handle" onclick="closeUpdatesModal()"></div>
-      <div class="context-modal-title" style="text-align: center; margin-bottom: 20px;">App Updates</div>
+  <div id="updateModal" style="display: none;">
+    <div class="update-dialog-card">
+      <!-- Icon indicator -->
+      <div id="updateIconWrap" style="font-size: 2.2rem; margin-bottom: 2px;">🚀</div>
       
-      <div style="display: flex; flex-direction: column; gap: 14px; padding: 4px 0;">
-        <!-- Version Info Card -->
-        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 16px; display: flex; align-items: center; justify-content: space-between;">
-          <div>
-            <div style="font-size: 0.98rem; font-weight: 800; color: #fff;">MELO Music Core</div>
-            <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;" id="currentVersionLabel">Version 2.6.7 (Production)</div>
-          </div>
-          <span id="updateBadgeStatus" style="font-size: 0.7rem; font-weight: 800; padding: 4px 10px; border-radius: 99px; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">Up to Date</span>
-        </div>
+      <!-- Titles -->
+      <h3 id="updateModalTitle" style="font-size: 1.25rem; font-weight: 800; margin: 0; color: #fff;">App Updates</h3>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">MELO Streaming Core</p>
+      
+      <!-- Version Badges -->
+      <div class="update-badges-row">
+        <span class="update-version-badge">Installed: <strong id="updateCurrentVerBadge">v2.7.0</strong></span>
+        <span class="update-version-badge" style="border-color: rgba(250, 45, 72, 0.4); color: #ff4d6d;">Latest: <strong id="updateTargetVerBadge">—</strong></span>
+      </div>
 
-        <!-- Auto-Update Toggle Row -->
-        <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between;">
-          <div>
-            <div style="font-size: 0.88rem; font-weight: 700; color: #fff;">Automatic Background Updates</div>
-            <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 2px;">Silently download latest security & feature patches</div>
-          </div>
-          <label style="position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; margin-left: 12px;">
-            <input type="checkbox" id="autoUpdateToggle" onchange="toggleAutoUpdatePreference(this)" style="opacity: 0; width: 0; height: 0;" />
-            <span id="autoUpdateSlider" style="position: absolute; cursor: pointer; inset: 0; background-color: rgba(255, 255, 255, 0.15); transition: .25s; border-radius: 24px; border: 1px solid rgba(255, 255, 255, 0.1);"></span>
-            <span id="autoUpdateThumb" style="position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .25s; border-radius: 50%;"></span>
-          </label>
-        </div>
+      <!-- Changelog Box -->
+      <div id="updateChangelogBox">
+        <div id="updateChangelogText">Connecting to MELO distribution nodes…</div>
+      </div>
 
-        <!-- Release Notes / Changelog -->
-        <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 16px;">
-          <div style="font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 8px;">Latest Changelog (v2.6.7)</div>
-          <ul style="margin: 0; padding-left: 16px; font-size: 0.82rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; line-height: 1.4;">
-            <li>True edge-to-edge immersive full-screen display layout</li>
-            <li>Optimized JioSaavn CDN image proxy bypass (No-referrer policy)</li>
-            <li>Advanced native Android hardware back-button routing engine</li>
-          </ul>
+      <!-- Download Progress Panel (Visible while downloading) -->
+      <div id="updateProgressPanel" style="display: none; width: 100%; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.78rem; color: #fff;">
+          <span id="updateProgressStatusText">Downloading package…</span>
+          <span><strong id="updateProgressPercent" style="color: #00e676;">0%</strong> <span id="updateDownloadedSize">0 MB</span> <span id="updateTotalSize" style="color: var(--text-muted);">/ 24.6 MB</span></span>
         </div>
+        <div style="width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 999px; overflow: hidden;">
+          <div id="updateProgressBar" style="width: 0%; height: 100%; background: #00e676; border-radius: 999px; transition: width 0.15s ease;"></div>
+        </div>
+      </div>
 
-        <!-- Action Button -->
-        <button class="pill-action-btn" id="checkUpdateBtn" onclick="executeManualUpdateCheck()" style="width: 100%; justify-content: center; padding: 13px; background: #fff; color: #000; border-radius: 99px; margin-top: 4px;">
-          Check for Updates
-        </button>
+      <!-- Action Buttons -->
+      <div class="update-actions-row">
+        <button type="button" id="updateDismissBtn" onclick="closeUpdatesModal()">Later</button>
+        <button type="button" class="pill-action-btn" id="updateActionBtn" onclick="handleUpdateActionClick()" style="background: #fa2d48; color: #fff;">Check Again</button>
       </div>
     </div>
   </div>

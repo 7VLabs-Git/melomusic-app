@@ -13,11 +13,13 @@ import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
+import androidx.media.session.MediaButtonReceiver;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -30,6 +32,7 @@ public class MeloAudioService extends Service {
     public static final String ACTION_PLAY_PAUSE = "ACTION_PLAY_PAUSE";
     public static final String ACTION_NEXT = "ACTION_NEXT";
     public static final String ACTION_PREV = "ACTION_PREV";
+    public static final String ACTION_UPDATE_PROGRESS = "ACTION_UPDATE_PROGRESS";
 
     private static final String CHANNEL_ID = "melo_playback_channel";
     private static final int NOTIFICATION_ID = 1001;
@@ -43,6 +46,8 @@ public class MeloAudioService extends Service {
     private String currentThumbnailUrl = "";
     private Bitmap currentArtBitmap = null;
     private boolean isPlaying = true;
+    private long currentPositionMs = 0L;
+    private long currentDurationMs = 0L;
 
     @Override
     public void onCreate() {
@@ -59,11 +64,17 @@ public class MeloAudioService extends Service {
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
+                isPlaying = true;
+                updatePlaybackState();
+                publishNotification();
                 MainActivity.sendJSEvent("togglePlayPause");
             }
 
             @Override
             public void onPause() {
+                isPlaying = false;
+                updatePlaybackState();
+                publishNotification();
                 MainActivity.sendJSEvent("togglePlayPause");
             }
 
@@ -76,6 +87,14 @@ public class MeloAudioService extends Service {
             public void onSkipToPrevious() {
                 MainActivity.sendJSEvent("prevTrack");
             }
+
+            @Override
+            public void onSeekTo(long pos) {
+                currentPositionMs = pos;
+                updatePlaybackState();
+                double seconds = pos / 1000.0;
+                MainActivity.sendJSEvent("seekToPosition:" + seconds);
+            }
         });
         mediaSession.setActive(true);
     }
@@ -84,16 +103,23 @@ public class MeloAudioService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
 
+        // Route media button actions coming from lockscreen or notification controls
+        MediaButtonReceiver.handleIntent(mediaSession, intent);
+
         String action = intent.getAction();
         if (ACTION_START.equals(action)) {
             String title = intent.getStringExtra("title");
             String artist = intent.getStringExtra("artist");
             String thumb = intent.getStringExtra("thumbnail");
             boolean playing = intent.getBooleanExtra("isPlaying", true);
+            long duration = intent.getLongExtra("duration", 0L);
+            long position = intent.getLongExtra("position", 0L);
 
             if (title != null && !title.isEmpty()) currentTitle = title;
             if (artist != null && !artist.isEmpty()) currentArtist = artist;
             isPlaying = playing;
+            if (duration > 0) currentDurationMs = duration;
+            currentPositionMs = position;
 
             if (wakeLock != null && !wakeLock.isHeld()) {
                 wakeLock.acquire();
@@ -107,16 +133,27 @@ public class MeloAudioService extends Service {
             } else {
                 publishNotification();
             }
+        } else if (ACTION_UPDATE_PROGRESS.equals(action)) {
+            currentPositionMs = intent.getLongExtra("position", currentPositionMs);
+            long dur = intent.getLongExtra("duration", 0L);
+            if (dur > 0) currentDurationMs = dur;
+            isPlaying = intent.getBooleanExtra("isPlaying", isPlaying);
+            updatePlaybackState();
         } else if (ACTION_PLAY_PAUSE.equals(action)) {
-            MainActivity.sendJSEvent("togglePlayPause");
+            if (isPlaying) {
+                mediaSession.getController().getTransportControls().pause();
+            } else {
+                mediaSession.getController().getTransportControls().play();
+            }
         } else if (ACTION_NEXT.equals(action)) {
-            MainActivity.sendJSEvent("nextTrack");
+            mediaSession.getController().getTransportControls().skipToNext();
         } else if (ACTION_PREV.equals(action)) {
-            MainActivity.sendJSEvent("prevTrack");
+            mediaSession.getController().getTransportControls().skipToPrevious();
         } else if (ACTION_STOP.equals(action)) {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
             }
+            isPlaying = false;
             updatePlaybackState();
             stopForeground(true);
             stopSelf();
@@ -130,13 +167,15 @@ public class MeloAudioService extends Service {
                 | PlaybackStateCompat.ACTION_PAUSE
                 | PlaybackStateCompat.ACTION_PLAY_PAUSE
                 | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
-                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS;
+                | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                | PlaybackStateCompat.ACTION_SEEK_TO;
 
         int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        float speed = isPlaying ? 1.0f : 0.0f;
 
         mediaSession.setPlaybackState(new PlaybackStateCompat.Builder()
                 .setActions(actions)
-                .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .setState(state, Math.max(0L, currentPositionMs), speed, SystemClock.elapsedRealtime())
                 .build());
     }
 
@@ -163,7 +202,8 @@ public class MeloAudioService extends Service {
     private void publishNotification() {
         MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
-                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist);
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs > 0 ? currentDurationMs : -1L);
 
         if (currentArtBitmap != null) {
             metaBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, currentArtBitmap);
@@ -187,9 +227,10 @@ public class MeloAudioService extends Service {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
         PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, launchIntent, flags);
 
-        PendingIntent prevIntent = PendingIntent.getService(this, 1, new Intent(this, MeloAudioService.class).setAction(ACTION_PREV), flags);
-        PendingIntent playPauseIntent = PendingIntent.getService(this, 2, new Intent(this, MeloAudioService.class).setAction(ACTION_PLAY_PAUSE), flags);
-        PendingIntent nextIntent = PendingIntent.getService(this, 3, new Intent(this, MeloAudioService.class).setAction(ACTION_NEXT), flags);
+        // Use MediaButtonReceiver pending intents to bypass background service launch limitations on Android 12+
+        PendingIntent prevIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS);
+        PendingIntent playPauseIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_PLAY_PAUSE);
+        PendingIntent nextIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_SKIP_TO_NEXT);
 
         int playPauseIcon = isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
 

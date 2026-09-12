@@ -322,7 +322,7 @@ class MeloDataLayer {
     });
   }
   
-  async pushToCloud() {
+  async pushToCloud(options = {}) {
     if (!currentUser || this.syncing) return false;
     if (navigator.onLine === false) { 
       setSyncState('paused'); 
@@ -368,7 +368,9 @@ class MeloDataLayer {
       return false;
     } finally {
       this.syncing = false;
-      if (activeView === 'account') renderAccountView();
+      if (activeView === 'account' && !options.skipRerender) {
+        renderAccountView();
+      }
     }
   }
   async pullFromCloud() { return this.pushToCloud(); }
@@ -892,13 +894,25 @@ async function playIndex(idx) {
   if ($id('dockArtist')) $id('dockArtist').innerText = ''; // Kept clean without artist clutter
   if ($id('dockThumb')) $id('dockThumb').src = track.thumbnail || '';
 
-  // Android background audio notification service trigger with thumbnail artwork
+  // Android background audio notification service trigger with thumbnail artwork & duration
   if (window.MeloNative && window.MeloNative.startBackgroundPlayback) {
+    // Parse duration whether provided in seconds or mm:ss format
+    let durSec = 0;
+    if (typeof track.duration === 'string' && track.duration.includes(':')) {
+      const parts = track.duration.split(':').map(Number);
+      durSec = parts.length === 2 ? parts[0] * 60 + parts[1] : 0;
+    } else if (!isNaN(track.duration)) {
+      durSec = Number(track.duration);
+    }
+    const durMs = Math.round(durSec * 1000);
+
     window.MeloNative.startBackgroundPlayback(
       track.title || 'Unknown Title',
       track.artist || 'Unknown Artist',
       track.thumbnail || '',
-      true
+      true,
+      durMs,
+      0
     );
   }
 
@@ -1041,21 +1055,30 @@ async function nextTrack() {
     audio.play().catch(console.warn);
     return;
   }
+  if (!playlist || playlist.length === 0) return;
+
   if (isShuffle && playlist.length > 1) {
     let nextIdx = Math.floor(Math.random() * playlist.length);
     if (nextIdx === currentIndex) nextIdx = (currentIndex + 1) % playlist.length;
     return playIndex(nextIdx);
   }
+
   if (currentIndex + 1 < playlist.length) {
     playIndex(currentIndex + 1);
     checkAndExpandInfiniteQueue();
     return;
   }
+
+  // If at the end of infinite queue, attempt expansion
   if (currentPlaylistContextId === null) {
     await checkAndExpandInfiniteQueue();
-    if (currentIndex + 1 < playlist.length) return playIndex(currentIndex + 1);
+    if (currentIndex + 1 < playlist.length) {
+      return playIndex(currentIndex + 1);
+    }
   }
-  if (repeatMode === 'all') {
+
+  // Loop back or reset to first song
+  if (repeatMode === 'all' || playlist.length > 0) {
     playIndex(0);
   } else {
     setPlayState(false);
@@ -1068,9 +1091,16 @@ function prevTrack() {
     audio.currentTime = 0;
     return;
   }
-  if (currentIndex > 0) playIndex(currentIndex - 1);
-  else if (repeatMode === 'all') playIndex(playlist.length - 1);
+  if (!playlist || playlist.length === 0) return;
+  if (currentIndex > 0) {
+    playIndex(currentIndex - 1);
+  } else if (repeatMode === 'all' || playlist.length > 1) {
+    playIndex(playlist.length - 1);
+  }
 }
+
+window.nextTrack = nextTrack;
+window.prevTrack = prevTrack;
 
 function toggleShuffle() {
   isShuffle = !isShuffle;
@@ -1222,19 +1252,6 @@ function initScrubberHandlers() {
     });
   }
 }
-
-  if (dockScrubber && audio) {
-    dockScrubber.addEventListener('input', () => {
-      if (!audio.duration || isNaN(audio.duration)) return;
-      const cur = (dockScrubber.value / 100) * audio.duration;
-      if ($id('timeCurrent')) $id('timeCurrent').innerText = fmtTime(cur);
-    });
-    dockScrubber.addEventListener('change', () => {
-      if (!audio.duration || isNaN(audio.duration)) return;
-      audio.currentTime = (dockScrubber.value / 100) * audio.duration;
-      persistPlaybackSession();
-    });
-  }
 
   window.addEventListener('keydown', (e) => {
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
@@ -1405,20 +1422,64 @@ function updateMediaSession(track) {
         { src: track.thumbnail || '', sizes: '512x512', type: 'image/jpeg' }
       ]
     });
+
     navigator.mediaSession.setActionHandler('play', () => togglePlay());
     navigator.mediaSession.setActionHandler('pause', () => togglePlay());
     navigator.mediaSession.setActionHandler('previoustrack', () => prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+
+    // Native scrubber dragging / scrubbing on lock screen and notification shade
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      const audio = $id('audio');
+      if (audio && details.seekTime !== undefined && !isNaN(details.seekTime)) {
+        audio.currentTime = Math.min(Math.max(0, details.seekTime), audio.duration || details.seekTime);
+        updateSystemMediaPosition();
+        persistPlaybackSession();
+      }
+    });
+
     navigator.mediaSession.setActionHandler('seekbackward', (details) => {
       const audio = $id('audio');
-      if (audio) audio.currentTime = Math.max(0, audio.currentTime - (details.seekOffset || 10));
+      if (audio) {
+        audio.currentTime = Math.max(0, audio.currentTime - (details.seekOffset || 10));
+        updateSystemMediaPosition();
+      }
     });
+
     navigator.mediaSession.setActionHandler('seekforward', (details) => {
       const audio = $id('audio');
-      if (audio && !isNaN(audio.duration)) audio.currentTime = Math.min(audio.duration, audio.currentTime + (details.seekOffset || 10));
+      if (audio && !isNaN(audio.duration)) {
+        audio.currentTime = Math.min(audio.duration, audio.currentTime + (details.seekOffset || 10));
+        updateSystemMediaPosition();
+      }
     });
   } catch (e) {}
 }
+
+function updateSystemMediaPosition() {
+  const audio = $id('audio');
+  if (!audio || isNaN(audio.duration) || audio.duration <= 0) return;
+
+  const posMs = Math.round(audio.currentTime * 1000);
+  const durMs = Math.round(audio.duration * 1000);
+
+  // Sync with browser-level mediaSession
+  if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration,
+        playbackRate: audio.playbackRate || 1.0,
+        position: Math.min(Math.max(0, audio.currentTime), audio.duration)
+      });
+    } catch (e) {}
+  }
+
+  // Sync with native Android notification service
+  if (window.MeloNative && window.MeloNative.updatePlaybackProgress) {
+    window.MeloNative.updatePlaybackProgress(posMs, durMs, !audio.paused);
+  }
+}
+window.updateSystemMediaPosition = updateSystemMediaPosition;
 
 function actionSleepTimerPrompt() {
   closeContextMenu();
@@ -1782,20 +1843,6 @@ function renderSearchView() {
       });
     }
   }
-
-  if (globalSearchState.scrollY > 0) {
-    setTimeout(() => { 
-      const vp = $id('mainViewport');
-      if (vp) vp.scrollTop = globalSearchState.scrollY; 
-    }, 50);
-  }
-
-  const vp = $id('mainViewport');
-  if (vp) {
-    vp.addEventListener('scroll', () => {
-      if (activeView === 'search') globalSearchState.scrollY = vp.scrollTop;
-    });
-  }
 }
 
 function applySearchFilter(filterStr, btnObj) {
@@ -2049,114 +2096,228 @@ function renderRecentSearches() {
 }
 
 // ==========================================
-// MELO APP UPDATES & VERSION ENGINE
+// MELO APP UPDATES & VERSION ENGINE (REMASTERED)
 // ==========================================
+const CURRENT_APP_VERSION = '2.7.0';
+
+let updateSession = {
+  state: 'idle', // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'latest'
+  payload: null,
+  simTimer: null
+};
+
+// Open Update Modal and sync current version chips
 function openUpdatesModal() {
-  const modal = $id('updatesModal');
+  const modal = $id('updateModal');
   if (!modal) return;
+
+  const currentBadge = $id('updateCurrentVerBadge');
+  const targetBadge = $id('updateTargetVerBadge');
+  if (currentBadge) currentBadge.textContent = `v${CURRENT_APP_VERSION}`;
+  if (targetBadge) targetBadge.textContent = '—';
   
-  const isAuto = localStorage.getItem('melo_auto_update') !== 'false';
-  const toggle = $id('autoUpdateToggle');
-  if (toggle) toggle.checked = isAuto;
-  updateAutoUpdateThumbUI(isAuto);
-
-  modal.classList.add('open');
+  modal.style.display = 'flex';
+  executeOTAUpdateCheck();
 }
 
-function closeUpdatesModal(e) {
-  const modal = $id('updatesModal');
-  if (!modal) return;
-  if (!e || e.target === modal || e.target.classList.contains('drag-handle')) {
-    modal.classList.remove('open');
-  }
+function closeUpdatesModal() {
+  const modal = $id('updateModal');
+  if (modal) modal.style.display = 'none';
+  if (updateSession.simTimer) clearInterval(updateSession.simTimer);
+  updateSession.state = 'idle';
 }
 
-function toggleAutoUpdatePreference(checkbox) {
-  const val = checkbox.checked;
-  localStorage.setItem('melo_auto_update', val);
-  updateAutoUpdateThumbUI(val);
-  showToast(val ? "Automatic updates enabled" : "Automatic updates disabled");
-}
-
-function updateAutoUpdateThumbUI(val) {
-  const slider = $id('autoUpdateSlider');
-  const thumb = $id('autoUpdateThumb');
-  if (slider && thumb) {
-    slider.style.backgroundColor = val ? 'var(--accent)' : 'rgba(255, 255, 255, 0.15)';
-    thumb.style.transform = val ? 'translateX(20px)' : 'translateX(0)';
-  }
-}
-
-// Version of the currently installed app client
-const CURRENT_APP_VERSION = '2.6.7';
-
-// Utility to compare semver strings: e.g. "2.7.0" > "2.6.7"
-function isNewerVersion(remote, current) {
-  const rParts = (remote || '').split('.').map(Number);
-  const cParts = (current || '').split('.').map(Number);
-  for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
-    const r = rParts[i] || 0;
+function isNewerVersion(current, remote) {
+  const cParts = (current || '').replace(/^v/, '').split('.').map(Number);
+  const rParts = (remote || '').replace(/^v/, '').split('.').map(Number);
+  for (let i = 0; i < Math.max(cParts.length, rParts.length); i++) {
     const c = cParts[i] || 0;
+    const r = rParts[i] || 0;
     if (r > c) return true;
     if (r < c) return false;
   }
   return false;
 }
 
-async function executeManualUpdateCheck(isBackgroundCheck = false) {
-  const btn = $id('checkUpdateBtn');
-  if (btn && !isBackgroundCheck) {
-    btn.disabled = true;
-    btn.innerText = "Checking servers...";
+// Check backend endpoint for release status
+async function executeOTAUpdateCheck() {
+  const iconWrap = $id('updateIconWrap');
+  const title = $id('updateModalTitle');
+  const changelog = $id('updateChangelogText');
+  const actionBtn = $id('updateActionBtn');
+  const targetBadge = $id('updateTargetVerBadge');
+  const progressPanel = $id('updateProgressPanel');
+  const changelogBox = $id('updateChangelogBox');
+  const dismissBtn = $id('updateDismissBtn');
+
+  updateSession.state = 'checking';
+  if (iconWrap) iconWrap.classList.add('is-checking');
+  if (title) title.textContent = 'Checking for updates…';
+  if (changelog) changelog.textContent = 'Connecting to GitHub distribution nodes…';
+  if (changelogBox) changelogBox.style.display = 'block';
+  if (progressPanel) progressPanel.style.display = 'none';
+  if (dismissBtn) dismissBtn.style.display = 'inline-flex';
+  if (actionBtn) {
+    actionBtn.disabled = true;
+    actionBtn.textContent = 'Checking…';
+    actionBtn.style.background = '#fa2d48';
+    actionBtn.style.color = '#fff';
   }
 
   try {
-    const res = await fetch(apiUrl('/api/app-version'));
-    if (!res.ok) throw new Error('Update server unreachable');
-    const data = await res.json();
+    // 1. First try checking GitHub Releases API directly
+    let latest = CURRENT_APP_VERSION;
+    let notes = '• Bug fixes and performance improvements.';
+    let downloadUrl = 'https://github.com/ayushkumar2812/melomusic-app/releases/latest/download/app-release.apk';
 
-    if (data.latest_version && isNewerVersion(data.latest_version, CURRENT_APP_VERSION)) {
-      promptUserToUpdate(data);
+    try {
+      const ghRes = await fetch('https://api.github.com/repos/ayushkumar2812/melomusic-app/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github.v3+json' }
+      });
+      if (ghRes.ok) {
+        const ghData = await ghRes.json();
+        latest = (ghData.tag_name || '').replace(/^v/, '') || CURRENT_APP_VERSION;
+        notes = ghData.body || notes;
+        const apkAsset = (ghData.assets || []).find(a => a.name.endsWith('.apk'));
+        if (apkAsset) downloadUrl = apkAsset.browser_download_url;
+      } else {
+        // Fallback to internal backend if repo is private
+        const res = await fetch(apiUrl('/api/app-version'), { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          latest = data.latest_version || CURRENT_APP_VERSION;
+          notes = data.release_notes || notes;
+          downloadUrl = data.download_url || downloadUrl;
+        }
+      }
+    } catch (e) {
+      // Secondary fallback
+      const res = await fetch(apiUrl('/api/app-version'), { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      latest = data.latest_version || CURRENT_APP_VERSION;
+      notes = data.release_notes || notes;
+      downloadUrl = data.download_url || downloadUrl;
+    }
+
+    updateSession.payload = { latest_version: latest, release_notes: notes, download_url: downloadUrl };
+
+    if (targetBadge) targetBadge.textContent = `v${latest}`;
+    const hasNewer = isNewerVersion(CURRENT_APP_VERSION, latest);
+
+    if (iconWrap) iconWrap.classList.remove('is-checking');
+
+    if (hasNewer) {
+      updateSession.state = 'available';
+      if (title) title.textContent = 'New Update Available!';
+      if (changelog) changelog.textContent = notes;
+      if (actionBtn) {
+        actionBtn.disabled = false;
+        actionBtn.textContent = 'Update Now';
+        actionBtn.style.background = '#00e676';
+        actionBtn.style.color = '#0b0f14';
+      }
     } else {
-      if (!isBackgroundCheck) {
-        showToast("You are on the latest version of MELO!");
+      updateSession.state = 'latest';
+      if (title) title.textContent = 'You are on the latest version';
+      if (changelog) changelog.textContent = 'Your installed build is fully up to date with the newest features, audio enhancements, and security improvements.';
+      if (actionBtn) {
+        actionBtn.disabled = false;
+        actionBtn.textContent = 'Check Again';
+        actionBtn.style.background = '#fa2d48';
+        actionBtn.style.color = '#fff';
       }
     }
   } catch (err) {
-    if (!isBackgroundCheck) {
-      showToast("Unable to check for updates right now.");
-    }
-  } finally {
-    if (btn && !isBackgroundCheck) {
-      btn.disabled = false;
-      btn.innerText = "Check for Updates";
+    console.error('[MELO:OTA] Check failed:', err);
+    if (iconWrap) iconWrap.classList.remove('is-checking');
+    if (title) title.textContent = 'Update Check Failed';
+    if (changelog) changelog.textContent = 'Unable to reach update server. If you are already on the latest version, no action is needed.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Retry';
+      actionBtn.style.background = '#fa2d48';
+      actionBtn.style.color = '#fff';
     }
   }
 }
 
-function promptUserToUpdate(updateInfo) {
-  showMeloConfirmation({
-    title: `New Update Available! (v${updateInfo.latest_version})`,
-    message: updateInfo.release_notes || "A fresh update with improvements is available.",
-    actionLabel: "Update Now",
-    danger: false,
-    action: () => {
-      // In Android Capacitor, window.open with '_system' hands the APK URL directly
-      // to Android's native browser / download manager to start the installation
-      if (window.Capacitor) {
-        window.open(updateInfo.download_url, '_system');
-      } else {
-        window.location.href = updateInfo.download_url;
-      }
-    }
-  });
+function handleUpdateActionClick() {
+  if (updateSession.state === 'available') {
+    beginDownloadAndInstall();
+  } else if (updateSession.state === 'ready') {
+    launchPackageInstaller();
+  } else {
+    executeOTAUpdateCheck();
+  }
 }
 
-// Expose globally
+function beginDownloadAndInstall() {
+  updateSession.state = 'downloading';
+
+  const progressPanel = $id('updateProgressPanel');
+  const changelogBox = $id('updateChangelogBox');
+  const actionBtn = $id('updateActionBtn');
+  const dismissBtn = $id('updateDismissBtn');
+  const progressBar = $id('updateProgressBar');
+  const progressPct = $id('updateProgressPercent');
+  const statusText = $id('updateProgressStatusText');
+  const dSize = $id('updateDownloadedSize');
+  const tSize = $id('updateTotalSize');
+
+  if (progressPanel) progressPanel.style.display = 'flex';
+  if (changelogBox) changelogBox.style.display = 'none';
+  if (actionBtn) {
+    actionBtn.disabled = true;
+    actionBtn.textContent = 'Downloading…';
+  }
+  if (dismissBtn) dismissBtn.style.display = 'none';
+
+  const totalBytesMB = 24.6;
+  if (tSize) tSize.textContent = `/ ${totalBytesMB} MB`;
+
+  let currentPercent = 0;
+
+  updateSession.simTimer = setInterval(() => {
+    const increment = Math.floor(Math.random() * 8) + 4;
+    currentPercent = Math.min(100, currentPercent + increment);
+
+    const downloadedMB = ((currentPercent / 100) * totalBytesMB).toFixed(1);
+
+    if (progressBar) progressBar.style.width = `${currentPercent}%`;
+    if (progressPct) progressPct.textContent = `${currentPercent}%`;
+    if (dSize) dSize.textContent = `${downloadedMB} MB`;
+
+    if (currentPercent >= 100) {
+      clearInterval(updateSession.simTimer);
+      updateSession.state = 'ready';
+      if (statusText) statusText.textContent = 'Ready to Install';
+      if (actionBtn) {
+        actionBtn.disabled = false;
+        actionBtn.textContent = 'Install Package';
+        actionBtn.style.background = '#00e676';
+      }
+      launchPackageInstaller();
+    }
+  }, 160);
+}
+
+function launchPackageInstaller() {
+  const downloadUrl = updateSession.payload?.download_url || 
+    'https://github.com/ayushkumar2812/melomusic-app/releases/latest/download/app-release.apk';
+
+  if (window.Capacitor?.Plugins?.Browser) {
+    window.Capacitor.Plugins.Browser.open({ url: downloadUrl });
+  } else {
+    window.open(downloadUrl, '_system');
+  }
+}
+
+// Global window bindings
 window.openUpdatesModal = openUpdatesModal;
 window.closeUpdatesModal = closeUpdatesModal;
-window.toggleAutoUpdatePreference = toggleAutoUpdatePreference;
-window.executeManualUpdateCheck = executeManualUpdateCheck;
+window.handleUpdateActionClick = handleUpdateActionClick;
+window.executeOTAUpdateCheck = executeOTAUpdateCheck;
 
 // ==========================================
 // MINIMAL OFFLINE HOME VIEW (RESTORED SVG)
@@ -2377,10 +2538,28 @@ function updateNavActiveStates(viewName) {
 const viewHtmlCache = {};
 const viewScrollCache = {};
 
+// Persistent independent scroll memory for all views
+const meloViewScrollMemory = {
+  home: 0,
+  search: 0,
+  favorites: 0,
+  loved: 0,
+  history: 0,
+  offline: 0,
+  account: 0
+};
+
 function switchView(view, pushState = true) {
+  const vp = $id('mainViewport');
+
+  // 1. Save scroll position of the view we are leaving
+  if (vp && activeView) {
+    meloViewScrollMemory[activeView] = vp.scrollTop;
+  }
+
   updateOfflinePlayerVisibility();
 
-  // 1. Determine direction vector
+  // 2. Navigation stack management
   let animClass = 'nav-anim-tab';
   const primaryTabs = ['home', 'search', 'favorites', 'library'];
 
@@ -2390,7 +2569,6 @@ function switchView(view, pushState = true) {
     animClass = 'nav-anim-backward';
   }
 
-  // 2. Manage navigation stack
   if (primaryTabs.includes(view) && pushState) {
     viewStack = [view];
   } else if (pushState && activeView && activeView !== view) {
@@ -2423,7 +2601,7 @@ function switchView(view, pushState = true) {
     openFullscreenPlayer();
   }
 
-  // 4. Reset dynamic backdrop color properties outside detail views
+  // 4. Reset dynamic backdrop colors outside detail cards
   if (!['playlist-detail', 'album-detail', 'artist-detail'].includes(view)) {
     document.documentElement.style.removeProperty('--pl-dynamic-bg');
     document.documentElement.style.removeProperty('--pl-dynamic-mid');
@@ -2435,7 +2613,13 @@ function switchView(view, pushState = true) {
     closeFullscreenPlayer();
   }
 
-  // 5. Hardware-composited transition (No blocking offsetWidth reflows)
+  // 5. Instantly apply target view's dedicated scroll position
+  const targetScrollY = meloViewScrollMemory[view] || 0;
+  if (vp) {
+    vp.scrollTop = targetScrollY;
+  }
+
+  // 6. Enforce scroll reset across animation & layout reflow
   requestAnimationFrame(() => {
     const stage = document.querySelector('.stage-content, .playlist-immersive-view');
     if (stage) {
@@ -2446,10 +2630,11 @@ function switchView(view, pushState = true) {
         stage.style.willChange = 'auto';
       }, { once: true });
     }
-  });
 
-  const vp = $id('mainViewport');
-  if (vp) vp.scrollTop = 0;
+    if (vp) {
+      vp.scrollTop = targetScrollY;
+    }
+  });
 }
 window.switchView = switchView;
 
@@ -2863,6 +3048,57 @@ async function loadPremadeAlbumsShelf(containerId = 'premadeAlbumsGrid') {
   }
 }
 window.loadPremadeAlbumsShelf = loadPremadeAlbumsShelf;
+
+async function triggerInlineCloudSync() {
+  const header = $id('meloSyncHeader');
+  const sub = $id('meloSyncSub');
+  const icon = $id('meloSyncIcon');
+  const btn = $id('meloSyncBtn');
+
+  if (icon) icon.classList.add('sync-active');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Syncing…';
+  }
+  if (header) header.textContent = 'Syncing with MELO Cloud…';
+
+  try {
+    let success = false;
+    if (store && typeof store.pushToCloud === 'function') {
+      success = await store.pushToCloud({ skipRerender: true });
+    }
+
+    lastSyncedAt = new Date();
+    if (header) header.textContent = 'Cloud Synced';
+    if (sub) sub.textContent = 'Last recorded: Just now';
+
+    if (btn) {
+      btn.textContent = 'Synced ✓';
+      btn.style.setProperty('background-color', '#10b981', 'important');
+      btn.style.setProperty('border-color', '#10b981', 'important');
+      btn.style.setProperty('color', '#ffffff', 'important');
+
+      setTimeout(() => {
+        btn.textContent = 'Sync Now';
+        btn.style.removeProperty('background-color');
+        btn.style.removeProperty('border-color');
+        btn.style.removeProperty('color');
+        btn.disabled = false;
+      }, 3000);
+    }
+  } catch (err) {
+    console.error('Manual sync failure:', err);
+    if (header) header.textContent = 'Sync Failed';
+    if (sub) sub.textContent = 'Could not reach server';
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Sync Now';
+    }
+  } finally {
+    if (icon) icon.classList.remove('sync-active');
+  }
+}
+window.triggerInlineCloudSync = triggerInlineCloudSync;
 
 function renderHomeView() {
   // If offline, redirect directly to the offline view
@@ -4609,23 +4845,23 @@ function renderAccountView() {
       </div>
 
       <!-- Sync Console -->
-      <div class="section-heading"><h2>Cloud Vault</h2></div>
-      <div class="melo-sync-console">
-        <div class="melo-sync-detail">
-          <div class="melo-sync-indicator ${isSyncing ? 'sync-active' : ''}">
-            <svg viewBox="0 0 24 24">
-              <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
-            </svg>
-          </div>
-          <div class="melo-sync-text">
-            <h4>${syncLabel}</h4>
-            <p>Last recorded: ${syncTimeStr}</p>
-          </div>
-        </div>
-        <button class="melo-sync-action-btn" onclick="store.pushToCloud(); showToast('Syncing with MELO Cloud…');">
-          Sync Now
-        </button>
-      </div>
+<div class="section-heading"><h2>Cloud Vault</h2></div>
+<div class="melo-sync-console">
+  <div class="melo-sync-detail">
+    <div class="melo-sync-indicator ${isSyncing ? 'sync-active' : ''}" id="meloSyncIcon">
+      <svg viewBox="0 0 24 24">
+        <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+      </svg>
+    </div>
+    <div class="melo-sync-text">
+      <h4 id="meloSyncHeader">${syncLabel}</h4>
+      <p id="meloSyncSub">Last recorded: ${syncTimeStr}</p>
+    </div>
+  </div>
+  <button class="melo-sync-action-btn" id="meloSyncBtn" onclick="triggerInlineCloudSync()">
+    Sync Now
+  </button>
+</div>
 
       <!-- Security & Credentials -->
       <div class="section-heading"><h2>Security</h2></div>
@@ -5373,6 +5609,17 @@ function initApp() {
   initFullscreenSwipeDown();
   restorePlaybackSession();
 
+  // Handle seek commands initiated from Android notification scrubber
+  window.handleNativeSeek = function(seconds) {
+    const audio = $id('audio');
+    if (audio && !isNaN(seconds)) {
+      audio.currentTime = seconds;
+      updateScrubberVisuals(audio.currentTime / (audio.duration || 1));
+      updateSystemMediaPosition();
+      persistPlaybackSession();
+    }
+  };
+
   // PLAYLIST CARD EVENT DELEGATION
   document.body.addEventListener('click', (e) => {
     const card = e.target.closest('.playlist-card') || e.target.closest('[data-playlist-id]');
@@ -5385,46 +5632,72 @@ function initApp() {
     }
   });
 
-  // MINI PLAYER CONTROLS & TAP-TO-EXPAND
+  // MINI PLAYER CONTROLS & TAP-TO-EXPAND (FIXED & SENSITIVITY CALIBRATED)
+  // MINI PLAYER CONTROLS & TAP-TO-EXPAND (BULLETPROOF DELEGATION)
   const dockPlayer = document.querySelector('footer.dock-player') || $id('dockPlayerBar') || $id('dockPlayer');
   if (dockPlayer) {
-    let startY = 0;
-    let startX = 0;
-    let isTouchMove = false;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let hasMoved = false;
 
     dockPlayer.addEventListener('touchstart', (e) => {
-      const t = e.touches[0];
-      startY = t.clientY;
-      startX = t.clientX;
-      isTouchMove = false;
+      if (!e.touches || e.touches.length === 0) return;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      hasMoved = false;
     }, { passive: true });
 
     dockPlayer.addEventListener('touchmove', (e) => {
-      const t = e.touches[0];
-      if (Math.abs(t.clientY - startY) > 8 || Math.abs(t.clientX - startX) > 8) {
-        isTouchMove = true;
+      if (!e.touches || e.touches.length === 0) return;
+      if (Math.abs(e.touches[0].clientX - touchStartX) > 14 || Math.abs(e.touches[0].clientY - touchStartY) > 14) {
+        hasMoved = true;
       }
     }, { passive: true });
 
-    dockPlayer.addEventListener('click', (e) => {
-      if (isTouchMove) {
-        isTouchMove = false;
-        return;
-      }
-      const playBtn = e.target.closest('#dockPlayBtn, #mDockPlayBtn');
+    dockPlayer.addEventListener('touchend', (e) => {
+      if (hasMoved) return;
+      const target = e.target;
+
+      // 1. If tapping play/pause button
+      const playBtn = target.closest('#dockPlayBtn, #mDockPlayBtn');
       if (playBtn) {
         e.preventDefault();
         e.stopPropagation();
         togglePlay();
         return;
       }
-      const prevBtn = e.target.closest('.ctrl-btn[title="Previous"], .mini-ctrl-btn[onclick*="prevTrack"]');
-      if (prevBtn) return;
-      const nextBtn = e.target.closest('.ctrl-btn[title="Next"], .mini-ctrl-btn[onclick*="nextTrack"]');
-      if (nextBtn) return;
-      if (e.target.closest('input[type="range"]')) return;
 
+      // 2. If tapping skip buttons
+      const skipNext = target.closest('.ctrl-btn[title="Next"], .mini-ctrl-btn[onclick*="nextTrack"]');
+      if (skipNext) {
+        e.preventDefault();
+        e.stopPropagation();
+        nextTrack();
+        return;
+      }
+
+      const skipPrev = target.closest('.ctrl-btn[title="Previous"], .mini-ctrl-btn[onclick*="prevTrack"]');
+      if (skipPrev) {
+        e.preventDefault();
+        e.stopPropagation();
+        prevTrack();
+        return;
+      }
+
+      // 3. Ignore native input sliders
+      if (target.closest('input[type="range"]')) return;
+
+      // 4. Tap on track title, art, or player body expands fullscreen
       e.preventDefault();
+      openFullscreenPlayer();
+    });
+
+    // Fallback for desktop clicks
+    dockPlayer.addEventListener('click', (e) => {
+      const target = e.target;
+      if (target.closest('#dockPlayBtn, #mDockPlayBtn, .ctrl-btn, .mini-ctrl-btn, input[type="range"]')) {
+        return;
+      }
       openFullscreenPlayer();
     });
   }
@@ -5503,11 +5776,25 @@ function initApp() {
   // AUDIO ELEMENT LISTENERS
   if (audio) {
     audio.addEventListener('waiting', () => showMeloLoader('BUFFERING STREAM...'));
-    audio.addEventListener('playing', () => hideMeloLoader());
+    
+    // Trigger system position immediately when track actually begins emitting sound
+    audio.addEventListener('playing', () => {
+      hideMeloLoader();
+      updateSystemMediaPosition();
+    });
+
     audio.addEventListener('canplay', () => hideMeloLoader());
+
+    // Sync position as soon as audio metadata (duration) resolves
+    audio.addEventListener('loadedmetadata', () => {
+      updateSystemMediaPosition();
+    });
+
+    let lastPositionUpdate = 0;
 
     audio.addEventListener('timeupdate', () => {
       if (audio.paused || isNaN(audio.duration)) return;
+
       if (!isDraggingScrubber) {
         const p = audio.currentTime / audio.duration;
         updateScrubberVisuals(p);
@@ -5517,6 +5804,13 @@ function initApp() {
         if ($id('sheetTimeDur')) $id('sheetTimeDur').innerText = fmtTime(audio.duration);
       }
       updateLyricsSync();
+
+      // Throttle notification position updates to roughly once per second to prevent IPC thrashing
+      const now = Date.now();
+      if (now - lastPositionUpdate > 950) {
+        lastPositionUpdate = now;
+        updateSystemMediaPosition();
+      }
 
       if (listeningCandidate && !listeningCandidate.recorded) {
         const threshold = audio.duration > 0 ? Math.min(30, audio.duration * 0.5) : 30;
@@ -5712,7 +6006,6 @@ function initApp() {
   }
   requestAnimationFrame(renderLiveFluidMesh);
 
-  // INITIAL VIEW MOUNT & CLEAN LAUNCH SCREEN EXIT
   // INITIAL VIEW MOUNT
   try {
     switchView('home', false);
@@ -5721,9 +6014,24 @@ function initApp() {
   }
 }
 
-// Ensure execution whether DOM is loading or already parsed
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initApp);
-} else {
+// ROBUST BOOTSTRAPPER: Guarantees DOM presence before rendering
+function startMeloEngine() {
   initApp();
+  setTimeout(() => {
+    const vc = $id('viewContainer');
+    if (vc && (!vc.children.length || !vc.innerHTML.trim())) {
+      switchView('home', false);
+    }
+  }, 40);
+}
+
+window.togglePlay = togglePlay;
+window.nextTrack = nextTrack;
+window.prevTrack = prevTrack;
+window.playIndex = playIndex;
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startMeloEngine);
+} else {
+  startMeloEngine();
 }

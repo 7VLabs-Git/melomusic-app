@@ -1,17 +1,17 @@
-const CACHE_NAME = 'melo-cache-v2.6.7';
+const CACHE_NAME = 'melo-cache-v2.7.0';
 
-// Assets must match the exact versioned URLs requested in index.html
+// Precache list matching active production assets and v2.7.0 cache-busting queries
 const PRECACHE_ASSETS = [
   '/',
   '/static/manifest.json',
-  '/static/css/app.css?v=2.6.7',
-  '/static/js/app.js?v=2.6.7',
+  '/static/css/app.css?v=2.7.0',
+  '/static/js/app.js?v=2.7.0',
   '/static/images/melo-text.png',
-  '/static/images/logo.png?v=2.6.7',
-  '/static/images/favicon.png?v=2.6.7'
+  '/static/images/logo.png?v=2.7.0',
+  '/static/images/favicon.png?v=2.7.0'
 ];
 
-// 1. Install & Precache Assets
+// 1. Install & Precache Assets (Immediate Takeover)
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
@@ -30,19 +30,22 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// 2. Purge Old Caches and Claim Clients
+// 2. Purge Outdated Version Caches and Claim Open Clients
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys
-          .filter((k) => k !== CACHE_NAME)
-          .map((k) => {
-            console.log('[MELO:SW] Purging old cache:', k);
-            return caches.delete(k);
-          })
-      );
-    }).then(() => self.clients.claim())
+    caches
+      .keys()
+      .then((keys) => {
+        return Promise.all(
+          keys
+            .filter((k) => k !== CACHE_NAME)
+            .map((k) => {
+              console.log('[MELO:SW] Purging outdated cache:', k);
+              return caches.delete(k);
+            })
+        );
+      })
+      .then(() => self.clients.claim())
   );
 });
 
@@ -51,7 +54,7 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // A. Bypass media streams, downloads, byte-range requests, or non-GET requests entirely
+  // A. Bypass media streams, downloads, audio ranges, or mutation requests
   if (
     req.method !== 'GET' ||
     url.pathname.startsWith('/api/stream') ||
@@ -61,7 +64,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // B. Network-first for dynamic API routes
+  // B. Never cache OTA version check endpoints to prevent update loops
+  if (url.pathname === '/api/app-version') {
+    event.respondWith(fetch(req));
+    return;
+  }
+
+  // C. Network-first with short timeout for dynamic backend APIs
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(req).catch(() => caches.match(req))
@@ -69,7 +78,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // C. Network-first for HTML navigation so page structure updates immediately
+  // D. Network-first for HTML navigation & root
   if (req.mode === 'navigate' || url.pathname === '/') {
     event.respondWith(
       fetch(req)
@@ -85,7 +94,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // D. Static Assets: Network-first for versioned bundles (?v=), fallback to cache
+  // E. Network-first for versioned bundles (?v=)
   if (url.searchParams.has('v')) {
     event.respondWith(
       fetch(req)
@@ -101,7 +110,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // E. Stale-While-Revalidate for other static assets (fonts, unversioned icons)
+  // F. Stale-While-Revalidate for unversioned static assets
   event.respondWith(
     caches.match(req).then((cachedResponse) => {
       const fetchPromise = fetch(req)
@@ -117,7 +126,7 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         })
         .catch((err) => {
-          console.warn('[MELO:SW] Network fetch failed, falling back to cache:', err);
+          console.warn('[MELO:SW] Network fetch fallback:', err);
         });
 
       return cachedResponse || fetchPromise;

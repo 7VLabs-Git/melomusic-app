@@ -49,7 +49,13 @@ public class MainActivity extends BridgeActivity {
             instance.runOnUiThread(() -> {
                 WebView webView = instance.getBridge().getWebView();
                 if (webView != null) {
-                    if ("togglePlayPause".equals(action)) {
+                    if (action.startsWith("seekToPosition:")) {
+                        String seconds = action.substring("seekToPosition:".length());
+                        webView.evaluateJavascript(
+                            "if (typeof window.handleNativeSeek === 'function') { window.handleNativeSeek(" + seconds + "); }", 
+                            null
+                        );
+                    } else if ("togglePlayPause".equals(action)) {
                         webView.evaluateJavascript("if (typeof togglePlay === 'function') togglePlay();", null);
                     } else if ("nextTrack".equals(action)) {
                         webView.evaluateJavascript("if (typeof nextTrack === 'function') nextTrack();", null);
@@ -68,19 +74,40 @@ public class MainActivity extends BridgeActivity {
             this.context = context.getApplicationContext();
         }
 
+        // 6-parameter version receiving duration & position for the lockscreen/notification scrubber
         @JavascriptInterface
-        public void startBackgroundPlayback(String title, String artist, String thumbnail, boolean isPlaying) {
+        public void startBackgroundPlayback(String title, String artist, String thumbnail, boolean isPlaying, double durationMs, double positionMs) {
             Intent intent = new Intent(context, MeloAudioService.class);
             intent.setAction(MeloAudioService.ACTION_START);
             intent.putExtra("title", title);
             intent.putExtra("artist", artist);
             intent.putExtra("thumbnail", thumbnail);
             intent.putExtra("isPlaying", isPlaying);
+            intent.putExtra("duration", (long) durationMs);
+            intent.putExtra("position", (long) positionMs);
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent);
             } else {
                 context.startService(intent);
             }
+        }
+
+        // Backward-compatible 4-parameter version
+        @JavascriptInterface
+        public void startBackgroundPlayback(String title, String artist, String thumbnail, boolean isPlaying) {
+            startBackgroundPlayback(title, artist, thumbnail, isPlaying, 0L, 0L);
+        }
+
+        // Continuous progress updates from JavaScript to keep system notification in sync
+        @JavascriptInterface
+        public void updatePlaybackProgress(double positionMs, double durationMs, boolean isPlaying) {
+            Intent intent = new Intent(context, MeloAudioService.class);
+            intent.setAction(MeloAudioService.ACTION_UPDATE_PROGRESS);
+            intent.putExtra("position", (long) positionMs);
+            intent.putExtra("duration", (long) durationMs);
+            intent.putExtra("isPlaying", isPlaying);
+            context.startService(intent);
         }
 
         @JavascriptInterface

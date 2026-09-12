@@ -97,11 +97,10 @@ main.main-viewport {
   overflow-y: auto !important;
   overflow-x: hidden;
   position: relative;
-  scroll-behavior: smooth;
+  scroll-behavior: auto !important; /* Disables smooth scroll during tab switches to prevent scroll bleed */
   -webkit-overflow-scrolling: touch;
   background: transparent !important;
   box-sizing: border-box;
-  /* Provides base safety margin at the bottom */
   padding-bottom: 0 !important;
 }
 
@@ -587,13 +586,11 @@ main.main-viewport:has(.playlist-immersive-view)::before {
 
 .playlist-immersive-view {
   position: relative;
-  min-height: 100vh;
+  min-height: auto !important;
   width: 100%;
   margin: 0;
-  padding-bottom: 180px;
+  padding-bottom: 90px !important;
   box-sizing: border-box;
-
-  /* Perfected soft gradient: vibrant top -> calm ambient list -> matched dark floor */
   background: linear-gradient(
     180deg,
     var(--pl-dynamic-bg, rgba(250, 45, 72, 0.65)) 0px,
@@ -830,13 +827,19 @@ footer.dock-player {
   justify-content: space-between;
   align-items: center;
   padding: 0 14px 0 10px !important;
-  z-index: 115;
+  z-index: 150 !important;
   box-sizing: border-box;
   overflow: hidden !important;
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
+  touch-action: manipulation;
+  cursor: pointer !important;
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease, visibility 0.3s !important;
+}
+
+footer.dock-player * {
+  pointer-events: auto;
 }
 
 /* Active state: cleanly slides up when music plays */
@@ -1977,28 +1980,23 @@ button.account-row:hover { background: rgba(255, 255, 255, 0.055); }
     bottom: calc(10px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
   }
 
-  /* Accommodate top notch and bottom pill nav + miniplayer in PWA */
+ /* Accommodate top notch and bottom pill nav + miniplayer in PWA */
   .stage-content {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  box-sizing: border-box;
-  padding-top: max(env(safe-area-inset-top), 24px) !important;
-  padding-left: 16px !important;
-  padding-right: 16px !important;
-  padding-bottom: 0 !important;
-  display: flex;
-  flex-direction: column;
-}
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    box-sizing: border-box;
+    padding-top: max(env(safe-area-inset-top), 24px) !important;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+    display: flex;
+    flex-direction: column;
+  }
 
 .stage-content::after {
-  content: "";
-  display: block;
-  width: 100%;
-  height: calc(140px + env(safe-area-inset-bottom, 16px));
-  min-height: calc(140px + env(safe-area-inset-bottom, 16px));
-  flex-shrink: 0;
-  pointer-events: none;
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
 }
 
   .capsule-grid {
@@ -3416,10 +3414,7 @@ button[data-filter] {
     padding-bottom: 0 !important;
   }
 
-  /* Creates real physical scroll margin so shelves never hide behind the dock */
-  .stage-content {
-    padding-bottom: calc(180px + var(--safe-bottom, 16px)) !important;
-  }
+  /* Removed: Handled by unified bottom edge clearance at end of stylesheet */
 
   /* Fix poster container sizing */
   .poster-wrap,
@@ -4444,21 +4439,21 @@ select.melo-themed-select option {
 
 .melo-avatar-halo {
   position: relative;
-  width: 68px !important;
-  height: 68px !important;
-  border-radius: 22px !important;
-  background: rgba(255, 255, 255, 0.04) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  width: auto !important;
+  height: auto !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .melo-puppy-avatar-svg {
-  width: 52px;
-  height: 52px;
+  width: 58px;
+  height: 58px;
+  filter: drop-shadow(0 4px 12px rgba(250, 45, 72, 0.35));
 }
 
 .melo-account-meta {
@@ -4724,4 +4719,186 @@ select.melo-themed-select option {
 .melo-input-field:focus {
   border-color: #fa2d48;
   background: rgba(255, 255, 255, 0.07);
+}
+
+/* Unified bottom edge clearance */
+.stage-content,
+.account-stage {
+  box-sizing: border-box;
+  min-height: auto !important;
+  padding-bottom: 84px !important; /* Clears only the bottom navigation pill */
+}
+
+/* Compensate only when the mini player bar is actively floating */
+#dockPlayerBar.active ~ #mainViewport .stage-content,
+#dockPlayerBar.active ~ #mainViewport .account-stage,
+body.has-mini-player .stage-content,
+body.player-docked .stage-content {
+  padding-bottom: 130px !important;
+}
+
+#homeBottomGlow {
+  display: none !important;
+}
+
+/* ==========================================
+   APP UPDATES DIALOG (MODERN MODAL OVERLAY)
+   ========================================== */
+#updateModal {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  background: rgba(0, 0, 0, 0.85) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  z-index: 999999 !important;
+  display: none; /* Display is controlled via 'flex' in JavaScript */
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 20px !important;
+  box-sizing: border-box !important;
+}
+
+/* Modal Inner Card */
+#updateModal .update-dialog-card {
+  position: relative !important;
+  width: 100% !important;
+  max-width: 340px !important;
+  background: #12141c !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 24px !important;
+  padding: 24px 20px !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  gap: 12px !important;
+  box-sizing: border-box !important;
+  animation: modalScaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes modalScaleIn {
+  from {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Update Version Badges */
+.update-badges-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  margin-top: 2px !important;
+}
+
+.update-version-badge {
+  padding: 4px 10px !important;
+  border-radius: 999px !important;
+  font-size: 0.72rem !important;
+  font-weight: 700 !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+/* Changelog Note Box */
+#updateChangelogBox {
+  width: 100% !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.07) !important;
+  border-radius: 14px !important;
+  padding: 12px 14px !important;
+  font-size: 0.8rem !important;
+  color: var(--text-muted, #9496a1) !important;
+  text-align: left !important;
+  max-height: 110px !important;
+  overflow-y: auto !important;
+  white-space: pre-wrap !important;
+  box-sizing: border-box !important;
+  line-height: 1.4 !important;
+}
+
+/* Download Progress Bar */
+#updateProgressPanel {
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+#updateProgressBar {
+  background: #00e676 !important;
+  border-radius: 999px !important;
+}
+
+/* Actions Row at Bottom */
+.update-actions-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  margin-top: 4px !important;
+}
+
+#updateDismissBtn {
+  flex: 1 !important;
+  height: 42px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  font-size: 0.84rem !important;
+  font-weight: 600 !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  outline: none !important;
+}
+
+#updateDismissBtn:active {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+#updateActionBtn {
+  flex: 1.4 !important;
+  height: 42px !important;
+  padding: 0 16px !important;
+  border-radius: 999px !important;
+  font-size: 0.84rem !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  border: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  outline: none !important;
+}
+
+/* Unified bottom edge clearance — calibrated to clear the floating mini-player */
+.stage-content,
+.account-stage {
+  box-sizing: border-box;
+  min-height: auto !important;
+  padding-bottom: 165px !important; /* Increased from 84px/130px to clear mini player */
+}
+
+.playlist-immersive-view {
+  padding-bottom: 165px !important;
+}
+
+#dockPlayerBar.active ~ #mainViewport .stage-content,
+#dockPlayerBar.active ~ #mainViewport .account-stage,
+body.has-mini-player .stage-content,
+body.player-docked .stage-content {
+  padding-bottom: 175px !important;
 }
