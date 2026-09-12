@@ -32,7 +32,7 @@ app = FastAPI(title="MELO Hybrid Engine", version="10.2.3")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -262,13 +262,13 @@ class SyncPayload(BaseModel):
     history: List[str]
 
 class LibraryMutationPayload(BaseModel):
-    id: str
-    operation: str
-    payload: Dict[str, Any] = {}
+    id: Optional[str] = None
+    operation: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = {}
 
 class DeltaSyncPayload(BaseModel):
-    base_revision: int = 0
-    mutations: List[LibraryMutationPayload] = []
+    base_revision: Optional[int] = 0
+    mutations: Optional[List[LibraryMutationPayload]] = []
 
 def json_value(raw: Optional[str], fallback):
     try:
@@ -630,29 +630,6 @@ def get_current_user(
         "display_name": user.display_name or user.email.split("@")[0],
         "is_verified": user.is_verified
     }
-    token = session_token or request.cookies.get("session_token")
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated: session cookie missing")
-
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Session expired")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Token decode error: {str(e)}")
-
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    return {
-        "id": user.id,
-        "email": user.email,
-        "display_name": user.display_name or user.email.split("@")[0]
-    }
 
 @app.post("/api/auth/change-password")
 def change_password(req: ChangePasswordRequest, request: Request, db=Depends(get_db)):
@@ -965,7 +942,8 @@ def sync_library_deltas(
     acknowledged_ids = []
     processed_ids = set()
 
-    for mutation in payload.mutations[:100]:
+    mutations_list = payload.mutations or []
+    for mutation in mutations_list[:100]:
         if not mutation.id or len(mutation.id) > 128:
             continue
         if mutation.id in processed_ids:
