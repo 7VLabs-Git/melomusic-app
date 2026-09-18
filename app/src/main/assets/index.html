@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; media-src * 'self' blob: data: https: http:; connect-src * 'self' https: http:; img-src * 'self' data: blob: https:; style-src * 'unsafe-inline' https:; font-src * 'self' data: https:;">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#000000" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>MELO MUSIC</title>
+
+  <!-- Icons -->
+  <link rel="icon" type="image/png" sizes="32x32" href="../../../../../../../../Codes%20Projects/music%20player/static/images/favicon.png" />
+  <link rel="shortcut icon" type="image/png" href="../../../../../../../../Codes%20Projects/music%20player/static/images/favicon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="../../../../../../../../Codes%20Projects/music%20player/static/images/logo.png" />
+  <link rel="manifest" href="../../../../../../../../Codes%20Projects/music%20player/static/manifest.json" />
+  <link rel="stylesheet" href="../../../../../../../../Codes%20Projects/music%20player/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/melo-refine.css?v=3.1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Sans:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <!-- Desktop Sidebar -->
+    <aside class="sidebar">
+      <div class="brand-capsule" style="background: transparent; border: none; padding: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+        <img src="../../../../../../../../Codes%20Projects/music%20player/static/images/melo-text.svg" alt="MELO" style="height: 44px; width: auto; object-fit: contain;" />
+        
+        <button id="navAccountBtn" class="pill-action-btn" style="padding:6px 12px; font-size:0.75rem; background:rgba(255,255,255,0.1); color:#fff; gap:6px;">
+          <svg viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
+          <span>Sign In</span>
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-header">Discover</div>
+        <button class="capsule-btn active" id="navHome" onclick="switchView('home')">
+          <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+          <span>Listen Now</span>
+        </button>
+        <button class="capsule-btn" id="navSearch" onclick="switchView('search')">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span>Search</span>
+        </button>
+        <button class="capsule-btn" id="navFavs" onclick="switchView('favorites')">
+          <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          <span>Music Hub</span>
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-header">Featured Categories</div>
+        <button class="capsule-btn" onclick="scrollToCategory('bollywoodShelf')">Bollywood Hits</button>
+        <button class="capsule-btn" onclick="scrollToCategory('punjabiShelf')">Punjabi Hits</button>
+        <button class="capsule-btn" onclick="scrollToCategory('indieShelf')">Desi Indie & Chill</button>
+      </div>
+
+      <div class="nav-section" style="margin-top:auto; padding-top: 20px;">
+        <div class="nav-header">Streaming Quality</div>
+        <select id="desktopQualitySelect" onchange="changeQuality(this.value)" class="capsule-select" style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:8px 12px; border-radius:8px; font-size:0.85rem; outline:none; cursor:pointer;">
+          <option value="320">Lossless Master (320 kbps)</option>
+          <option value="160">Hi-Fi Standard (160 kbps)</option>
+          <option value="96">Data Saver (96 kbps)</option>
+        </select>
+      </div>
+    </aside>
+
+    <main class="main-viewport" id="mainViewport">
+      <div id="viewContainer"></div>
+    </main>
+
+    <!-- Mini-Player Bar -->
+    <footer class="dock-player" id="dockPlayerBar">
+      <canvas class="miniplayer-canvas-waveform" id="miniWaveCanvas"></canvas>
+
+      <div class="player-meta">
+        <img id="dockThumb" class="dock-thumb" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44' fill='%23222'/>" referrerpolicy="no-referrer" />
+        <div class="dock-details">
+          <div class="dock-title" id="dockTitle">Ready to Play</div>
+          <div class="dock-artist" id="dockArtist">Choose any song</div>
+        </div>
+      </div>
+
+      <div class="player-center">
+        <div class="control-row">
+          <button type="button" class="ctrl-btn" onclick="prevTrack()" title="Previous">
+            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button type="button" class="play-toggle" id="dockPlayBtn" onclick="togglePlay()" title="Play/Pause">
+  <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+</button>
+          <button type="button" class="ctrl-btn" onclick="nextTrack()" title="Next">
+            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+
+        <div class="cool-slider-wrap">
+          <span class="time-label" id="timeCurrent">0:00</span>
+          <input type="range" class="cool-slider" id="dockScrubber" min="0" max="100" value="0" />
+          <span class="time-label" id="timeDuration">0:00</span>
+        </div>
+      </div>
+
+      <div class="player-tools">
+        <div class="volume-wrap">
+          <svg style="width:14px;height:14px;fill:var(--text-dim);" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+          <input type="range" class="volume-slider" id="dockVol" min="0" max="1" step="0.05" value="0.9" />
+        </div>
+
+        <div class="mobile-controls">
+          <button type="button" class="mini-ctrl-btn" onclick="prevTrack()">
+            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button type="button" class="mobile-play-btn" id="mDockPlayBtn" onclick="togglePlay()">
+  <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+</button>
+          <button type="button" class="mini-ctrl-btn" onclick="nextTrack()">
+            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Native Bottom Pill Navigation -->
+    <div class="mobile-nav-container">
+      <nav class="obsidian-pill-nav">
+        <button class="pill-nav-item active" id="mNavHome" onclick="switchView('home')">
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </button>
+        <button class="pill-nav-item" id="mNavSearch" onclick="switchView('search')">
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button class="pill-nav-item" id="mNavFavs" onclick="switchView('favorites')">
+          <span class="pill-active-bg"></span>
+          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- AUTH MODAL -->
+  <div id="authModal" class="context-action-modal" onclick="closeAuthModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeAuthModal()"></div>
+
+      <div id="authMainView">
+        <h2 id="authTitle" style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Welcome to MELO</h2>
+        <p id="authSubtitle" style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Sign in to sync your library across devices.</p>
+
+        <div class="auth-inputs-wrap">
+          <input type="text" id="authName" class="themed-pl-input" placeholder="Your Name" style="display:none; margin-bottom:12px;" autocomplete="name" />
+          <input type="email" id="authEmail" class="themed-pl-input" placeholder="Email Address" style="margin-bottom:12px;" autocomplete="email" />
+
+          <div class="auth-input-group" style="position:relative; margin-bottom:12px;">
+            <input type="password" id="authPassword" class="themed-pl-input auth-validated-input" placeholder="Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="current-password" />
+            <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authPassword', this)" title="Show/Hide Password">
+              <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+
+          <div id="authConfirmGroup" class="auth-input-group" style="position:relative; margin-bottom:12px; display:none;">
+            <input type="password" id="authConfirmPassword" class="themed-pl-input auth-validated-input" placeholder="Confirm Password" oninput="validatePasswordMatch()" style="width:100%; padding-right:42px; box-sizing:border-box;" autocomplete="new-password" />
+            <button type="button" class="auth-toggle-pass-btn" onclick="togglePasswordVisibility('authConfirmPassword', this)" title="Show/Hide Password">
+              <svg class="eye-icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+
+          <div id="authStatusBanner" class="auth-status-banner" style="display:none;"></div>
+
+          <div id="authForgotRow" style="text-align:right; margin-bottom:14px;">
+            <a onclick="showPasswordRecoveryView()" style="color:var(--text-muted); font-size:0.8rem; cursor:pointer; text-decoration:underline;">Forgot password?</a>
+          </div>
+
+          <button type="button" id="authSubmitBtn" class="pill-action-btn" onclick="handleAuthSubmit()" style="width:100%; justify-content:center; padding:12px; margin-top:4px;">Log In</button>
+
+          <a id="authToggleLink" onclick="toggleAuthMode()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">
+            Don't have an account? Sign up
+          </a>
+        </div>
+      </div>
+
+      <div id="authVerifyView" style="display: none; text-align: center; padding: 12px 6px;">
+        <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(250, 45, 72, 0.12); border: 1px solid rgba(250, 45, 72, 0.3); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+          <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; fill: none; stroke: #fa2d48; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h2 style="font-size: 1.4rem; font-weight: 800; color: #fff; margin: 0 0 8px;">Check Your Inbox</h2>
+        <p style="color: rgba(255, 255, 255, 0.7); font-size: 0.92rem; line-height: 1.5; margin: 0 0 20px;">
+          We've sent an activation link to<br><strong id="authVerifyTargetEmail" style="color: #fff;"></strong>
+        </p>
+        <button type="button" class="pill-action-btn" onclick="returnToLoginAfterVerify()" style="width: 100%; justify-content: center; padding: 13px;">
+          Back to Log In
+        </button>
+      </div>
+
+      <div id="authRecoveryView" style="display:none;">
+        <h2 style="font-size:1.4rem; font-weight:800; margin-bottom:4px;">Reset Password</h2>
+        <p style="color:var(--text-muted); font-size:0.86rem; margin-bottom:20px;">Enter your account email to receive a password reset link.</p>
+        <div class="auth-inputs-wrap">
+          <input type="email" id="recoveryEmail" class="themed-pl-input" placeholder="Enter your email" style="margin-bottom:16px;" autocomplete="email" />
+          <button type="button" id="recoverySubmitBtn" class="pill-action-btn" onclick="handlePasswordRecoverySubmit()" style="width:100%; justify-content:center; padding:12px;">Send Recovery Link</button>
+          <a onclick="hidePasswordRecoveryView()" style="display:block; text-align:center; margin-top:16px; color:var(--text-muted); font-size:0.85rem; cursor:pointer;">Back to Login</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="meloConfirmModal" onclick="closeMeloConfirmation(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align:center;">
+      <div class="drag-handle" onclick="closeMeloConfirmation()"></div>
+      <div class="context-modal-title" id="meloConfirmTitle">Are you sure?</div>
+      <p id="meloConfirmMessage" style="color:var(--text-muted);font-size:.88rem;line-height:1.5;margin:0 0 20px;"></p>
+      <div style="display:flex;gap:10px;"><button class="filter-chip" onclick="closeMeloConfirmation()" style="flex:1;">Cancel</button><button class="pill-action-btn" id="meloConfirmButton" onclick="confirmMeloAction()" style="flex:1;justify-content:center;background:var(--accent);color:#fff;">Continue</button></div>
+    </div>
+  </div>
+
+  <!-- MIGRATION PROMPT MODAL -->
+  <div class="context-action-modal" id="migrationModal" onclick="closeMigrationModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="text-align: center;">
+      <div class="drag-handle" onclick="closeMigrationModal()"></div>
+      <div style="font-size: 3rem; margin-bottom: 16px;">☁️</div>
+      <h2 style="font-size: 1.4rem; font-weight: 800; margin-bottom: 8px;">Sync Local Library</h2>
+      <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px;">We found local playlists and favorites on this device. Do you want to securely sync them to your MELO Cloud account?</p>
+      <div style="display:flex; gap:12px;">
+        <button class="filter-chip" onclick="closeMigrationModal()" style="flex:1; padding: 14px;">Not Now</button>
+        <button class="pill-action-btn" onclick="executeLocalToCloudMigration()" style="flex:1; justify-content:center; background:var(--accent); color:#fff; border:none;">Sync Library</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FULLSCREEN PLAYER -->
+  <div class="lyrics-overlay" id="fullscreenPlayerOverlay">
+    <canvas class="live-fluid-mesh-canvas" id="fluidMeshCanvas"></canvas>
+
+    <div class="player-sheet-header">
+      <button class="sheet-icon-btn" onclick="closeFullscreenPlayer()" title="Back">
+        <svg viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+
+      <div class="sheet-nav-tabs">
+        <button class="sheet-tab-btn active" id="tabNowPlaying" onclick="switchPlayerSheetTab('playing')">Track</button>
+        <button class="sheet-tab-btn" id="tabLyrics" onclick="switchPlayerSheetTab('lyrics')">Lyrics</button>
+        <button class="sheet-tab-btn" id="tabQueue" onclick="switchPlayerSheetTab('queue')">Queue</button>
+      </div>
+
+      <button class="sheet-icon-btn" onclick="openContextMenu()" title="Options">
+        <svg viewBox="0 0 24 24" style="stroke:none;fill:#fff;"><circle cx="12" cy="5" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="19" r="2.2"/></svg>
+      </button>
+    </div>
+
+    <div class="sheet-body-container">
+      <!-- 1. Track Tab -->
+      <div class="sheet-nowplaying-view" id="sheetViewPlaying">
+        <div class="sheet-top-artwork-box">
+          <div class="sheet-cover-container" id="sheetCoverBox">
+            <img class="sheet-cover-art" id="sheetCover" src="" referrerpolicy="no-referrer" />
+          </div>
+        </div>
+
+        <div class="sheet-bottom-controls-box">
+          <div class="sheet-track-details">
+            <div class="sheet-title-col">
+              <div class="marquee-wrapper">
+                <div class="sheet-track-title" id="sheetTitle">—</div>
+              </div>
+              <div class="sheet-track-artist" id="sheetArtist">—</div>
+            </div>
+            <button class="sheet-icon-btn sheet-fav-btn" onclick="toggleCurrentTrackFavorite()" style="border:none;background:transparent;" title="Save to Favorites">
+  <svg id="playerSheetFavIcon" class="player-sheet-heart-svg" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+  </svg>
+</button>
+          </div>
+
+          <div class="straight-wave-scrubber" id="straightWaveScrubberBox">
+            <div class="scrubber-track-base" id="scrubberTrackBase">
+              <div class="scrubber-unplayed-line"></div>
+              <div class="scrubber-played-zone" id="scrubberPlayedZone">
+                <canvas class="scrubber-live-wave-canvas" id="scrubberWaveCanvas"></canvas>
+              </div>
+              <div class="scrubber-thumb-indicator" id="scrubberThumbIndicator"></div>
+            </div>
+
+            <div class="scrubber-time-row">
+              <span class="time-label" id="sheetTimeCur">0:00</span>
+              <span class="time-label" id="sheetTimeDur">0:00</span>
+            </div>
+          </div>
+
+          <div class="sheet-transport-btns">
+            <button class="sheet-ctrl-icon" id="sheetShuffleBtn" onclick="toggleShuffle()" title="Shuffle">
+              <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+            </button>
+            <button class="sheet-ctrl-icon ctrl-jump-btn" onclick="prevTrack()" title="Previous">
+              <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button class="sheet-play-large" id="sheetPlayBtn" onclick="togglePlay()" title="Play / Pause">
+  <svg id="sheetPlayBtnSvg" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+</button>
+            <button class="sheet-ctrl-icon ctrl-jump-btn" onclick="nextTrack()" title="Next">
+              <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+            </button>
+            <button class="sheet-ctrl-icon" id="sheetRepeatBtn" onclick="toggleRepeatMode()" title="Repeat Mode">
+              <span class="loop-badge-tag" id="loopBadge">ALL</span>
+              <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Lyrics Tab -->
+      <div class="sheet-lyrics-view" id="sheetViewLyrics" style="display:none;"></div>
+
+      <!-- 3. Queue Tab -->
+      <div class="sheet-queue-view" id="sheetViewQueue" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- CINEMATIC OVERLAY -->
+  <div class="cinematic-overlay" id="cinematicOverlay">
+    <canvas class="live-fluid-mesh-canvas" id="cinematicMeshCanvas"></canvas>
+    <div class="cinematic-top-row">
+      <button class="cinematic-subtle-cross" onclick="closeCinematicMode()" title="Exit">✕</button>
+    </div>
+    <div class="cinematic-stage-layout">
+      <div class="cinematic-left-art">
+        <div class="cinematic-art-halo" id="cinematicArtHalo"></div>
+        <img class="cinematic-art-img" id="cinematicArtImg" src="" referrerpolicy="no-referrer" />
+        <div class="cinematic-meta-box">
+          <div class="cinematic-track-title" id="cinematicTitle">—</div>
+          <div class="cinematic-track-artist" id="cinematicArtist">—</div>
+        </div>
+      </div>
+      <div class="cinematic-right-lyrics" id="cinematicLyricsScroll"></div>
+    </div>
+  </div>
+
+  <!-- CONTEXTUAL BOTTOM SHEET -->
+  <div class="context-action-modal" id="contextModal" onclick="closeContextMenu(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeContextMenu()"></div>
+      <div class="context-modal-title" id="ctxModalSongTitle">Options</div>
+
+      <div class="context-action-list">
+        <div class="context-action-row" onclick="actionOpenCinematicMode()">
+          <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span style="color:var(--accent); font-weight:700;">Cinematic Ambient View</span>
+        </div>
+        <div class="context-action-row" onclick="actionPlayContextTrack()">
+          <svg viewBox="0 0 24 24"><polygon points="8 5 19 12 8 19 8 5"/></svg>
+          <span>Play</span>
+        </div>
+        <div class="context-action-row" onclick="actionPlayNext()">
+          <svg viewBox="0 0 24 24"><path d="M5 4v16l12-8L5 4zM19 5v14"/></svg>
+          <span>Play Next</span>
+        </div>
+        <div class="context-action-row" onclick="actionAddToQueue()">
+          <svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h10M4 18h10M18 8v8M14 12h8"/></svg>
+          <span>Add to Queue</span>
+        </div>
+        <div class="context-action-row" id="ctxDownloadRow"></div>
+        <div class="context-action-row" onclick="actionAddToFavorites()">
+          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <span id="ctxFavText">Save to Favorites</span>
+        </div>
+        <div class="context-action-row" onclick="actionOpenAddToPlaylist()">
+          <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Add to Playlist</span>
+        </div>
+        <div class="context-action-row" onclick="actionShareSong()">
+          <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+          <span>Share Song</span>
+        </div>
+        <div class="context-action-row" onclick="actionSleepTimerPrompt()">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span id="ctxSleepText">Sleep Timer</span>
+        </div>
+        <div class="context-action-row" onclick="actionViewCredits()">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>View Credits & Details</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="context-action-modal" id="settingsModal" onclick="closeSettingsModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeSettingsModal()"></div>
+      <div class="context-modal-title">MELO Settings</div>
+      <div class="context-action-list">
+        <div class="context-action-row" onclick="closeSettingsModal(); openAccountView();">
+          <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>Account & Profile</span>
+        </div>
+        <div class="context-action-row" onclick="closeSettingsModal(); openUpdatesModal();">
+          <svg viewBox="0 0 24 24"><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11m-3 0h6m0 0v6m0-6L10 14"/></svg>
+          <span>App Updates & Version</span>
+        </div>
+        <div class="context-action-row" onclick="promptQualitySelection()">
+          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+          <span id="currentQualityLabel">Audio Quality: 320 kbps</span>
+        </div>
+        <div class="context-action-row" onclick="promptImportSelection()">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Import from Other Platforms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- IMPORT PLAYLIST MODAL WITH PROGRESS BAR -->
+  <div class="context-action-modal" id="importModal" onclick="closeImportModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeImportModal()"></div>
+      <div class="context-modal-title">Import Playlist</div>
+      <p style="color:var(--text-muted); font-size:0.85rem; text-align:center; margin-bottom:16px;">
+        Paste your Spotify, Apple Music, YouTube Music, or YouTube playlist link below.
+      </p>
+      
+      <div id="importInputSection" style="display:flex; flex-direction:column; gap:12px;">
+        <input type="text" id="importPlaylistUrlInput" placeholder="https://music.apple.com/... or spotify/yt" style="width:100%; background:rgba(255,255,255,0.06); color:#fff; border:1px solid rgba(255,255,255,0.12); padding:12px 16px; border-radius:12px; font-size:0.9rem; outline:none;" />
+        <button class="pill-action-btn" id="executeImportBtn" onclick="executePlaylistImport()" style="width:100%; justify-content:center; padding:12px; background:var(--accent); color:#fff;">
+          Import to MELO Hub
+        </button>
+      </div>
+
+      <div id="importProgressSection" style="display:none; padding:16px 0 8px 0; text-align:center;">
+        <div style="font-size:0.88rem; font-weight:700; color:#fff; margin-bottom:6px;" id="importProgressStatus">Connecting & analyzing playlist...</div>
+        <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:14px;">Matching audio tracks with high-bitrate streaming sources</div>
+        <div style="width:100%; height:6px; background:rgba(255,255,255,0.1); border-radius:999px; overflow:hidden; position:relative;">
+          <div id="importProgressBarLine" style="height:100%; width:30%; background:linear-gradient(90deg, #fa2d48, #c026d3); border-radius:999px; transition:width 0.4s ease;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="addToPlaylistModal" onclick="closeAddToPlaylistModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="max-height:82vh;">
+      <div class="drag-handle" onclick="closeAddToPlaylistModal()"></div>
+      <div class="context-modal-title" id="addToPlaylistModalTitle">Add to Playlist</div>
+      <div id="playlistOptionsList" class="themed-playlist-picker-grid"></div>
+      <div class="create-pl-drawer" id="createPlDrawer">
+        <div style="font-weight:700; font-size:0.92rem; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+          <span>+ Create New Playlist</span>
+        </div>
+        <input type="text" id="newPlTitleInput" placeholder="Playlist title..." class="themed-pl-input" />
+        <input type="text" id="newPlDescriptionInput" placeholder="Description (optional)" class="themed-pl-input" />
+        <label class="custom-file-upload-label" for="newPlCoverInput">
+          <span id="coverUploadText">Choose Custom Photo Cover (Optional)</span>
+          <input type="file" id="newPlCoverInput" accept="image/*" style="display:none;" onchange="handleCoverFileSelected(event)" />
+        </label>
+        <div id="coverUploadPreview" class="cover-upload-preview" style="display:none;"></div>
+        <button class="pill-action-btn" onclick="confirmCreateAndAddToPlaylist()" style="width:100%; justify-content:center; padding:12px; margin-top:8px;">
+          Create & Save
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="playlistEditModal" onclick="closePlaylistEditModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closePlaylistEditModal()"></div>
+      <div class="context-modal-title">Edit Playlist</div>
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div>
+          <label style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-dim); font-weight:700; display:block; margin-bottom:6px;">Playlist Name</label>
+          <input type="text" id="editPlNameInput" class="themed-pl-input" placeholder="Playlist title..." />
+          <input type="text" id="editPlDescriptionInput" class="themed-pl-input" placeholder="Description (optional)" />
+        </div>
+        <div>
+          <label style="font-size:0.78rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-dim); font-weight:700; display:block; margin-bottom:6px;">Cover Photo</label>
+          <label class="custom-file-upload-label" for="editPlCoverInput">
+            <span id="editCoverUploadText">Change Photo Cover</span>
+            <input type="file" id="editPlCoverInput" accept="image/*" style="display:none;" onchange="handleEditCoverFileSelected(event)" />
+          </label>
+          <div id="editCoverUploadPreview" class="cover-upload-preview" style="display:none;"></div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button class="pill-action-btn" onclick="confirmPlaylistEdit()" style="flex:1; justify-content:center; padding:12px;">Save Changes</button>
+          <button class="filter-chip" onclick="resetPlaylistCoverToCollage(currentEditingPlId)" style="padding:12px 16px;">Reset Collage</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="playlistActionMenuModal" onclick="closePlaylistActionMenu(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closePlaylistActionMenu()"></div>
+      <div class="context-modal-title" id="plActionMenuTitle">Playlist Options</div>
+      <div class="context-action-list">
+        <div class="context-action-row" onclick="actionFromMenuEditPlaylist()">
+          <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>Edit Title & Cover</span>
+        </div>
+        <div class="context-action-row" onclick="actionFromMenuAddSongs()">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span>Search & Add Songs</span>
+        </div>
+        <div class="context-action-row" onclick="actionToggleRemoveSongsMode()">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span id="removeSongsToggleText">Remove Songs</span>
+        </div>
+        <div class="context-action-row" id="plMenuDeleteRow" onclick="actionFromMenuDeletePlaylist()" style="color:#ff526c;">
+          <svg viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+          <span>Delete Playlist</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="playlistSearchAddModal" onclick="closePlaylistSearchAddModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh; display:flex; flex-direction:column;">
+      <div class="drag-handle" onclick="closePlaylistSearchAddModal()"></div>
+      <div class="context-modal-title">Search & Add Songs</div>
+      
+      <div class="search-glass-capsule" style="margin-bottom:16px; width:100%;">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="plSearchAddInput" class="search-glass-input" placeholder="Search Bollywood, Punjabi, artists..." autocomplete="off" />
+      </div>
+
+      <div id="plSearchResultsList" style="overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:6px;">
+        <p style="color:var(--text-dim); font-size:0.85rem; text-align:center; padding:20px;">Type above to find tracks and add directly.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-action-modal" id="qualityModal" onclick="closeQualityModal(event)">
+    <div class="context-modal-sheet" onclick="event.stopPropagation()">
+      <div class="drag-handle" onclick="closeQualityModal()"></div>
+      <div class="context-modal-title">Stream Audio Quality</div>
+      <div class="context-action-list">
+        <div class="context-action-row" onclick="selectQualityOption('320')">
+          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></svg>
+          <div style="display:flex; flex-direction:column; text-align:left;">
+            <span style="font-weight:700; color:#fff;">Lossless Master (320 kbps)</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Highest studio acoustic fidelity</span>
+          </div>
+        </div>
+        <div class="context-action-row" onclick="selectQualityOption('160')">
+          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>
+          <div style="display:flex; flex-direction:column; text-align:left;">
+            <span style="font-weight:700; color:#fff;">Hi-Fi Standard (160 kbps)</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Balanced audio and bandwidth</span>
+          </div>
+        </div>
+        <div class="context-action-row" onclick="selectQualityOption('96')">
+          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
+          <div style="display:flex; flex-direction:column; text-align:left;">
+            <span style="font-weight:700; color:#fff;">Data Saver (96 kbps)</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Optimized for slow connections</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="meloToast" class="melo-toast"></div>
+  <audio id="audio" preload="auto"></audio>
+
+  <!-- REMASTERED OTA UPDATE MODAL -->
+  <div id="updateModal" class="update-modal-overlay">
+    <div class="update-sheet" onclick="event.stopPropagation()">
+      <div class="update-header-drag"></div>
+      
+      <div class="update-hero" id="updateHeroArea">
+        <div class="update-radar" id="updateRadar">
+          <div class="radar-ring" id="updateRadarRing"></div>
+          <div class="radar-core" id="updateRadarCore">
+            <svg id="updateStatusIcon" viewBox="0 0 24 24" style="width:24px;height:24px;fill:currentColor;">
+              <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+            </svg>
+          </div>
+        </div>
+        <h3 class="update-title" id="updateTitle">Checking for Updates</h3>
+        <p class="update-subtitle" id="updateSubtitle">Connecting to update servers…</p>
+      </div>
+
+      <div class="update-body-scroll" id="updateBodyScroll" style="display: none;">
+        <div class="changelog-box" id="updateChangelogBox"></div>
+
+        <div class="progress-container" id="updateProgressWrap">
+          <div class="progress-track">
+            <div class="progress-fill" id="updateProgressBar"></div>
+          </div>
+          <div class="progress-labels">
+            <span id="updateProgressLabel">Downloading package…</span>
+            <span id="updateProgressPercent">0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="update-actions">
+        <button class="update-action-btn" id="updateActionBtn" style="display: none;">
+          <span>Download Update</span>
+        </button>
+        <button class="update-secondary-btn" id="updateDismissBtn" onclick="closeUpdatesModal()">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../../../../../../../../Codes%20Projects/music%20player/static/js/app.js"></script>
+  <script src="/static/js/melo-motion.js?v=3.1.0" defer></script>
+</body>
+</html>

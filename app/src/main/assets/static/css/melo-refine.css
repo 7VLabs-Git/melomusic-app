@@ -1,0 +1,769 @@
+/* =============================================================================
+   melo-refine.css — MELO refinement layer
+   -----------------------------------------------------------------------------
+   Loaded AFTER app.css. This does not replace the "Obsidian & Ember" system;
+   it sharpens it.
+
+   What the base system already gets right, and which this layer preserves:
+     · True black ground, so on OLED the screen edge disappears.
+     · Ember means playback, and appears nowhere else.
+     · Elevation is translucency plus a one-pixel top highlight, never a
+       drawn border.
+
+   What this layer adds:
+     1. A spring motion vocabulary, so movement decelerates like an object
+        with mass rather than easing linearly to a stop.
+     2. Real depth: two-part shadows (contact + ambient) instead of one blur.
+     3. Optical corrections the base layer leaves on the table — concentric
+        radii, optical alignment, hairline light on raised edges.
+     4. Serious render-performance work. 30 backdrop-filters were the main
+        source of scroll jank in an Android WebView; they are now budgeted.
+     5. Accessibility floor: visible focus, reduced-motion, safe areas.
+   ============================================================================= */
+
+/* -----------------------------------------------------------------------------
+   1. TOKENS
+   -------------------------------------------------------------------------- */
+:root {
+  /* Motion. The base had four durations and three curves; these add the
+     overshoot and settle behaviours that make touch UI feel physical. */
+  --m-instant: 90ms;
+  --m-quick: 160ms;
+  --m-base: 260ms;
+  --m-slow: 420ms;
+  --m-sheet: 520ms;
+
+  /* Curves, in order of how much they overshoot. */
+  --e-exit: cubic-bezier(0.4, 0, 1, 1);
+  --e-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --e-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --e-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --e-settle: cubic-bezier(0.22, 1.2, 0.36, 1);
+
+  /* Depth. A single blurred shadow reads as fog. Real objects cast a tight,
+     dark contact shadow plus a wide, faint ambient one. */
+  --d-1:
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(255, 255, 255, 0.045);
+  --d-2:
+    0 2px 6px rgba(0, 0, 0, 0.5),
+    0 8px 24px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --d-3:
+    0 4px 12px rgba(0, 0, 0, 0.55),
+    0 20px 50px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --d-float:
+    0 8px 20px rgba(0, 0, 0, 0.6),
+    0 32px 72px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.11);
+
+  /* Ember glow, reserved for playback state. */
+  --d-ember:
+    0 2px 10px rgba(255, 159, 10, 0.28),
+    0 10px 34px rgba(255, 94, 58, 0.2);
+
+  /* Concentric radii. A child inside a rounded parent needs a smaller radius
+     by exactly the padding between them, or the curves fight each other. */
+  --r-xs: 7px;
+  --r-sm: 11px;
+  --r-md: 15px;
+  --r-lg: 21px;
+  --r-xl: 27px;
+  --r-round: 999px;
+
+  /* Blur budget. Turned down wholesale on low-end devices — see §7. */
+  --blur-chrome: 22px;
+  --blur-modal: 34px;
+  --blur-sat: 150%;
+}
+
+/* -----------------------------------------------------------------------------
+   2. RENDER PERFORMANCE
+   -----------------------------------------------------------------------------
+   The single largest cause of jank here was long scrolling lists compositing
+   every row, every frame, including the hundreds off-screen.
+   -------------------------------------------------------------------------- */
+
+/* Skip layout, paint and style for rows outside the viewport. The
+   contain-intrinsic-size keeps the scrollbar honest so the thumb does not
+   jump as rows are realised. */
+.track-row,
+.hub-vault-card,
+.melo-skeleton-card,
+.melo-skeleton-fym,
+.queue-row,
+.search-result-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+.hub-vault-card {
+  contain-intrinsic-size: auto 96px;
+}
+
+/* Isolate each card's layout and paint so a change inside one cannot force
+   the whole list to re-layout. */
+.hub-vault-card,
+.track-row {
+  contain: layout paint style;
+}
+
+/* Momentum scrolling containers get their own compositor layer, but only the
+   ones that actually scroll. */
+#viewContainer,
+#mainViewport,
+.melo-scroll,
+.sheet-scroll-area {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  scroll-behavior: smooth;
+  will-change: scroll-position;
+}
+
+/* Never leave will-change on permanently. It permanently reserves GPU memory
+   per element, and on a long list that is worse than the jank it fixes. It is
+   applied on interaction and dropped the moment the interaction ends. */
+.track-row,
+.hub-vault-card,
+.ctrl-btn,
+.pill-nav-item {
+  will-change: auto;
+}
+
+.track-row:active,
+.hub-vault-card:active,
+.ctrl-btn:active,
+.pill-nav-item:active,
+.is-animating {
+  will-change: transform, opacity;
+}
+
+/* Artwork: decode off the main thread and reserve the box so the grid does
+   not reflow as covers arrive. */
+img[src*="proxy-image"],
+.vault-card-thumb img,
+.tr-thumb,
+#dockThumb {
+  content-visibility: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  background: var(--surf-1, rgba(255, 255, 255, 0.034));
+  /* A cross-fade as each cover decodes, instead of a hard pop. */
+  animation: melo-art-in var(--m-base) var(--e-enter) both;
+}
+
+@keyframes melo-art-in {
+  from { opacity: 0; transform: scale(1.02); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* -----------------------------------------------------------------------------
+   3. TOUCH & INPUT FEEL
+   -------------------------------------------------------------------------- */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+.ctrl-btn,
+.pill-nav-item,
+.filter-chip,
+.capsule-btn,
+.track-row,
+.hub-vault-card,
+.context-action-row {
+  touch-action: manipulation;   /* removes the 300ms double-tap delay */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Press response. Scale alone reads as flat; pairing it with a brightness
+   drop makes the surface feel like it is being pushed into the screen. */
+.track-row,
+.hub-vault-card,
+.context-action-row,
+.capsule-btn,
+.filter-chip {
+  transition:
+    transform var(--m-quick) var(--e-settle),
+    background-color var(--m-quick) linear,
+    filter var(--m-quick) linear;
+}
+
+.track-row:active,
+.context-action-row:active {
+  transform: scale(0.985);
+  filter: brightness(1.12);
+}
+
+.hub-vault-card:active {
+  transform: scale(0.97);
+  filter: brightness(1.1);
+}
+
+/* Control buttons overshoot very slightly on release — the spring curve does
+   the work, so the transform itself stays simple. */
+.ctrl-btn,
+.mini-ctrl-btn,
+.sheet-icon-btn,
+.ctrl-jump-btn {
+  transition: transform var(--m-base) var(--e-spring),
+              background-color var(--m-quick) linear,
+              box-shadow var(--m-base) var(--e-standard);
+}
+
+.ctrl-btn:active,
+.mini-ctrl-btn:active,
+.sheet-icon-btn:active,
+.ctrl-jump-btn:active {
+  transform: scale(0.88);
+}
+
+/* -----------------------------------------------------------------------------
+   4. COMPONENT REFINEMENT
+   -------------------------------------------------------------------------- */
+
+/* --- Now-playing row -------------------------------------------------------
+   The base fills the row with flat ember at 12%. Replacing the fill with a
+   left-edge ember bar plus a directional wash states "this one" without
+   painting a coloured slab across the list. */
+.track-row.playing {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 159, 10, 0.16) 0%,
+    rgba(255, 159, 10, 0.05) 42%,
+    transparent 78%
+  );
+  box-shadow: var(--edge-top, inset 0 1px 0 rgba(255, 255, 255, 0.07));
+}
+
+.track-row.playing::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-gradient, linear-gradient(180deg, #ffc53d, #ff5e3a));
+  box-shadow: 0 0 12px rgba(255, 159, 10, 0.55);
+  animation: melo-pulse-bar 2.6s var(--e-standard) infinite;
+}
+
+.track-row {
+  position: relative;
+  border-radius: var(--r-sm);
+}
+
+@keyframes melo-pulse-bar {
+  0%, 100% { opacity: 1; transform: scaleY(1); }
+  50%      { opacity: 0.72; transform: scaleY(0.86); }
+}
+
+/* --- Cards ---------------------------------------------------------------- */
+.hub-vault-card {
+  border-radius: var(--r-md);
+  box-shadow: var(--d-1);
+  transition:
+    transform var(--m-base) var(--e-settle),
+    box-shadow var(--m-base) var(--e-standard),
+    background-color var(--m-quick) linear;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hub-vault-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--d-3);
+  }
+}
+
+/* Cover art sits inside the card's padding, so its radius must be smaller by
+   that amount or the two curves visibly disagree. */
+.hub-vault-card img,
+.vault-card-thumb {
+  border-radius: var(--r-sm);
+}
+
+/* --- Bottom navigation ---------------------------------------------------- */
+.pill-nav-item {
+  transition: transform var(--m-base) var(--e-spring),
+              color var(--m-quick) linear;
+}
+
+.pill-nav-item.active svg {
+  animation: melo-nav-pop var(--m-slow) var(--e-spring) both;
+}
+
+@keyframes melo-nav-pop {
+  0%   { transform: scale(0.82) translateY(2px); }
+  55%  { transform: scale(1.14) translateY(-1px); }
+  100% { transform: scale(1) translateY(0); }
+}
+
+/* The sliding pill behind the active item. Moving it with a spring, rather
+   than a linear slide, is most of what makes a tab bar feel expensive. */
+.pill-active-bg {
+  transition: transform var(--m-slow) var(--e-spring),
+              width var(--m-slow) var(--e-spring),
+              opacity var(--m-quick) linear;
+  box-shadow: var(--d-1);
+}
+
+/* --- Dock player ---------------------------------------------------------- */
+#dockPlayerBar {
+  box-shadow: var(--d-float);
+  border-radius: var(--r-lg);
+  transition:
+    transform var(--m-sheet) var(--e-enter),
+    opacity var(--m-base) linear;
+}
+
+#dockPlayerBar:not(.active) {
+  transform: translateY(130%) scale(0.96);
+  opacity: 0;
+  pointer-events: none;
+}
+
+#dockPlayerBar.active {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+#dockThumb {
+  border-radius: var(--r-xs);
+  box-shadow: var(--d-1);
+}
+
+/* Artwork breathes almost imperceptibly while playing. Slow enough to read as
+   life rather than as an animation. */
+body.is-playing #dockThumb {
+  animation: melo-breathe 5.5s ease-in-out infinite;
+}
+
+@keyframes melo-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.035); }
+}
+
+/* --- Scrubber ------------------------------------------------------------- */
+#dockScrubber,
+.straight-wave-scrubber,
+input[type="range"] {
+  --track-h: 4px;
+  cursor: pointer;
+}
+
+/* The touch target grows on contact; the visible track does not. Fitts's law
+   satisfied without making the bar look chunky. */
+#dockScrubber:active,
+.straight-wave-scrubber:active {
+  --track-h: 7px;
+}
+
+#dockScrubber::-webkit-slider-runnable-track,
+.straight-wave-scrubber::-webkit-slider-runnable-track {
+  height: var(--track-h);
+  border-radius: var(--r-round);
+  transition: height var(--m-quick) var(--e-settle);
+}
+
+#dockScrubber::-webkit-slider-thumb,
+.straight-wave-scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--d-2), var(--d-ember);
+  transition: transform var(--m-base) var(--e-spring);
+}
+
+#dockScrubber:active::-webkit-slider-thumb,
+.straight-wave-scrubber:active::-webkit-slider-thumb {
+  transform: scale(1.45);
+}
+
+/* --- Chips ---------------------------------------------------------------- */
+.filter-chip {
+  border-radius: var(--r-round);
+}
+
+.filter-chip.active {
+  box-shadow: var(--d-1), var(--d-ember);
+  animation: melo-chip-in var(--m-base) var(--e-spring) both;
+}
+
+@keyframes melo-chip-in {
+  0%   { transform: scale(0.92); }
+  60%  { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+/* --- Sheets & modals ------------------------------------------------------ */
+.context-modal-sheet,
+.update-sheet,
+.context-action-modal {
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--d-float);
+  /* A sheet that slides in linearly looks dragged. The enter curve makes it
+     arrive fast and settle. */
+  animation: melo-sheet-up var(--m-sheet) var(--e-enter) both;
+  padding-bottom: max(env(safe-area-inset-bottom), 12px);
+}
+
+@keyframes melo-sheet-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.drag-handle {
+  border-radius: var(--r-round);
+  transition: width var(--m-base) var(--e-spring),
+              background-color var(--m-quick) linear;
+}
+
+.context-modal-sheet:active .drag-handle {
+  width: 52px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* Modal backdrops fade rather than appearing. */
+.context-action-modal,
+#meloConfirmModal,
+#authModal,
+.update-modal-overlay {
+  transition: opacity var(--m-base) var(--e-standard),
+              visibility var(--m-base) linear;
+}
+
+/* --- Staggered list entrance ---------------------------------------------
+   One orchestrated reveal on view change, not a permanent effect. The stagger
+   is capped at 10 items so a 200-row list does not take four seconds to
+   finish arriving. */
+.melo-stagger > * {
+  animation: melo-row-in var(--m-slow) var(--e-enter) both;
+}
+
+.melo-stagger > *:nth-child(1)  { animation-delay: 20ms; }
+.melo-stagger > *:nth-child(2)  { animation-delay: 45ms; }
+.melo-stagger > *:nth-child(3)  { animation-delay: 70ms; }
+.melo-stagger > *:nth-child(4)  { animation-delay: 95ms; }
+.melo-stagger > *:nth-child(5)  { animation-delay: 120ms; }
+.melo-stagger > *:nth-child(6)  { animation-delay: 145ms; }
+.melo-stagger > *:nth-child(7)  { animation-delay: 170ms; }
+.melo-stagger > *:nth-child(8)  { animation-delay: 195ms; }
+.melo-stagger > *:nth-child(9)  { animation-delay: 220ms; }
+.melo-stagger > *:nth-child(n+10) { animation-delay: 240ms; }
+
+@keyframes melo-row-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* --- Skeletons ------------------------------------------------------------
+   A sheen that travels is read as "loading"; an opacity pulse is read as
+   "broken". */
+.melo-skeleton-box {
+  position: relative;
+  overflow: hidden;
+  background: var(--surf-1, rgba(255, 255, 255, 0.034));
+  border-radius: var(--r-xs);
+}
+
+.melo-skeleton-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.07) 45%,
+    rgba(255, 255, 255, 0.11) 50%,
+    rgba(255, 255, 255, 0.07) 55%,
+    transparent
+  );
+  animation: melo-sheen 1.5s var(--e-standard) infinite;
+}
+
+@keyframes melo-sheen {
+  to { transform: translateX(100%); }
+}
+
+/* -----------------------------------------------------------------------------
+   5. MARQUEE FOR OVERFLOWING TITLES
+   -----------------------------------------------------------------------------
+   Applied by melo-motion.js only when the text actually overflows, so short
+   titles are never set in motion for no reason.
+   -------------------------------------------------------------------------- */
+.melo-marquee {
+  overflow: hidden;
+  white-space: nowrap;
+  /* Fade the edges so text dissolves rather than being cut by a hard box. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14px,
+                                      #000 calc(100% - 14px), transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 14px,
+                                      #000 calc(100% - 14px), transparent);
+}
+
+.melo-marquee > span {
+  display: inline-block;
+  padding-right: 2.5em;
+  animation: melo-marquee-scroll var(--marquee-dur, 11s) linear infinite;
+  animation-delay: 1.6s;
+}
+
+@keyframes melo-marquee-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* -----------------------------------------------------------------------------
+   6. ACCESSIBILITY FLOOR
+   -------------------------------------------------------------------------- */
+
+/* Keyboard focus must be visible, but should not appear on touch/mouse press.
+   :focus-visible handles that distinction for us. */
+:focus-visible {
+  outline: 2px solid var(--accent, #ff9f0a);
+  outline-offset: 3px;
+  border-radius: var(--r-xs);
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Respect the OS setting. Motion is reduced to near-zero rather than removed
+   entirely, so state changes are still legible. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  body.is-playing #dockThumb,
+  .track-row.playing::before {
+    animation: none !important;
+  }
+}
+
+/* Safe areas, so content never sits under the notch or the gesture bar. */
+#app,
+#viewContainer {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+#dockPlayerBar {
+  margin-bottom: max(env(safe-area-inset-bottom), 8px);
+}
+
+/* -----------------------------------------------------------------------------
+   7. BATTERY & LOW-END BUDGET
+   -----------------------------------------------------------------------------
+   backdrop-filter forces a readback of everything beneath the element on every
+   frame. With 30 of them on screen it is the single most expensive thing in
+   the app and it drains battery while scrolling. melo-motion.js sets
+   .melo-lite on low-memory, low-core or battery-saver devices; these rules
+   swap the blur for a layered translucent fill, which is visually close and
+   effectively free.
+   -------------------------------------------------------------------------- */
+.melo-lite [style*="backdrop-filter"],
+.melo-lite .context-modal-sheet,
+.melo-lite #dockPlayerBar,
+.melo-lite .sidebar,
+.melo-lite .update-sheet,
+.melo-lite .context-action-modal {
+  -webkit-backdrop-filter: none !important;
+          backdrop-filter: none !important;
+  background-color: rgba(12, 12, 14, 0.96) !important;
+}
+
+/* Decorative, continuously-running animations are the other battery cost.
+   They stop entirely in lite mode. */
+.melo-lite .live-fluid-mesh-canvas,
+.melo-lite .update-radar {
+  display: none !important;
+}
+
+.melo-lite body.is-playing #dockThumb,
+.melo-lite .track-row.playing::before,
+.melo-lite .melo-skeleton-box::after {
+  animation: none !important;
+}
+
+/* When the app is backgrounded, nothing on screen needs to animate. The class
+   is toggled on visibilitychange. */
+.melo-hidden *,
+.melo-hidden *::before,
+.melo-hidden *::after {
+  animation-play-state: paused !important;
+}
+
+/* -----------------------------------------------------------------------------
+   8. SCROLL-DRIVEN HEADER
+   -----------------------------------------------------------------------------
+   Progressive enhancement: where scroll-driven animations are supported this
+   runs entirely on the compositor, costing no main-thread work at all.
+   -------------------------------------------------------------------------- */
+@supports (animation-timeline: scroll()) {
+  .melo-scroll-fade {
+    animation: melo-header-condense linear both;
+    animation-timeline: scroll(nearest block);
+    animation-range: 0 140px;
+  }
+
+  @keyframes melo-header-condense {
+    to {
+      opacity: 0.94;
+      transform: scale(0.97);
+    }
+  }
+}
+
+/* -----------------------------------------------------------------------------
+   9. EMPTY & ERROR STATES
+   -----------------------------------------------------------------------------
+   An empty screen is an invitation to act, not a dead end.
+   -------------------------------------------------------------------------- */
+.melo-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3, 12px);
+  padding: var(--s8, 56px) var(--s5, 22px);
+  text-align: center;
+  animation: melo-row-in var(--m-slow) var(--e-enter) both;
+}
+
+.melo-empty-icon {
+  width: 44px;
+  height: 44px;
+  opacity: 0.32;
+}
+
+.melo-empty-title {
+  font-family: var(--font-display, sans-serif);
+  font-size: 1.02rem;
+  color: var(--text-main, #fff);
+}
+
+.melo-empty-body {
+  font-size: 0.86rem;
+  line-height: 1.5;
+  max-width: 30ch;
+  color: var(--text-muted, #a1a1a6);
+}
+
+/* -----------------------------------------------------------------------------
+   10. TOAST
+   -----------------------------------------------------------------------------
+   The base rule pinned the toast to a flat top: 24px, which on any phone with a
+   punch-hole or notch puts it directly under the camera. It also set
+   white-space: nowrap, so anything longer than a few words was silently
+   truncated mid-sentence.
+
+   Position is now max(safe-area + 14px, 62px). The max() matters: a Capacitor
+   WebView often reports safe-area-inset-top as 0 even on a cutout device, so
+   relying on the inset alone would reintroduce exactly the bug being fixed.
+   62px clears every current cutout.
+   -------------------------------------------------------------------------- */
+.melo-toast {
+  top: max(calc(env(safe-area-inset-top, 0px) + 14px), 62px) !important;
+
+  /* Let real sentences wrap instead of being cut off. */
+  white-space: normal !important;
+  overflow: visible !important;
+  max-width: min(86vw, 420px) !important;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  /* A pill is right for two words and wrong for two lines. This radius reads
+     as a pill at one line and as a card at two. */
+  border-radius: 16px !important;
+  padding: 12px 18px !important;
+
+  /* The base used a 1px ember-tinted border on every toast, which spent the
+     accent colour on routine messages. Depth comes from the shadow instead,
+     and colour is reserved for the status rail below. */
+  border: none !important;
+  background: rgba(22, 22, 25, 0.94) !important;
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.5),
+    0 20px 48px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09) !important;
+
+  font-family: var(--font-ui, -apple-system, sans-serif);
+  font-size: 0.875rem !important;
+  font-weight: 550 !important;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  text-align: left !important;
+
+  /* Start slightly small as well as high, so it springs forward rather than
+     just sliding down. */
+  transform: translate3d(-50%, -18px, 0) scale(0.94) !important;
+  transition:
+    transform 420ms cubic-bezier(0.34, 1.4, 0.5, 1),
+    opacity 200ms linear !important;
+
+  pointer-events: auto !important;
+  cursor: pointer;
+}
+
+.melo-toast.show {
+  transform: translate3d(-50%, 0, 0) scale(1) !important;
+}
+
+/* A 3px status rail on the leading edge. Carries the state without tinting the
+   whole surface, and keeps ember meaning playback rather than "notification". */
+.melo-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.melo-toast.is-success::before { background: var(--green, #30d158); }
+.melo-toast.is-error::before   { background: var(--rose, #ff375f); }
+.melo-toast.is-warn::before    { background: var(--ember-mid, #ff9f0a); }
+
+.melo-toast-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.melo-toast-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Blur is the expensive part of this element and it is on screen for under
+   three seconds, so lite-mode drops it entirely. */
+.melo-lite .melo-toast {
+  -webkit-backdrop-filter: none !important;
+          backdrop-filter: none !important;
+  background: rgba(20, 20, 23, 0.98) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .melo-toast {
+    transform: translate3d(-50%, 0, 0) scale(1) !important;
+  }
+}
