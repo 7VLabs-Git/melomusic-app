@@ -1,8 +1,7 @@
 package com.melomusic.app.data
 
-import android.util.Base64
-import android.util.Log
 import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,113 +13,187 @@ import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
 class JioSaavnRepository {
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private val cryptoKey = "38346591"
-
+    // 1. RELIABLE SEARCH WITH HIGH-RES 500x500 COVER ART
     suspend fun searchSongs(query: String): List<Song> = withContext(Dispatchers.IO) {
         val list = mutableListOf<Song>()
         try {
-            // Using the ultra-stable web6dot0 API version
-            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&q=${URLEncoder.encode(query, "UTF-8")}&n=20&p=1&_format=json&_marker=0&api_version=4&ctx=web6dot0"
-            val req = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
-            val resp = client.newCall(req).execute()
-            val raw = resp.body?.string() ?: ""
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            val url = "https://www.jiosaavn.com/api.php?__call=search.getResults&q=$encodedQuery&p=1&n=30&_format=json&_marker=0&api_version=4&ctx=web6dot0"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                .header("Accept", "application/json")
+                .build()
 
-            if (raw.isNotBlank()) {
-                val root = JsonParser.parseString(raw).asJsonObject
-                var results: JsonArray? = null
+            val response = client.newCall(request).execute()
+            val jsonString = response.body?.string() ?: return@withContext emptyList()
+            val root = JsonParser.parseString(jsonString)
 
-                if (root.has("results")) {
-                    results = root.getAsJsonArray("results")
-                } else if (root.has("songs") && root.getAsJsonObject("songs").has("data")) {
-                    results = root.getAsJsonObject("songs").getAsJsonArray("data")
+            val resultsArray: JsonArray? = if (root.isJsonObject) {
+                val obj = root.asJsonObject
+                when {
+                    obj.has("results") && obj.get("results").isJsonArray -> obj.getAsJsonArray("results")
+                    obj.has("results") && obj.get("results").isJsonObject -> obj.getAsJsonObject("results").getAsJsonArray("songs")
+                    obj.has("data") && obj.get("data").isJsonArray -> obj.getAsJsonArray("data")
+                    else -> null
                 }
+            } else if (root.isJsonArray) {
+                root.asJsonArray
+            } else null
 
-                if (results != null) {
-                    for (item in results) {
-                        val obj = item.asJsonObject
-                        val id = obj.get("id")?.asString ?: continue
-                        val title = cleanText(obj.get("title")?.asString ?: "Unknown Track")
-                        val subtitle = cleanText(obj.get("subtitle")?.asString ?: "")
-                        val artist = subtitle.split("-").firstOrNull()?.trim() ?: subtitle
+            if (resultsArray != null) {
+                for (element in resultsArray) {
+                    val obj = element.asJsonObject
+                    val id = obj.get("id")?.asString ?: continue
+                    val moreInfo = if (obj.has("more_info") && obj.get("more_info").isJsonObject) obj.getAsJsonObject("more_info") else null
 
-                        val moreInfo = obj.getAsJsonObject("more_info")
-                        val album = cleanText(moreInfo?.get("album")?.asString ?: "")
-                        val encryptedMediaUrl = moreInfo?.get("encrypted_media_url")?.asString ?: ""
-                        val image = (obj.get("image")?.asString ?: "").replace("150x150", "500x500")
+                    val rawTitle = obj.get("song")?.asString
+                        ?: obj.get("title")?.asString
+                        ?: moreInfo?.get("song")?.asString
+                        ?: "Unknown Track"
+                    val title = cleanHtmlEntities(rawTitle)
 
-                        if (encryptedMediaUrl.isNotBlank()) {
-                            val durationSeconds = moreInfo?.get("duration")?.asString ?: "210"
-                            list.add(Song(id, title, artist, album, image, durationSeconds, encryptedMediaUrl))
-                        }
-                    }
+                    val rawArtist = moreInfo?.get("primary_artists")?.asString
+                        ?: moreInfo?.get("singers")?.asString
+                        ?: obj.get("primary_artists")?.asString
+                        ?: obj.get("singers")?.asString
+                        ?: obj.get("subtitle")?.asString
+                        ?: "Unknown Artist"
+                    val artist = cleanHtmlEntities(rawArtist)
+
+                    val rawAlbum = moreInfo?.get("album")?.asString
+                        ?: obj.get("album")?.asString
+                        ?: "Single"
+                    val album = cleanHtmlEntities(rawAlbum)
+
+                    val rawImage = obj.get("image")?.asString ?: moreInfo?.get("image")?.asString ?: ""
+                    val highResImage = rawImage
+                        .replace("50x50", "500x500")
+                        .replace("150x150", "500x500")
+                        .replace("http://", "https://")
+
+                    val duration = moreInfo?.get("duration")?.asString ?: obj.get("duration")?.asString ?: "210"
+                    val encryptedMediaUrl = moreInfo?.get("encrypted_media_url")?.asString
+                        ?: obj.get("encrypted_media_url")?.asString
+                        ?: ""
+
+                    list.add(Song(id, title, artist, album, highResImage, duration, encryptedMediaUrl))
                 }
             }
         } catch (e: Exception) {
-            Log.e("MeloMusic", "Search error", e)
+            e.printStackTrace()
         }
-
-        // GRACEFUL FALLBACK: If network fails or API blocks, provide beautiful UI placeholder data
-        // so the app NEVER looks broken or blank.
-        if (list.isEmpty()) {
-            list.add(Song("fb1", "Tum Hi Ho", "Arijit Singh", "Aashiqui 2", "https://c.saavncdn.com/258/Aashiqui-2-Hindi-2013-500x500.jpg", "4:22", ""))
-            list.add(Song("fb2", "Starboy", "The Weeknd", "Starboy", "https://c.saavncdn.com/129/Starboy-English-2016-500x500.jpg", "3:50", ""))
-            list.add(Song("fb3", "Khairiyat", "Arijit Singh", "Chhichhore", "https://c.saavncdn.com/241/Chhichhore-Hindi-2019-20190904104023-500x500.jpg", "4:30", ""))
-            list.add(Song("fb4", "Blinding Lights", "The Weeknd", "After Hours", "https://c.saavncdn.com/514/Blinding-Lights-English-2019-20191129083818-500x500.jpg", "3:20", ""))
-            list.add(Song("fb5", "Agar Tum Saath Ho", "Alka Yagnik", "Tamasha", "https://c.saavncdn.com/712/Tamasha-Hindi-2015-500x500.jpg", "5:41", ""))
-        }
-
         list
     }
 
-    suspend fun getStreamUrl(song: Song): String = withContext(Dispatchers.IO) {
-        if (song.vlink.isNotBlank()) {
-            val decryptedUrl = decryptUrl(song.vlink)
-            return@withContext decryptedUrl.replace("_96.mp4", "_320.mp4")
-                .replace("_96.m4a", "_320.m4a")
-                .replace("_160.mp4", "_320.mp4")
-        }
-        ""
-    }
-
-    private fun decryptUrl(encryptedUrl: String): String {
-        return try {
-            val secretKey = SecretKeySpec(cryptoKey.toByteArray(), "DES")
-            val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
-            cipher.init(Cipher.DECRYPT_MODE, secretKey)
-            String(cipher.doFinal(Base64.decode(encryptedUrl, Base64.DEFAULT)))
-        } catch (e: Exception) { "" }
-    }
-
-    suspend fun getSyncedLyrics(trackName: String, artistName: String): List<LyricLine> = withContext(Dispatchers.IO) {
-        val list = mutableListOf<LyricLine>()
+    // 2. SMART RADIO RECOMMENDATIONS
+    suspend fun getRadioRecommendations(seedSong: Song): List<Song> = withContext(Dispatchers.IO) {
+        val recommendations = mutableListOf<Song>()
         try {
-            val cleanTitle = trackName.replace(Regex("[\\[(].*?[\\])]"), "").trim()
-            val cleanArtist = artistName.split(",", "&", "/").firstOrNull()?.trim() ?: ""
-            val url = "https://lrclib.net/api/get?track_name=${URLEncoder.encode(cleanTitle, "UTF-8")}&artist_name=${URLEncoder.encode(cleanArtist, "UTF-8")}"
-            val req = Request.Builder().url(url).header("User-Agent", "MeloMusic-Android/1.0").build()
-            val resp = client.newCall(req).execute()
-            val raw = resp.body?.string() ?: return@withContext list
-            val root = JsonParser.parseString(raw).asJsonObject
-            val synced = root.get("syncedLyrics")?.asString ?: ""
+            val recoUrl = "https://www.jiosaavn.com/api.php?__call=reco.getreco&pid=${seedSong.id}&_format=json&_marker=0&api_version=4&ctx=web6dot0"
+            val request = Request.Builder().url(recoUrl).header("User-Agent", "Mozilla/5.0").build()
+            val response = client.newCall(request).execute()
+            val jsonString = response.body?.string() ?: ""
 
-            synced.split("\n").forEach { line ->
-                val match = Regex("""\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)""").find(line)
-                if (match != null) {
-                    val (min, sec, ms, text) = match.destructured
-                    val time = min.toFloat() * 60f + sec.toFloat() + ("0.$ms").toFloat()
-                    if (text.isNotBlank()) list.add(LyricLine(time, text.trim()))
+            if (jsonString.startsWith("[")) {
+                val array = JsonParser.parseString(jsonString).asJsonArray
+                for (elem in array) {
+                    val obj = elem.asJsonObject
+                    val id = obj.get("id")?.asString ?: continue
+                    if (id == seedSong.id) continue
+
+                    val moreInfo = if (obj.has("more_info") && obj.get("more_info").isJsonObject) obj.getAsJsonObject("more_info") else null
+                    val title = cleanHtmlEntities(obj.get("song")?.asString ?: obj.get("title")?.asString ?: "Track")
+                    val artist = cleanHtmlEntities(moreInfo?.get("primary_artists")?.asString ?: obj.get("primary_artists")?.asString ?: seedSong.artist)
+                    val album = cleanHtmlEntities(moreInfo?.get("album")?.asString ?: "Single")
+                    val highResImage = (obj.get("image")?.asString ?: "")
+                        .replace("50x50", "500x500")
+                        .replace("150x150", "500x500")
+                        .replace("http://", "https://")
+                    val duration = moreInfo?.get("duration")?.asString ?: "210"
+                    val encrypted = moreInfo?.get("encrypted_media_url")?.asString ?: obj.get("encrypted_media_url")?.asString ?: ""
+
+                    recommendations.add(Song(id, title, artist, album, highResImage, duration, encrypted))
                 }
             }
-        } catch (e: Exception) {}
-        list
+        } catch (_: Exception) { }
+
+        if (recommendations.size < 6) {
+            val artistQuery = seedSong.artist.split(",").firstOrNull()?.trim() ?: seedSong.artist
+            val fallbackTracks = searchSongs("$artistQuery Hits")
+            for (track in fallbackTracks) {
+                if (track.id != seedSong.id && recommendations.none { it.id == track.id }) {
+                    recommendations.add(track)
+                }
+            }
+        }
+        recommendations
     }
 
-    private fun cleanText(text: String): String {
-        return text.replace("&quot;", "\"").replace("&amp;", "&").replace("&#039;", "'").replace("&lt;", "<").replace("&gt;", ">")
+    // 3. RESOLVE STREAM URL
+    suspend fun getStreamUrl(song: Song): String? = withContext(Dispatchers.IO) {
+        if (!song.localPath.isNullOrBlank()) return@withContext song.localPath
+        getRemoteDecryptedUrl(song)
+    }
+
+    fun getRemoteDecryptedUrl(song: Song): String? {
+        if (song.encryptedMediaUrl.isBlank()) return null
+        return try {
+            val key = "38346591".toByteArray(Charsets.UTF_8)
+            val secretKey = SecretKeySpec(key, "DES")
+            val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey)
+            val decoded = android.util.Base64.decode(song.encryptedMediaUrl, android.util.Base64.DEFAULT)
+            val decryptedBytes = cipher.doFinal(decoded)
+            val rawUrl = String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
+            rawUrl.replace("_96.mp4", "_160.mp4")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    // 4. SYNCED LYRICS
+    suspend fun getSyncedLyrics(title: String, artist: String): List<LyricLine> = withContext(Dispatchers.IO) {
+        val lines = mutableListOf<LyricLine>()
+        try {
+            val cleanTitle = title.replace(Regex("\\(.*\\)|\\[.*\\]"), "").trim()
+            val cleanArtist = artist.split(",").firstOrNull()?.trim() ?: artist
+            val encodedTitle = URLEncoder.encode(cleanTitle, "UTF-8")
+            val encodedArtist = URLEncoder.encode(cleanArtist, "UTF-8")
+            val url = "https://lrclib.net/api/get?track_name=$encodedTitle&artist_name=$encodedArtist"
+            val request = Request.Builder().url(url).header("User-Agent", "MeloMusic-App").build()
+            val response = client.newCall(request).execute()
+            val jsonString = response.body?.string() ?: return@withContext emptyList()
+            val json = JsonParser.parseString(jsonString).asJsonObject
+            val syncedLyrics = json.get("syncedLyrics")?.asString ?: return@withContext emptyList()
+
+            syncedLyrics.lines().forEach { line ->
+                val match = Regex("\\[(\\d{2}):(\\d{2}\\.\\d{2})\\](.*)").find(line)
+                if (match != null) {
+                    val mins = match.groupValues[1].toFloatOrNull() ?: 0f
+                    val secs = match.groupValues[2].toFloatOrNull() ?: 0f
+                    val text = match.groupValues[3].trim()
+                    if (text.isNotEmpty()) {
+                        lines.add(LyricLine(mins * 60f + secs, text))
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+        lines
+    }
+
+    private fun cleanHtmlEntities(input: String): String {
+        return input.replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("&#039;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
     }
 }

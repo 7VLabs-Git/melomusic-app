@@ -7,7 +7,8 @@ data class Song(
     val album: String,
     val thumbnailUrl: String,
     val durationText: String,
-    val vlink: String = ""
+    val encryptedMediaUrl: String,
+    var localPath: String? = null
 )
 
 data class LyricLine(
