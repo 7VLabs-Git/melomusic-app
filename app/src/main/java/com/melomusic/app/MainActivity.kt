@@ -159,7 +159,7 @@ data class UserPlaylist(val name: String, var coverUrl: String, val songs: Mutab
 const val MODE_SHUFFLE = 0
 const val MODE_REPEAT_ALL = 1
 const val MODE_REPEAT_ONE = 2
-const val CURRENT_APP_VERSION = "v1.0.1"
+const val CURRENT_APP_VERSION = "v1.0.2"
 
 private const val NOTIFICATION_ID = 4040
 private const val CHANNEL_ID = "melo_playback_channel"
