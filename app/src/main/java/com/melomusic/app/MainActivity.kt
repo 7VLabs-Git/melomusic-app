@@ -43,10 +43,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -76,8 +79,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -87,6 +90,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.lerp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
@@ -111,12 +115,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.URLEncoder
 import java.util.Calendar
+import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-// ==========================================
-// MELO DESIGN SYSTEM TOKENS
-// ==========================================
 private val VoidBlack = Color(0xFF030304)
 private val DeepSurface = Color(0xFF0D0D11)
 private val GlassSurface = Color(0x18FFFFFF)
@@ -178,16 +180,18 @@ class MainActivity : ComponentActivity() {
     private val likedSongsList = mutableStateListOf<Song>()
     private val recentlyPlayedList = mutableStateListOf<Song>()
     private val downloadedSongsList = mutableStateListOf<Song>()
+    private val playbackHistory = mutableListOf<Song>()
 
     private val downloadProgressMap = mutableStateMapOf<String, Float>()
 
     private var currentQueue = mutableStateListOf<Song>()
     private var currentQueueIndex by mutableStateOf(0)
     private var currentPlaybackPositionMs by mutableStateOf(0f)
+    private var isUserSeeking by mutableStateOf(false)
     private var playMode by mutableStateOf(MODE_REPEAT_ALL)
-
-    // Tracks if pause was initiated manually by the user
     private var userPausedManually = false
+
+    private var userProfileName by mutableStateOf<String?>(null)
 
     private var updateVersion by mutableStateOf<String?>(null)
     private var updateNotes by mutableStateOf("")
@@ -225,6 +229,7 @@ class MainActivity : ComponentActivity() {
 
         prefs = getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
         loadPersistedState()
+        userProfileName = prefs.getString("user_profile_name", null)
         createNotificationChannel()
 
         ContextCompat.registerReceiver(this, updateReceiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_EXPORTED)
@@ -249,9 +254,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    // ==========================================
-    // PERSISTENCE & LOCAL VAULT
-    // ==========================================
     private fun loadPersistedState() {
         try {
             val likedJson = prefs.getString("liked_songs", "[]") ?: "[]"
@@ -270,7 +272,7 @@ class MainActivity : ComponentActivity() {
 
             downloaded.forEach { s ->
                 val file = File(filesDir, "downloads/${s.id}.mp3")
-                if (file.exists() && file.length() > 50000) {
+                if (file.exists() && file.length() > 5000) {
                     s.localPath = Uri.fromFile(file).toString()
                     downloadedSongsList.add(s)
                     downloadProgressMap[s.id] = -1f
@@ -314,12 +316,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ==========================================
-    // OFFLINE DOWNLOAD RESOLUTION
-    // ==========================================
     private fun resolvePlayableUrl(song: Song): String? {
         val localFile = File(filesDir, "downloads/${song.id}.mp3")
-        return if (localFile.exists() && localFile.length() > 50000) {
+        return if (localFile.exists() && localFile.length() > 5000) {
             Uri.fromFile(localFile).toString()
         } else if (!song.localPath.isNullOrBlank() && song.localPath!!.startsWith("file://")) {
             song.localPath
@@ -334,7 +333,6 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Ensure we get the raw remote stream URL, not any existing local path
                 val streamUrl = saavnRepository.getRemoteDecryptedUrl(song)
                 if (streamUrl.isNullOrBlank()) {
                     withContext(Dispatchers.Main) { downloadProgressMap.remove(song.id) }
@@ -369,10 +367,11 @@ class MainActivity : ComponentActivity() {
                                 withContext(Dispatchers.Main) { downloadProgressMap[song.id] = progress }
                             }
                         }
+                        output.flush()
                     }
                 }
 
-                if (targetFile.length() < 50000) {
+                if (targetFile.length() < 5000) {
                     targetFile.delete()
                     throw Exception("Corrupted audio file")
                 }
@@ -398,10 +397,8 @@ class MainActivity : ComponentActivity() {
         persistDownloadedSongs()
     }
 
-    // ==========================================
-    // SMART QUEUE & PLAYBACK CONTROLLER
-    // ==========================================
     private fun playSongWithSmartRadio(seedSong: Song) {
+        player.state.value.song?.let { playbackHistory.add(it) }
         recordRecentlyPlayed(seedSong)
         currentQueue.clear()
         currentQueue.add(seedSong)
@@ -422,8 +419,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startSongPlayback(song: Song, contextQueue: List<Song>) {
+        player.state.value.song?.let { if (it.id != song.id) playbackHistory.add(it) }
         recordRecentlyPlayed(song)
-        // Maintain the active queue reference
         if (contextQueue !== currentQueue) {
             currentQueue.clear()
             currentQueue.addAll(contextQueue)
@@ -436,7 +433,6 @@ class MainActivity : ComponentActivity() {
             resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
         }
 
-        // Auto-replenish queue as it nears the end
         if (currentQueue.size - currentQueueIndex <= 3) {
             lifecycleScope.launch {
                 val moreRadio = saavnRepository.getRadioRecommendations(song)
@@ -450,8 +446,10 @@ class MainActivity : ComponentActivity() {
 
     private fun playNext() {
         if (currentQueue.isEmpty()) return
+        currentPlaybackPositionMs = 0f
+        player.state.value.song?.let { playbackHistory.add(it) }
+
         if (playMode == MODE_REPEAT_ONE) {
-            currentPlaybackPositionMs = 0f
             seekSong(0f)
             val currentSong = currentQueue[currentQueueIndex]
             userPausedManually = false
@@ -476,22 +474,50 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playPrev() {
-        if (currentQueue.isEmpty()) return
-        currentQueueIndex = if (currentQueueIndex - 1 < 0) currentQueue.size - 1 else currentQueueIndex - 1
-        startSongPlayback(currentQueue[currentQueueIndex], currentQueue)
+        if (currentPlaybackPositionMs > 3000f) {
+            seekSong(0f)
+            return
+        }
+
+        if (playbackHistory.isNotEmpty()) {
+            val previousSong = playbackHistory.removeAt(playbackHistory.lastIndex)
+            val idx = currentQueue.indexOfFirst { it.id == previousSong.id }
+            if (idx >= 0) {
+                currentQueueIndex = idx
+            }
+            currentPlaybackPositionMs = 0f
+            userPausedManually = false
+            player.play(previousSong) { target ->
+                resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+            }
+            return
+        }
+
+        if (currentQueue.isNotEmpty()) {
+            currentPlaybackPositionMs = 0f
+            currentQueueIndex = if (currentQueueIndex - 1 < 0) currentQueue.size - 1 else currentQueueIndex - 1
+            startSongPlayback(currentQueue[currentQueueIndex], currentQueue)
+        }
     }
 
     private fun seekSong(targetPositionMs: Float) {
         currentPlaybackPositionMs = targetPositionMs
+        val targetLong = targetPositionMs.toLong()
         try {
-            val method = player::class.java.getMethod("seekTo", Long::class.javaPrimitiveType)
-            method.invoke(player, targetPositionMs.toLong())
-        } catch (_: Exception) {
-            try {
-                val method2 = player::class.java.getMethod("seekTo", Float::class.javaPrimitiveType)
-                method2.invoke(player, targetPositionMs)
-            } catch (_: Exception) { }
-        }
+            val m = player::class.java.getMethod("seekTo", Long::class.javaPrimitiveType)
+            m.invoke(player, targetLong)
+            return
+        } catch (_: Exception) { }
+        try {
+            val m = player::class.java.getMethod("seekTo", Int::class.javaPrimitiveType)
+            m.invoke(player, targetLong.toInt())
+            return
+        } catch (_: Exception) { }
+        try {
+            val m = player::class.java.getMethod("seekTo", Float::class.javaPrimitiveType)
+            m.invoke(player, targetPositionMs)
+            return
+        } catch (_: Exception) { }
     }
 
     private fun parseDurationMs(durationStr: String): Float {
@@ -510,9 +536,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ==========================================
-    // NOTIFICATION
-    // ==========================================
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Melo Playback", NotificationManager.IMPORTANCE_LOW).apply {
@@ -641,9 +664,6 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // ==========================================
-    // ROOT COMPOSE
-    // ==========================================
     @Composable
     private fun MeloRoot() {
         val context = LocalContext.current as Activity
@@ -651,11 +671,28 @@ class MainActivity : ComponentActivity() {
 
         var currentTab by remember { mutableStateOf(MeloTab.HOME) }
         var playerTier by remember { mutableStateOf(PlayerTier.MINI) }
+
         var currentRoute by remember { mutableStateOf<NavRoute>(NavRoute.Main) }
         var showAccountSheet by remember { mutableStateOf(false) }
         var showImportSheet by remember { mutableStateOf(false) }
         var showUpdateSheet by remember { mutableStateOf(false) }
         var extractedArtworkColor by remember { mutableStateOf(Color(0xFFFF5252)) }
+
+        var listenedSongTimeMs by remember { mutableFloatStateOf(0f) }
+        var currentSongIdTracked by remember { mutableStateOf<String?>(null) }
+        var lastTriggeredSongId by remember { mutableStateOf<String?>(null) }
+        var becauseArtistName by remember { mutableStateOf(prefs.getString("last_listened_artist", null)) }
+        var becauseRecommendations by remember { mutableStateOf<List<Song>>(emptyList()) }
+
+        val homeScrollState = rememberLazyListState()
+
+        LaunchedEffect(becauseArtistName) {
+            val artist = becauseArtistName
+            if (!artist.isNullOrBlank() && becauseRecommendations.isEmpty()) {
+                val rec = saavnRepository.searchSongs("$artist Hits")
+                if (rec.isNotEmpty()) becauseRecommendations = rec
+            }
+        }
 
         LaunchedEffect(playerState.song?.id, playerState.song?.thumbnailUrl) {
             val url = playerState.song?.thumbnailUrl
@@ -667,27 +704,42 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Reliable auto-play observer loop
-        LaunchedEffect(playerState.isPlaying, playerState.song) {
+        // Dedicated playback progress ticker with seeking protection
+        LaunchedEffect(playerState.isPlaying, playerState.song?.id, playMode) {
             updateNativeNotification(playerState.song, playerState.isPlaying, currentPlaybackPositionMs.toLong(), currentArtworkBitmap)
 
             if (playerState.song != null) {
                 if (playerState.isPlaying) {
-                    while (playerState.isPlaying) {
-                        delay(50)
-                        currentPlaybackPositionMs += 50f
-                        val songDuration = parseDurationMs(playerState.song!!.durationText)
+                    if (currentSongIdTracked != playerState.song?.id) {
+                        currentSongIdTracked = playerState.song?.id
+                        listenedSongTimeMs = 0f
+                    }
 
-                        // Threshold check near end of track
-                        if (currentPlaybackPositionMs >= (songDuration - 800f) && songDuration > 5000f) {
+                    while (playerState.isPlaying) {
+                        delay(100)
+                        if (!isUserSeeking) {
+                            currentPlaybackPositionMs += 100f
+                            listenedSongTimeMs += 100f
+                        }
+
+                        if (listenedSongTimeMs >= 30000f && playerState.song?.id != lastTriggeredSongId) {
+                            lastTriggeredSongId = playerState.song?.id
+                            val artistName = playerState.song?.artist?.split(",")?.firstOrNull()?.trim() ?: playerState.song?.artist ?: ""
+                            if (artistName.isNotBlank()) {
+                                becauseArtistName = artistName
+                                prefs.edit().putString("last_listened_artist", artistName).apply()
+                                lifecycleScope.launch {
+                                    val reco = saavnRepository.searchSongs("$artistName Hits")
+                                    if (reco.isNotEmpty()) becauseRecommendations = reco
+                                }
+                            }
+                        }
+
+                        val songDuration = parseDurationMs(playerState.song!!.durationText)
+                        if (!isUserSeeking && currentPlaybackPositionMs >= (songDuration - 400f) && songDuration > 5000f) {
                             playNext()
                             break
                         }
-                    }
-                } else {
-                    // ExoPlayer completed playback naturally without manual user pause
-                    if (!userPausedManually && currentPlaybackPositionMs > 8000f) {
-                        playNext()
                     }
                 }
             } else {
@@ -706,12 +758,25 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Box(Modifier.fillMaxSize().background(VoidBlack)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(VoidBlack)
+        ) {
             if (currentRoute == NavRoute.Main) {
                 Box(Modifier.fillMaxSize()) {
                     AnimatedContent(targetState = currentTab, transitionSpec = { fadeIn(tween(350)) togetherWith fadeOut(tween(350)) }, label = "tab") { tab ->
                         when (tab) {
-                            MeloTab.HOME -> HomeScene(onPlay = { s, q -> startSongPlayback(s, q) }, saavnRepository, onAccountClick = { showAccountSheet = true })
+                            MeloTab.HOME -> HomeScene(
+                                onPlay = { s, q -> startSongPlayback(s, q) },
+                                repo = saavnRepository,
+                                scrollState = homeScrollState,
+                                becauseArtist = becauseArtistName,
+                                becauseList = becauseRecommendations,
+                                isLoggedIn = userProfileName != null,
+                                userName = userProfileName.orEmpty(),
+                                onAccountClick = { showAccountSheet = true }
+                            )
                             MeloTab.EXPLORE -> ExploreScene(onPlaySongWithRadio = { playSongWithSmartRadio(it) }, repo = saavnRepository)
                             MeloTab.LIBRARY -> MyWorldScene(
                                 likedCount = likedSongsList.size,
@@ -727,11 +792,18 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // RESTORED SLIM & PROPORTIONATE NAVIGATION CAPSULE
                     if (playerTier == PlayerTier.MINI) {
                         MeloBottomNav(
                             selectedTab = currentTab,
-                            onSelectTab = { currentTab = it; currentRoute = NavRoute.Main },
-                            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp)
+                            onSelectTab = {
+                                currentTab = it
+                                currentRoute = NavRoute.Main
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .navigationBarsPadding()
+                                .padding(bottom = 12.dp)
                         )
                     }
                 }
@@ -758,7 +830,8 @@ class MainActivity : ComponentActivity() {
                         )
                         is NavRoute.LikedSongs -> SongCollectionDetailScene(
                             title = "Liked Songs",
-                            accentColor = Color(0xFFFF2A6D),
+                            accentColor = Color(0xFFFF4081),
+                            bgColorTop = Color(0xFF880E4F),
                             songs = likedSongsList,
                             onPlay = { s, q -> startSongPlayback(s, q) },
                             onBack = { currentRoute = NavRoute.Main }
@@ -766,6 +839,7 @@ class MainActivity : ComponentActivity() {
                         is NavRoute.RecentlyPlayed -> SongCollectionDetailScene(
                             title = "Recently Played",
                             accentColor = Color(0xFF00E5FF),
+                            bgColorTop = Color(0xFF01579B),
                             songs = recentlyPlayedList,
                             onPlay = { s, q -> startSongPlayback(s, q) },
                             onBack = { currentRoute = NavRoute.Main }
@@ -781,15 +855,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // MINI PLAYER
+            // FLOATING MINI PLAYER
+            val isKeyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+            val miniPlayerBottomPadding = if (isKeyboardOpen) 10.dp else if (currentRoute == NavRoute.Main) 86.dp else 16.dp
+
             AnimatedVisibility(
                 visible = playerState.song != null && playerTier == PlayerTier.MINI,
-                enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
-                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(250)),
+                enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(250)) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .imePadding()
                     .navigationBarsPadding()
-                    .padding(bottom = if (currentRoute == NavRoute.Main) 90.dp else 16.dp, start = 14.dp, end = 14.dp)
+                    .padding(bottom = miniPlayerBottomPadding, start = 14.dp, end = 14.dp)
             ) {
                 playerState.song?.let { song ->
                     PremiumMiniPlayer(
@@ -808,11 +886,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // EXPANDED FULL SCREEN PLAYER (CONSUMES TOUCHES TO PREVENT LEAKS TO HOME SCREEN)
+            // FULL-SCREEN IMMERSIVE PLAYER
             AnimatedVisibility(
                 visible = playerState.song != null && playerTier == PlayerTier.EXPANDED,
-                enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessLow)),
-                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessLow))
+                enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)),
+                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow))
             ) {
                 playerState.song?.let { song ->
                     ImmersivePlayerScene(
@@ -825,6 +903,7 @@ class MainActivity : ComponentActivity() {
                         queue = currentQueue,
                         currentQueueIndex = currentQueueIndex,
                         playlists = userPlaylists,
+                        playMode = playMode,
                         downloadProgress = downloadProgressMap[song.id] ?: (if (downloadedSongsList.any { it.id == song.id }) -1f else 0f),
                         onDownloadClick = { downloadSongInternally(song) },
                         onLikeToggle = { toggleLikeSong(song) },
@@ -838,7 +917,15 @@ class MainActivity : ComponentActivity() {
                         },
                         onNext = { playNext() },
                         onPrev = { playPrev() },
+                        onTogglePlayMode = {
+                            playMode = when (playMode) {
+                                MODE_REPEAT_ALL -> MODE_REPEAT_ONE
+                                MODE_REPEAT_ONE -> MODE_SHUFFLE
+                                else -> MODE_REPEAT_ALL
+                            }
+                        },
                         onSeek = { seekSong(it) },
+                        onUserSeekingChange = { isUserSeeking = it },
                         onEnterCinematic = {
                             playerTier = PlayerTier.CINEMATIC
                             context.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -875,20 +962,67 @@ class MainActivity : ComponentActivity() {
             }
 
             if (showAccountSheet) {
+                var isEditingName by remember { mutableStateOf(false) }
+                var tempNameInput by remember { mutableStateOf(userProfileName ?: "") }
+
                 ModalBottomSheet(onDismissRequest = { showAccountSheet = false }, containerColor = DeepSurface) {
                     Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
                         Text("Melo Sanctuary", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                         Spacer(Modifier.height(24.dp))
-                        ListItem(
-                            headlineContent = { Text("Sound Profile", color = TextPure, fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text("Ayush • Melo Master Tier", color = TextMuted) },
-                            leadingContent = { Icon(Icons.Rounded.Person, tint = MeloAccent, contentDescription = null) },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { showAccountSheet = false }
-                        )
+
+                        if (isEditingName) {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text("Enter Your Name", color = TextPure, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(8.dp))
+                                BasicTextField(
+                                    value = tempNameInput,
+                                    onValueChange = { tempNameInput = it },
+                                    textStyle = TextStyle(color = TextPure, fontSize = 16.sp),
+                                    singleLine = true,
+                                    cursorBrush = SolidColor(MeloAccent),
+                                    modifier = Modifier.fillMaxWidth().background(VoidBlack, RoundedCornerShape(12.dp)).border(1.dp, GlassSurface, RoundedCornerShape(12.dp)).padding(14.dp)
+                                )
+                                Spacer(Modifier.height(14.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Button(
+                                        onClick = {
+                                            val clean = tempNameInput.trim()
+                                            userProfileName = clean.ifBlank { null }
+                                            prefs.edit().putString("user_profile_name", userProfileName).apply()
+                                            isEditingName = false
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MeloAccent),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Save", color = TextPure) }
+                                    OutlinedButton(
+                                        onClick = { isEditingName = false },
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Cancel", color = TextMuted) }
+                                }
+                            }
+                        } else {
+                            ListItem(
+                                headlineContent = { Text(if (userProfileName != null) "Logged in as $userProfileName" else "Sound Profile", color = TextPure, fontWeight = FontWeight.Medium) },
+                                supportingContent = { Text(if (userProfileName != null) "Tap to change name or log out" else "Tap to log in & personalize greeting", color = TextMuted) },
+                                leadingContent = { Icon(Icons.Rounded.Person, tint = MeloAccent, contentDescription = null) },
+                                trailingContent = {
+                                    if (userProfileName != null) {
+                                        TextButton(onClick = {
+                                            userProfileName = null
+                                            prefs.edit().remove("user_profile_name").apply()
+                                        }) { Text("Log Out", color = MeloAccent, fontSize = 12.sp) }
+                                    }
+                                },
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { isEditingName = true }
+                            )
+                        }
+
                         ListItem(
                             headlineContent = { Text("Import Playlist", color = TextPure, fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text("Import from Spotify or YouTube Music", color = TextMuted) },
+                            supportingContent = { Text("Import genuine songs from Spotify or YouTube Music", color = TextMuted) },
                             leadingContent = { Icon(Icons.Rounded.CloudDownload, tint = Color(0xFFFFD54F), contentDescription = null) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable {
@@ -911,7 +1045,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // ACCURATE SPOTIFY/YTM PLAYLIST IMPORTER WITH PROGRESS
+            // RELIABLE SPOTIFY PLAYLIST IMPORTER
             if (showImportSheet) {
                 var linkOrName by remember { mutableStateOf("") }
                 var isImporting by remember { mutableStateOf(false) }
@@ -922,7 +1056,7 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.fillMaxWidth().padding(26.dp).padding(bottom = 36.dp)) {
                         Text("Sonic Importer", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                         Spacer(Modifier.height(8.dp))
-                        Text("Paste a public Spotify playlist link to extract genuine titles, cover art, and playable audio tracks.", color = TextMuted, fontSize = 13.sp)
+                        Text("Paste a Spotify playlist link to extract playlist name, original artwork, and accurate tracks.", color = TextMuted, fontSize = 13.sp)
                         Spacer(Modifier.height(24.dp))
 
                         if (isImporting) {
@@ -956,13 +1090,13 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 isImporting = true
                                 importProgress = 0.05f
-                                importStatus = "Analyzing Spotify metadata..."
+                                importStatus = "Fetching Spotify metadata..."
                                 lifecycleScope.launch {
                                     var playlistTitle = "Imported Playlist"
                                     var playlistCover = ""
                                     val resolvedSongs = mutableListOf<Song>()
-
                                     val cleanInput = linkOrName.trim()
+
                                     if (cleanInput.contains("spotify.com")) {
                                         try {
                                             val playlistIdMatch = Regex("playlist/([a-zA-Z0-9]+)").find(cleanInput)
@@ -970,50 +1104,51 @@ class MainActivity : ComponentActivity() {
 
                                             if (playlistId != null) {
                                                 val embedUrl = "https://open.spotify.com/embed/playlist/$playlistId"
-                                                val req = Request.Builder()
+                                                val embedReq = Request.Builder()
                                                     .url(embedUrl)
-                                                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                                                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                                                    .header("Accept", "text/html,application/xhtml+xml")
                                                     .build()
 
-                                                val resp = httpClient.newCall(req).execute().body?.string() ?: ""
-                                                val nextDataMatch = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""").find(resp)
+                                                val respHtml = httpClient.newCall(embedReq).execute().body?.string() ?: ""
 
+                                                val nextDataMatch = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""").find(respHtml)
                                                 if (nextDataMatch != null) {
                                                     val rawJson = nextDataMatch.groupValues[1]
                                                     val json = JsonParser.parseString(rawJson).asJsonObject
                                                     val entity = json.getAsJsonObject("props")
-                                                        .getAsJsonObject("pageProps")
-                                                        .getAsJsonObject("state")
-                                                        .getAsJsonObject("data")
-                                                        .getAsJsonObject("entity")
+                                                        ?.getAsJsonObject("pageProps")
+                                                        ?.getAsJsonObject("state")
+                                                        ?.getAsJsonObject("data")
+                                                        ?.getAsJsonObject("entity")
 
-                                                    playlistTitle = entity.get("name")?.asString
-                                                        ?: entity.get("title")?.asString
-                                                                ?: "Spotify Playlist"
+                                                    if (entity != null) {
+                                                        playlistTitle = entity.get("name")?.asString
+                                                            ?: entity.get("title")?.asString
+                                                                    ?: "Spotify Playlist"
 
-                                                    // Extract cover art
-                                                    val visualIdentity = entity.getAsJsonObject("visualIdentity")
-                                                    val coverArray = visualIdentity?.getAsJsonArray("image")
-                                                    if (coverArray != null && coverArray.size() > 0) {
-                                                        playlistCover = coverArray[0].asJsonObject.get("url")?.asString ?: ""
-                                                    }
+                                                        val images = entity.getAsJsonObject("visualIdentity")?.getAsJsonArray("image")
+                                                        if (images != null && images.size() > 0) {
+                                                            playlistCover = images.get(0).asJsonObject.get("url")?.asString.orEmpty()
+                                                        }
 
-                                                    val trackList = entity.getAsJsonArray("trackList")
-                                                    if (trackList != null && trackList.size() > 0) {
-                                                        val total = trackList.size()
-                                                        for (i in 0 until total) {
-                                                            val trackObj = trackList[i].asJsonObject
-                                                            val tTitle = trackObj.get("title")?.asString ?: ""
-                                                            val tSubtitle = trackObj.get("subtitle")?.asString ?: ""
+                                                        val trackList = entity.getAsJsonArray("trackList")
+                                                        if (trackList != null && trackList.size() > 0) {
+                                                            val total = trackList.size().coerceAtMost(40)
+                                                            for (i in 0 until total) {
+                                                                val trackObj = trackList.get(i).asJsonObject
+                                                                val tTitle = trackObj.get("title")?.asString ?: ""
+                                                                val tSubtitle = trackObj.get("subtitle")?.asString ?: ""
 
-                                                            withContext(Dispatchers.Main) {
-                                                                importProgress = 0.1f + ((i.toFloat() / total.toFloat()) * 0.85f)
-                                                                importStatus = "Resolving track ${i + 1}/$total: $tTitle"
-                                                            }
+                                                                withContext(Dispatchers.Main) {
+                                                                    importProgress = 0.1f + ((i.toFloat() / total.toFloat()) * 0.85f)
+                                                                    importStatus = "Resolving track ${i + 1}/$total: $tTitle"
+                                                                }
 
-                                                            val matched = saavnRepository.searchSongs("$tTitle $tSubtitle")
-                                                            if (matched.isNotEmpty()) {
-                                                                resolvedSongs.add(matched[0])
+                                                                val matched = saavnRepository.searchSongs("$tTitle $tSubtitle")
+                                                                if (matched.isNotEmpty()) {
+                                                                    resolvedSongs.add(matched[0])
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1024,9 +1159,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    // Fallback if empty
                                     if (resolvedSongs.isEmpty()) {
-                                        playlistTitle = if (cleanInput.length > 25) "Imported Vault" else cleanInput.replaceFirstChar { it.uppercase() }
+                                        playlistTitle = if (cleanInput.length > 25) "Imported Playlist" else cleanInput.replaceFirstChar { it.uppercase() }
                                         resolvedSongs.addAll(saavnRepository.searchSongs(playlistTitle))
                                     }
 
@@ -1155,21 +1289,30 @@ class MainActivity : ComponentActivity() {
         val translateAnim by transition.animateFloat(
             initialValue = -350f,
             targetValue = 1350f,
-            animationSpec = infiniteRepeatable(animation = tween(1300, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Restart),
+            animationSpec = infiniteRepeatable(animation = tween(1200, easing = LinearEasing), repeatMode = RepeatMode.Restart),
             label = "shimmer_offset"
         )
         return Brush.linearGradient(
-            colors = listOf(Color(0xFF14141C), Color(0xFF262634), Color(0xFF14141C)),
+            colors = listOf(Color(0xFF14141E), Color(0xFF262638), Color(0xFF14141E)),
             start = Offset(translateAnim, 0f),
             end = Offset(translateAnim + 350f, 250f)
         )
     }
 
     // ==========================================
-    // SCENE 01: HOME
+    // SCENE 01: HOME (REFINED MODERN GRADIENT & HERO LOGO)
     // ==========================================
     @Composable
-    private fun HomeScene(onPlay: (Song, List<Song>) -> Unit, repo: JioSaavnRepository, onAccountClick: () -> Unit) {
+    private fun HomeScene(
+        onPlay: (Song, List<Song>) -> Unit,
+        repo: JioSaavnRepository,
+        scrollState: LazyListState,
+        becauseArtist: String?,
+        becauseList: List<Song>,
+        isLoggedIn: Boolean,
+        userName: String,
+        onAccountClick: () -> Unit
+    ) {
         var topPicks by remember { mutableStateOf<List<Song>>(emptyList()) }
         var jumpBackIn by remember { mutableStateOf<List<Song>>(emptyList()) }
         var retroClassics by remember { mutableStateOf<List<Song>>(emptyList()) }
@@ -1191,20 +1334,65 @@ class MainActivity : ComponentActivity() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().height(520.dp).background(Brush.radialGradient(listOf(Color(0x35FF5252), Color(0x227C4DFF), Color.Transparent), center = Offset(250f, 150f), radius = 950f)))
+            // REFINED MULTI-LAYERED AMBIENT GRADIENT
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(580.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0x3DFF2A6D),
+                                Color(0x287C4DFF),
+                                Color(0x1000E5FF),
+                                Color.Transparent
+                            ),
+                            center = Offset(200f, -80f),
+                            radius = 1100f
+                        )
+                    )
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(420.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0x30E91E63),
+                                Color(0x12030304),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
 
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp, bottom = 180.dp)) {
+            LazyColumn(
+                state = scrollState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp, bottom = 180.dp)
+            ) {
                 item {
                     Column(Modifier.padding(horizontal = 24.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Icon(painter = painterResource(id = R.drawable.ic_melo_logo), contentDescription = "Melo Logo", tint = Color.Unspecified, modifier = Modifier.size(65.dp))
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_melo_logo),
+                                contentDescription = "Melo Logo",
+                                tint = Color.Unspecified,
+                                modifier = Modifier.size(75.dp)
+                            )
                             IconButton(onClick = onAccountClick, modifier = Modifier.size(44.dp).clip(CircleShape).background(GlassSurface)) {
                                 Icon(Icons.Rounded.AccountCircle, contentDescription = "Account", tint = Color(0xFFFFD54F), modifier = Modifier.size(28.dp))
                             }
                         }
                         Spacer(Modifier.height(24.dp))
-                        Text(greeting + ",", fontSize = 28.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
-                        Text("Ayush.", fontSize = 42.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+
+                        if (isLoggedIn && userName.isNotBlank()) {
+                            Text(greeting + ",", fontSize = 26.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
+                            Text("$userName.", fontSize = 40.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                        } else {
+                            Text(greeting + ".", fontSize = 38.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                        }
                         Spacer(Modifier.height(30.dp))
                     }
                 }
@@ -1228,9 +1416,7 @@ class MainActivity : ComponentActivity() {
                                         .clip(CircleShape)
                                         .background(if (isSelected) color else GlassSurface)
                                         .border(1.dp, if (isSelected) color else Color.Transparent, CircleShape)
-                                        .clickable {
-                                            activeFilter = if (isSelected) null else queryTarget
-                                        },
+                                        .clickable { activeFilter = if (isSelected) null else queryTarget },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(icon, contentDescription = null, tint = if (isSelected) VoidBlack else color)
@@ -1240,21 +1426,151 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    Spacer(Modifier.height(36.dp))
+                    Spacer(Modifier.height(32.dp))
                 }
 
                 item {
                     AnimatedContent(targetState = isLoading, transitionSpec = { fadeIn(tween(450)) togetherWith fadeOut(tween(250)) }, label = "home_content") { loading ->
                         if (loading) {
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
-                                Box(Modifier.width(160.dp).height(22.dp).clip(RoundedCornerShape(6.dp)).background(shimmerBrush))
-                                Spacer(Modifier.height(16.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    repeat(3) {
-                                        Column(Modifier.width(140.dp)) {
-                                            Box(Modifier.size(140.dp).clip(RoundedCornerShape(22.dp)).background(shimmerBrush))
+                            Column(Modifier.fillMaxWidth()) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 24.dp)
+                                            .width(150.dp)
+                                            .height(22.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(shimmerBrush)
+                                    )
+                                    Spacer(Modifier.height(18.dp))
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .size(115.dp)
+                                                .alpha(0.35f)
+                                                .clip(RoundedCornerShape(18.dp))
+                                                .background(shimmerBrush)
+                                        )
+                                        Spacer(Modifier.width(14.dp))
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Box(
+                                                Modifier
+                                                    .size(145.dp)
+                                                    .clip(RoundedCornerShape(22.dp))
+                                                    .background(shimmerBrush)
+                                            )
                                             Spacer(Modifier.height(10.dp))
-                                            Box(Modifier.width(100.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            Box(Modifier.width(120.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            Spacer(Modifier.height(6.dp))
+                                            Box(Modifier.width(80.dp).height(11.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                        }
+                                        Spacer(Modifier.width(14.dp))
+                                        Box(
+                                            Modifier
+                                                .size(115.dp)
+                                                .alpha(0.35f)
+                                                .clip(RoundedCornerShape(18.dp))
+                                                .background(shimmerBrush)
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.height(36.dp))
+
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                        .clip(RoundedCornerShape(26.dp))
+                                        .background(Color(0xFF13131B))
+                                        .border(BorderStroke(1.dp, Color(0x33FFD700)), RoundedCornerShape(26.dp))
+                                        .padding(vertical = 22.dp)
+                                ) {
+                                    Column {
+                                        Row(
+                                            Modifier.fillMaxWidth().padding(horizontal = 22.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column {
+                                                Box(Modifier.width(135.dp).height(10.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                                Spacer(Modifier.height(8.dp))
+                                                Box(Modifier.width(180.dp).height(22.dp).clip(RoundedCornerShape(6.dp)).background(shimmerBrush))
+                                            }
+                                            Box(Modifier.size(24.dp).clip(CircleShape).background(shimmerBrush))
+                                        }
+                                        Spacer(Modifier.height(18.dp))
+                                        Row(
+                                            Modifier.padding(horizontal = 22.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                        ) {
+                                            repeat(3) {
+                                                Column(Modifier.width(120.dp)) {
+                                                    Box(Modifier.size(120.dp).clip(RoundedCornerShape(18.dp)).background(shimmerBrush))
+                                                    Spacer(Modifier.height(8.dp))
+                                                    Box(Modifier.width(90.dp).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                                    Spacer(Modifier.height(4.dp))
+                                                    Box(Modifier.width(60.dp).height(10.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(36.dp))
+
+                                Column(Modifier.fillMaxWidth()) {
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 24.dp)
+                                            .width(140.dp)
+                                            .height(20.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(shimmerBrush)
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                    Row(
+                                        Modifier.padding(horizontal = 24.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(18.dp)
+                                    ) {
+                                        repeat(3) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Box(Modifier.size(105.dp).clip(CircleShape).background(shimmerBrush))
+                                                Spacer(Modifier.height(10.dp))
+                                                Box(Modifier.width(70.dp).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(36.dp))
+
+                                Column(Modifier.fillMaxWidth()) {
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 24.dp)
+                                            .width(160.dp)
+                                            .height(20.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(shimmerBrush)
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                    Row(
+                                        Modifier.padding(horizontal = 24.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                    ) {
+                                        repeat(3) {
+                                            Column(Modifier.width(135.dp)) {
+                                                Box(Modifier.size(135.dp).clip(RoundedCornerShape(18.dp)).background(shimmerBrush))
+                                                Spacer(Modifier.height(8.dp))
+                                                Box(Modifier.width(100.dp).height(14.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                                Spacer(Modifier.height(4.dp))
+                                                Box(Modifier.width(70.dp).height(11.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            }
                                         }
                                     }
                                 }
@@ -1262,15 +1578,60 @@ class MainActivity : ComponentActivity() {
                         } else {
                             Column(Modifier.fillMaxWidth()) {
                                 if (topPicks.isNotEmpty()) {
-                                    Text(activeFilter ?: "Trending Hits", fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp))
-                                    Spacer(Modifier.height(16.dp))
-                                    LazyRow(contentPadding = PaddingValues(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                        items(topPicks.take(10)) { song ->
-                                            Column(Modifier.width(140.dp).clickable { onPlay(song, topPicks) }) {
-                                                AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(140.dp).clip(RoundedCornerShape(22.dp)))
-                                                Spacer(Modifier.height(10.dp))
-                                                Text(song.title, fontSize = 14.sp, color = TextPure, maxLines = 1, fontWeight = FontWeight.Bold)
-                                                Text(song.artist, fontSize = 12.sp, color = TextSubtle, maxLines = 1)
+                                    Text(
+                                        text = activeFilter ?: "Trending Hits",
+                                        fontSize = 20.sp,
+                                        color = TextPure,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 24.dp)
+                                    )
+                                    Spacer(Modifier.height(18.dp))
+
+                                    TrendingHits3DCarousel(
+                                        songs = topPicks,
+                                        onPlay = { selectedSong -> onPlay(selectedSong, topPicks) }
+                                    )
+
+                                    Spacer(Modifier.height(32.dp))
+                                }
+
+                                if (becauseList.isNotEmpty()) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 20.dp)
+                                            .clip(RoundedCornerShape(26.dp))
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(Color(0xFFD4AF37).copy(alpha = 0.35f), Color(0xFF8C6D23).copy(alpha = 0.15f), Color(0xFF030304))
+                                                )
+                                            )
+                                            .border(BorderStroke(1.dp, Brush.verticalGradient(listOf(Color(0xFFFFD700).copy(alpha = 0.5f), Color.Transparent))), RoundedCornerShape(26.dp))
+                                            .padding(vertical = 22.dp)
+                                    ) {
+                                        Column {
+                                            Row(Modifier.fillMaxWidth().padding(horizontal = 22.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                                Column {
+                                                    Text("BECAUSE YOU LISTENED TO", fontSize = 10.sp, letterSpacing = 2.sp, color = Color(0xFFFFD700), fontWeight = FontWeight.Bold)
+                                                    Text(becauseArtist ?: "Favorite Artist", fontSize = 22.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
+                                                }
+                                                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color(0xFFFFD700), modifier = Modifier.size(24.dp))
+                                            }
+                                            Spacer(Modifier.height(16.dp))
+                                            LazyRow(contentPadding = PaddingValues(horizontal = 22.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                                items(becauseList.take(6)) { song ->
+                                                    Column(Modifier.width(120.dp).clickable { onPlay(song, becauseList) }) {
+                                                        AsyncImage(
+                                                            model = song.thumbnailUrl,
+                                                            contentDescription = null,
+                                                            contentScale = ContentScale.Crop,
+                                                            modifier = Modifier.size(120.dp).clip(RoundedCornerShape(18.dp)).border(1.dp, Color(0xFFFFD700).copy(alpha = 0.3f), RoundedCornerShape(18.dp))
+                                                        )
+                                                        Spacer(Modifier.height(8.dp))
+                                                        Text(song.title, fontSize = 13.sp, color = TextPure, fontWeight = FontWeight.Medium, maxLines = 1)
+                                                        Text(song.artist, fontSize = 11.sp, color = TextSubtle, maxLines = 1)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1314,8 +1675,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // COMPACT INFINITE AUTO-SLIDING CAROUSEL (RESILIENT AUTO-SLIDE)
+    @Composable
+    private fun TrendingHits3DCarousel(
+        songs: List<Song>,
+        onPlay: (Song) -> Unit
+    ) {
+        if (songs.isEmpty()) return
+
+        val virtualPageCount = 10000
+        val initialCenterPage = (virtualPageCount / 2) - ((virtualPageCount / 2) % songs.size)
+        val pagerState = rememberPagerState(
+            initialPage = initialCenterPage,
+            pageCount = { virtualPageCount }
+        )
+
+        LaunchedEffect(pagerState, songs.size) {
+            if (songs.size <= 1) return@LaunchedEffect
+            while (true) {
+                delay(3200)
+                while (pagerState.isScrollInProgress) {
+                    delay(1000)
+                }
+                try {
+                    pagerState.animateScrollToPage(
+                        page = pagerState.currentPage + 1,
+                        animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
+                    )
+                } catch (_: Exception) { }
+            }
+        }
+
+        HorizontalPager(
+            state = pagerState,
+            contentPadding = PaddingValues(horizontal = 115.dp),
+            pageSpacing = 12.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(205.dp)
+        ) { page ->
+            val actualIndex = (page % songs.size + songs.size) % songs.size
+            val song = songs[actualIndex]
+
+            val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction).absoluteValue
+            val scale = lerp(0.82f, 1.0f, (1f - pageOffset.coerceIn(0f, 1f)))
+            val alpha = lerp(0.40f, 1.0f, (1f - pageOffset.coerceIn(0f, 1f)))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        this.alpha = alpha
+                    }
+                    .clickable { onPlay(song) },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(145.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(DeepSurface)
+                ) {
+                    AsyncImage(
+                        model = song.thumbnailUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = song.title,
+                    fontSize = 14.sp,
+                    color = TextPure,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.width(140.dp)
+                )
+                Text(
+                    text = song.artist,
+                    fontSize = 11.sp,
+                    color = TextMuted,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.width(140.dp)
+                )
+            }
+        }
+    }
+
     // ==========================================
-    // SCENE 02: EXPLORE (SVG DESIGN PATTERNS)
+    // SCENE 02: EXPLORE (VIBRANT & ATMOSPHERIC)
     // ==========================================
     @Composable
     private fun ExploreScene(onPlaySongWithRadio: (Song) -> Unit, repo: JioSaavnRepository) {
@@ -1333,123 +1786,149 @@ class MainActivity : ComponentActivity() {
             isTrendingLoading = false
         }
 
-        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)) {
-            val shadowRadius by animateDpAsState(if (isFocused) 18.dp else 0.dp, label = "search_shadow")
+        Box(Modifier.fillMaxSize()) {
+            // LIVED-IN AMBIENT BACKDROP GLOW
             Box(
-                Modifier.fillMaxWidth().shadow(shadowRadius, CircleShape, ambientColor = Color(0xFF00E5FF), spotColor = Color(0xFF00E5FF)).clip(RoundedCornerShape(26.dp)).background(GlassSurface).border(1.dp, if (isFocused) Color(0xFF00E5FF) else GlassSurface, RoundedCornerShape(26.dp)).padding(horizontal = 18.dp, vertical = 14.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Search, contentDescription = null, tint = if (isFocused) Color(0xFF00E5FF) else TextMuted)
-                    Spacer(Modifier.width(12.dp))
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { q ->
-                            query = q
-                            if (q.length > 2) lifecycleScope.launch { results = repo.searchSongs(q) }
-                        },
-                        textStyle = TextStyle(color = TextPure, fontSize = 15.sp),
-                        cursorBrush = SolidColor(Color(0xFF00E5FF)),
-                        singleLine = true,
-                        modifier = Modifier.weight(1f).onFocusChanged { isFocused = it.isFocused },
-                        decorationBox = { inner -> if (query.isEmpty()) Text("Search songs, artists, radio...", color = TextMuted, fontSize = 14.sp) else inner() }
+                Modifier
+                    .fillMaxWidth()
+                    .height(520.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0x3000E5FF),
+                                Color(0x187C4DFF),
+                                Color.Transparent
+                            ),
+                            center = Offset(300f, 0f),
+                            radius = 900f
+                        )
                     )
-                    if (query.isNotEmpty()) Icon(Icons.Rounded.Close, contentDescription = "Clear", tint = TextMuted, modifier = Modifier.clickable { query = ""; results = emptyList() })
+            )
+
+            Column(Modifier.fillMaxSize().padding(horizontal = 24.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)) {
+                val shadowRadius by animateDpAsState(if (isFocused) 18.dp else 0.dp, label = "search_shadow")
+                Box(
+                    Modifier.fillMaxWidth().shadow(shadowRadius, CircleShape, ambientColor = Color(0xFF00E5FF), spotColor = Color(0xFF00E5FF)).clip(RoundedCornerShape(26.dp)).background(GlassSurface).border(1.dp, if (isFocused) Color(0xFF00E5FF) else GlassSurface, RoundedCornerShape(26.dp)).padding(horizontal = 18.dp, vertical = 14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Search, contentDescription = null, tint = if (isFocused) Color(0xFF00E5FF) else TextMuted)
+                        Spacer(Modifier.width(12.dp))
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { q ->
+                                query = q
+                                if (q.length > 2) lifecycleScope.launch { results = repo.searchSongs(q) }
+                            },
+                            textStyle = TextStyle(color = TextPure, fontSize = 15.sp),
+                            cursorBrush = SolidColor(Color(0xFF00E5FF)),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).onFocusChanged { isFocused = it.isFocused },
+                            decorationBox = { inner -> if (query.isEmpty()) Text("Search songs, artists, radio...", color = TextMuted, fontSize = 14.sp) else inner() }
+                        )
+                        if (query.isNotEmpty()) Icon(Icons.Rounded.Close, contentDescription = "Clear", tint = TextMuted, modifier = Modifier.clickable { query = ""; results = emptyList() })
+                    }
                 }
-            }
-            Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(28.dp))
 
-            if (query.isEmpty()) {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 180.dp)) {
-                    item {
-                        Text("Explore", fontSize = 28.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
-                        Text("Sonic Landscapes.", fontSize = 36.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(28.dp))
-                    }
-                    item {
-                        Text("Curated Atmospheres", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(16.dp))
-                        Row(Modifier.fillMaxWidth().height(160.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ExploreSvgCard(
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                                title = "Pop Odyssey",
-                                gradient = listOf(Color(0xFFFF2A6D), Color(0xFF9B51E0)),
-                                vectorType = 1,
-                                onClick = { query = "Pop Hits"; lifecycleScope.launch { results = repo.searchSongs("Pop Hits") } }
-                            )
-                            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                ExploreSvgCard(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    title = "Desi Hip-Hop",
-                                    gradient = listOf(Color(0xFF00E5FF), Color(0xFF0051FF)),
-                                    vectorType = 2,
-                                    onClick = { query = "Desi Hip Hop"; lifecycleScope.launch { results = repo.searchSongs("Desi Hip Hop") } }
-                                )
-                                ExploreSvgCard(
-                                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                                    title = "Midnight Acoustic",
-                                    gradient = listOf(Color(0xFFFFD54F), Color(0xFFFF5252)),
-                                    vectorType = 3,
-                                    onClick = { query = "Acoustic Hits"; lifecycleScope.launch { results = repo.searchSongs("Acoustic Hits") } }
-                                )
-                            }
+                if (query.isEmpty()) {
+                    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 180.dp)) {
+                        item {
+                            Text("Explore", fontSize = 28.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
+                            Text("Sonic Landscapes.", fontSize = 36.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(28.dp))
                         }
-                        Spacer(Modifier.height(36.dp))
-                    }
+                        item {
+                            Text("Curated Atmospheres", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(16.dp))
+                            Row(Modifier.fillMaxWidth().height(175.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                ExploreAtmosphereCard(
+                                    modifier = Modifier.weight(1.05f).fillMaxHeight(),
+                                    tag = "VIBE 01",
+                                    title = "Pop Odyssey",
+                                    subtitle = "Future Nostalgia & Disco",
+                                    gradient = listOf(Color(0xFFFF2A6D), Color(0xFF8E24AA)),
+                                    vectorType = 1,
+                                    onClick = { query = "Pop Hits"; lifecycleScope.launch { results = repo.searchSongs("Pop Hits") } }
+                                )
+                                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    ExploreAtmosphereCard(
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                        tag = "WAVE 02",
+                                        title = "Desi Hip-Hop",
+                                        subtitle = "Underground Beats",
+                                        gradient = listOf(Color(0xFF00E5FF), Color(0xFF0052D4)),
+                                        vectorType = 2,
+                                        onClick = { query = "Desi Hip Hop"; lifecycleScope.launch { results = repo.searchSongs("Desi Hip Hop") } }
+                                    )
+                                    ExploreAtmosphereCard(
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                        tag = "AFTER HOURS",
+                                        title = "Acoustic Gold",
+                                        subtitle = "Unplugged Warmth",
+                                        gradient = listOf(Color(0xFFFFB300), Color(0xFFFF3D00)),
+                                        vectorType = 3,
+                                        onClick = { query = "Acoustic Hits"; lifecycleScope.launch { results = repo.searchSongs("Acoustic Hits") } }
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(36.dp))
+                        }
 
-                    item {
-                        Text("Trending Frequencies", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(16.dp))
-                    }
+                        item {
+                            Text("Trending Frequencies", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(16.dp))
+                        }
 
-                    if (isTrendingLoading) {
-                        items(6) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(DeepSurface).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(shimmerBrush))
-                                Spacer(Modifier.width(14.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Box(Modifier.fillMaxWidth(0.6f).height(15.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
-                                    Spacer(Modifier.height(6.dp))
-                                    Box(Modifier.fillMaxWidth(0.35f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                        if (isTrendingLoading) {
+                            items(6) {
+                                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(DeepSurface).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(shimmerBrush))
+                                    Spacer(Modifier.width(14.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Box(Modifier.fillMaxWidth(0.6f).height(15.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                        Spacer(Modifier.height(6.dp))
+                                        Box(Modifier.fillMaxWidth(0.35f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                    }
+                                }
+                            }
+                        } else {
+                            itemsIndexed(trendingSongs.take(8)) { index, song ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(DeepSurface).clickable { onPlaySongWithRadio(song) }.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("#%02d".format(index + 1), fontSize = 14.sp, fontWeight = FontWeight.Black, color = if (index < 3) Color(0xFF00E5FF) else TextSubtle, modifier = Modifier.width(36.dp))
+                                    AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)))
+                                    Spacer(Modifier.width(14.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
+                                    }
+                                    Icon(Icons.Rounded.Radio, contentDescription = "Start Radio", tint = Color(0xFF00E5FF).copy(alpha = 0.8f))
                                 }
                             }
                         }
-                    } else {
-                        itemsIndexed(trendingSongs.take(8)) { index, song ->
+                    }
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 180.dp)) {
+                        itemsIndexed(results) { index, song ->
+                            val isBestMatch = index == 0
                             Row(
-                                Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(DeepSurface).clickable { onPlaySongWithRadio(song) }.padding(12.dp),
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                                    .background(if (isBestMatch) Brush.horizontalGradient(listOf(Color(0xFF003D4D), Color(0xFF0C1929))) else SolidColor(DeepSurface))
+                                    .border(1.dp, if (isBestMatch) Color(0xFF00E5FF) else Color.Transparent, RoundedCornerShape(18.dp))
+                                    .clickable { onPlaySongWithRadio(song) }
+                                    .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("#%02d".format(index + 1), fontSize = 14.sp, fontWeight = FontWeight.Black, color = if (index < 3) Color(0xFF00E5FF) else TextSubtle, modifier = Modifier.width(36.dp))
-                                AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)))
-                                Spacer(Modifier.width(14.dp))
+                                AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(12.dp)))
+                                Spacer(Modifier.width(16.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                                    Text(song.title, fontSize = 15.sp, color = if (isBestMatch) Color(0xFF00E5FF) else TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
                                     Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
                                 }
-                                Icon(Icons.Rounded.Radio, contentDescription = "Start Radio", tint = Color(0xFF00E5FF).copy(alpha = 0.8f))
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "Start Radio", tint = if (isBestMatch) Color(0xFF00E5FF) else TextMuted)
                             }
-                        }
-                    }
-                }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 180.dp)) {
-                    itemsIndexed(results) { index, song ->
-                        val isBestMatch = index == 0
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
-                                .background(if (isBestMatch) Brush.horizontalGradient(listOf(Color(0xFF003D4D), Color(0xFF0C1929))) else SolidColor(DeepSurface))
-                                .border(1.dp, if (isBestMatch) Color(0xFF00E5FF) else Color.Transparent, RoundedCornerShape(18.dp))
-                                .clickable { onPlaySongWithRadio(song) }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(12.dp)))
-                            Spacer(Modifier.width(16.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(song.title, fontSize = 15.sp, color = if (isBestMatch) Color(0xFF00E5FF) else TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
-                            }
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Start Radio", tint = if (isBestMatch) Color(0xFF00E5FF) else TextMuted)
                         }
                     }
                 }
@@ -1457,59 +1936,136 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // IMPROVED ATMOSPHERE CARD (ICON BOX REMOVED, BEAUTIFIED MESH & TAGS)
     @Composable
-    private fun ExploreSvgCard(modifier: Modifier, title: String, gradient: List<Color>, vectorType: Int, onClick: () -> Unit) {
+    private fun ExploreAtmosphereCard(
+        modifier: Modifier,
+        tag: String,
+        title: String,
+        subtitle: String,
+        gradient: List<Color>,
+        vectorType: Int,
+        onClick: () -> Unit
+    ) {
         Box(
-            modifier.clip(RoundedCornerShape(22.dp)).background(Brush.linearGradient(gradient)).clickable { onClick() }
+            modifier = modifier
+                .clip(RoundedCornerShape(24.dp))
+                .background(Brush.linearGradient(gradient))
+                .clickable { onClick() }
         ) {
+            // Organic Geometric / Sonic Wave Accents
             Canvas(Modifier.fillMaxSize()) {
                 when (vectorType) {
                     1 -> {
                         val path = Path().apply {
-                            moveTo(size.width * 0.3f, 0f)
-                            cubicTo(size.width * 0.6f, size.height * 0.3f, size.width * 0.2f, size.height * 0.7f, size.width, size.height * 0.9f)
+                            moveTo(size.width * 0.2f, 0f)
+                            cubicTo(
+                                size.width * 0.7f, size.height * 0.25f,
+                                size.width * 0.1f, size.height * 0.65f,
+                                size.width, size.height * 0.85f
+                            )
                             lineTo(size.width, 0f)
                             close()
                         }
-                        drawPath(path, Color.White.copy(alpha = 0.15f))
-                        drawCircle(Color.White.copy(alpha = 0.12f), radius = size.width * 0.45f, center = Offset(size.width * 0.85f, size.height * 0.2f))
+                        drawPath(path, Color.White.copy(alpha = 0.16f))
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.10f),
+                            radius = size.width * 0.55f,
+                            center = Offset(size.width * 0.9f, size.height * 0.25f)
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.08f),
+                            radius = size.width * 0.35f,
+                            center = Offset(size.width * 0.15f, size.height * 0.85f)
+                        )
                     }
                     2 -> {
-                        for (i in 1..3) {
-                            drawCircle(Color.White.copy(alpha = 0.08f * i), radius = (size.height * 0.35f) * i, center = Offset(size.width * 0.9f, size.height * 0.5f), style = Stroke(width = 4f))
+                        for (i in 1..4) {
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.05f * i),
+                                radius = (size.height * 0.40f) * i,
+                                center = Offset(size.width * 0.88f, size.height * 0.5f),
+                                style = Stroke(width = 3.5f)
+                            )
                         }
                     }
                     3 -> {
-                        val barWidth = 8f
-                        val gap = 10f
-                        var startX = size.width * 0.65f
-                        listOf(0.4f, 0.7f, 0.3f, 0.9f, 0.5f, 0.2f).forEach { ratio ->
-                            val barH = size.height * 0.7f * ratio
-                            drawLine(color = Color.White.copy(alpha = 0.22f), start = Offset(startX, size.height - 20f), end = Offset(startX, size.height - 20f - barH), strokeWidth = barWidth, cap = StrokeCap.Round)
+                        val barWidth = 7f
+                        val gap = 9f
+                        var startX = size.width * 0.55f
+                        listOf(0.35f, 0.65f, 0.25f, 0.85f, 0.5f, 0.75f, 0.3f).forEach { ratio ->
+                            val barH = size.height * 0.65f * ratio
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.20f),
+                                start = Offset(startX, size.height - 18f),
+                                end = Offset(startX, size.height - 18f - barH),
+                                strokeWidth = barWidth,
+                                cap = StrokeCap.Round
+                            )
                             startX += barWidth + gap
                         }
                     }
                 }
             }
 
+            // Soft Vignette Scrim
             Box(
-                Modifier.align(Alignment.TopEnd).padding(12.dp).size(34.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.20f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = when (vectorType) { 1 -> Icons.Rounded.GraphicEq; 2 -> Icons.Rounded.Headphones; else -> Icons.Rounded.MusicNote },
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color(0x60000000))
+                        )
+                    )
+            )
 
-            Text(text = title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Black, modifier = Modifier.align(Alignment.BottomStart).padding(16.dp))
+            // Content Typography
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Subtle Tag Header
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.25f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = tag,
+                        fontSize = 9.sp,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.2.sp
+                    )
+                }
+
+                // Title & Subtitle
+                Column {
+                    Text(
+                        text = title,
+                        fontSize = 16.sp,
+                        color = TextPure,
+                        fontWeight = FontWeight.Black,
+                        lineHeight = 20.sp
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 
     // ==========================================
-    // SCENE 03: "MY WORLD"
+    // SCENE 03: MY WORLD (COLLECTIONS)
     // ==========================================
     @Composable
     private fun MyWorldScene(
@@ -1532,11 +2088,11 @@ class MainActivity : ComponentActivity() {
             }
 
             item {
-                VaultCategoryCard(title = "Liked Songs", subtitle = "$likedCount Frequencies", icon = Icons.Rounded.Favorite, accentColor = Color(0xFFFF2A6D), onClick = onOpenLiked)
+                VaultCategoryCard(title = "Liked Songs", subtitle = "$likedCount Frequencies", icon = Icons.Rounded.Favorite, solidColor = Color(0xFFE91E63), onClick = onOpenLiked)
                 Spacer(Modifier.height(14.dp))
-                VaultCategoryCard(title = "Recently Played", subtitle = "$recentCount Past Echoes", icon = Icons.Rounded.History, accentColor = Color(0xFF00E5FF), onClick = onOpenRecent)
+                VaultCategoryCard(title = "Recently Played", subtitle = "$recentCount Past Echoes", icon = Icons.Rounded.History, solidColor = Color(0xFF0288D1), onClick = onOpenRecent)
                 Spacer(Modifier.height(14.dp))
-                VaultCategoryCard(title = "Downloads", subtitle = "$downloadCount Offline Tracks", icon = Icons.Rounded.DownloadDone, accentColor = Color(0xFF00E676), onClick = onOpenDownloads)
+                VaultCategoryCard(title = "Downloads", subtitle = "$downloadCount Offline Tracks", icon = Icons.Rounded.DownloadDone, solidColor = Color(0xFF00897B), onClick = onOpenDownloads)
                 Spacer(Modifier.height(34.dp))
             }
 
@@ -1568,27 +2124,41 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun VaultCategoryCard(title: String, subtitle: String, icon: ImageVector, accentColor: Color, onClick: () -> Unit) {
+    private fun VaultCategoryCard(
+        title: String,
+        subtitle: String,
+        icon: ImageVector,
+        solidColor: Color,
+        onClick: () -> Unit
+    ) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(DeepSurface).border(1.dp, accentColor.copy(alpha = 0.25f), RoundedCornerShape(22.dp)).clickable { onClick() }.padding(18.dp),
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(solidColor)
+                .clickable { onClick() }
+                .padding(horizontal = 20.dp, vertical = 18.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(50.dp).clip(CircleShape).background(accentColor.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(26.dp))
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.22f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
             }
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 17.sp, color = TextPure, fontWeight = FontWeight.Bold)
+                Text(title, fontSize = 18.sp, color = Color.White, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(3.dp))
-                Text(subtitle, fontSize = 12.sp, color = TextMuted)
+                Text(subtitle, fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Medium)
             }
-            Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = TextSubtle)
+            Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = Color.White.copy(alpha = 0.8f))
         }
     }
 
-    // ==========================================
-    // DETAIL SCENES: CREATE PLAYLIST WITH 7 PRESETS
-    // ==========================================
     @Composable
     private fun CreatePlaylistScene(onBack: () -> Unit, onCreate: (String, String) -> Unit) {
         var name by remember { mutableStateOf("") }
@@ -1704,32 +2274,90 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SongCollectionDetailScene(title: String, accentColor: Color, songs: List<Song>, onPlay: (Song, List<Song>) -> Unit, onBack: () -> Unit) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure) }
-                Spacer(Modifier.width(8.dp))
-                Text(title, fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("${songs.size} tracks available", color = accentColor, fontSize = 13.sp, modifier = Modifier.padding(start = 48.dp))
-            Spacer(Modifier.height(24.dp))
-
-            if (songs.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No frequencies collected yet.", color = TextMuted, fontSize = 15.sp)
+    private fun SongCollectionDetailScene(
+        title: String,
+        accentColor: Color,
+        bgColorTop: Color,
+        songs: List<Song>,
+        onPlay: (Song, List<Song>) -> Unit,
+        onBack: () -> Unit
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            bgColorTop,
+                            bgColorTop.copy(alpha = 0.55f),
+                            VoidBlack
+                        )
+                    )
+                )
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text(title, fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                 }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 120.dp)) {
-                    items(songs) { song ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(DeepSurface).clickable { onPlay(song, songs) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)))
-                            Spacer(Modifier.width(16.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "${songs.size} tracks available",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(start = 52.dp)
+                )
+                Spacer(Modifier.height(24.dp))
+
+                if (songs.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No frequencies collected yet.", color = TextMuted, fontSize = 15.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(songs) { song ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(bgColorTop.copy(alpha = 0.35f))
+                                    .border(1.dp, accentColor.copy(alpha = 0.30f), RoundedCornerShape(18.dp))
+                                    .clickable { onPlay(song, songs) }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AsyncImage(
+                                    model = song.thumbnailUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(50.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                )
+                                Spacer(Modifier.width(16.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                                    Text(song.artist, fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f), maxLines = 1)
+                                }
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = accentColor)
                             }
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = accentColor)
                         }
                     }
                 }
@@ -1738,35 +2366,93 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun DownloadsDetailScene(songs: List<Song>, onPlay: (Song, List<Song>) -> Unit, onDelete: (Song) -> Unit, onBack: () -> Unit) {
+    private fun DownloadsDetailScene(
+        songs: List<Song>,
+        onPlay: (Song, List<Song>) -> Unit,
+        onDelete: (Song) -> Unit,
+        onBack: () -> Unit
+    ) {
         var songToDelete by remember { mutableStateOf<Song?>(null) }
+        val emeraldTop = Color(0xFF004D40)
+        val emeraldAccent = Color(0xFF00E676)
 
-        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure) }
-                Spacer(Modifier.width(8.dp))
-                Text("Offline Downloads", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("${songs.size} offline tracks stored in sanctuary", color = Color(0xFF00E676), fontSize = 13.sp, modifier = Modifier.padding(start = 48.dp))
-            Spacer(Modifier.height(24.dp))
-
-            if (songs.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No offline downloads yet.", color = TextMuted, fontSize = 15.sp)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            emeraldTop,
+                            emeraldTop.copy(alpha = 0.55f),
+                            VoidBlack
+                        )
+                    )
+                )
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("Offline Downloads", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                 }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 120.dp)) {
-                    items(songs) { song ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(DeepSurface).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).clickable { onPlay(song, songs) })
-                            Spacer(Modifier.width(16.dp))
-                            Column(Modifier.weight(1f).clickable { onPlay(song, songs) }) {
-                                Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
-                            }
-                            IconButton(onClick = { songToDelete = song }) {
-                                Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete Download", tint = MeloAccent)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "${songs.size} offline tracks stored in sanctuary",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(start = 52.dp)
+                )
+                Spacer(Modifier.height(24.dp))
+
+                if (songs.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No offline downloads yet.", color = TextMuted, fontSize = 15.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(songs) { song ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(emeraldTop.copy(alpha = 0.35f))
+                                    .border(1.dp, emeraldAccent.copy(alpha = 0.30f), RoundedCornerShape(18.dp))
+                                    .clickable { onPlay(song, songs) }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AsyncImage(
+                                    model = song.thumbnailUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(50.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                )
+                                Spacer(Modifier.width(16.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                                    Text(song.artist, fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f), maxLines = 1)
+                                }
+                                IconButton(onClick = { songToDelete = song }) {
+                                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete Download", tint = MeloAccent)
+                                }
                             }
                         }
                     }
@@ -1792,9 +2478,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ==========================================
-    // SCENE 05: FULL SCREEN PLAYER & TOUCH INTERCEPTION
-    // ==========================================
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun ImmersivePlayerScene(
@@ -1807,6 +2490,7 @@ class MainActivity : ComponentActivity() {
         queue: List<Song>,
         currentQueueIndex: Int,
         playlists: List<UserPlaylist>,
+        playMode: Int,
         downloadProgress: Float,
         onDownloadClick: () -> Unit,
         onLikeToggle: () -> Unit,
@@ -1817,7 +2501,9 @@ class MainActivity : ComponentActivity() {
         onTogglePlay: () -> Unit,
         onNext: () -> Unit,
         onPrev: () -> Unit,
+        onTogglePlayMode: () -> Unit,
         onSeek: (Float) -> Unit,
+        onUserSeekingChange: (Boolean) -> Unit,
         onEnterCinematic: () -> Unit,
         repository: JioSaavnRepository
     ) {
@@ -1826,17 +2512,14 @@ class MainActivity : ComponentActivity() {
         var showMenu by remember { mutableStateOf(false) }
         var showQueue by remember { mutableStateOf(false) }
         var showPlaylistPicker by remember { mutableStateOf(false) }
+        var showDetailsDialog by remember { mutableStateOf(false) }
 
         LaunchedEffect(song.id) { lyrics = repository.getSyncedLyrics(song.title, song.artist) }
 
-        // Root Box intercepts all pointer touches, preventing any leak to Home screen
         Box(
             Modifier
                 .fillMaxSize()
                 .background(VoidBlack)
-                .pointerInput(Unit) {
-                    detectTapGestures { /* consume touches */ }
-                }
         ) {
             val infinite = rememberInfiniteTransition(label = "blob_infinite")
             val offsetX1 by infinite.animateFloat(initialValue = -80f, targetValue = 80f, animationSpec = infiniteRepeatable(animation = tween(7000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "offsetX1")
@@ -1917,15 +2600,30 @@ class MainActivity : ComponentActivity() {
 
                         val songDurationMs = parseDurationMs(song.durationText)
                         val progress = (currentPositionMs / songDurationMs).coerceIn(0f, 1f)
-                        InteractiveWaveScrubber(progress = progress, accentColor = artworkColor, currentPositionMs = currentPositionMs, totalDurationMs = songDurationMs, modifier = Modifier.fillMaxWidth().height(56.dp), onSeekProgress = { onSeek(it * songDurationMs) })
+                        InteractiveWaveScrubber(
+                            progress = progress,
+                            accentColor = artworkColor,
+                            currentPositionMs = currentPositionMs,
+                            totalDurationMs = songDurationMs,
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            onUserSeekingChange = onUserSeekingChange,
+                            onSeekProgress = { seekPercent ->
+                                val safeTarget = (seekPercent * songDurationMs).coerceAtMost(songDurationMs - 1800f)
+                                onSeek(safeTarget)
+                            }
+                        )
                         Spacer(Modifier.height(20.dp))
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { playMode = (playMode + 1) % 3 }) {
+                            IconButton(onClick = onTogglePlayMode) {
                                 Icon(
-                                    imageVector = when (playMode) { MODE_SHUFFLE -> Icons.Rounded.Shuffle; MODE_REPEAT_ALL -> Icons.Rounded.Repeat; else -> Icons.Rounded.RepeatOne },
+                                    imageVector = when (playMode) {
+                                        MODE_SHUFFLE -> Icons.Rounded.Shuffle
+                                        MODE_REPEAT_ONE -> Icons.Rounded.RepeatOne
+                                        else -> Icons.Rounded.Repeat
+                                    },
                                     contentDescription = null,
-                                    tint = if (playMode == MODE_SHUFFLE) TextMuted else artworkColor,
+                                    tint = MeloAccent,
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
@@ -1946,7 +2644,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // FIXED 87.dp SLIDING PILL SWITCHER
                 Box(Modifier.fillMaxWidth().padding(bottom = 26.dp), contentAlignment = Alignment.Center) {
                     Box(
                         modifier = Modifier
@@ -1994,7 +2691,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // THREE-DOT MENU WITH DOWNLOAD AND PLAYLIST
             if (showMenu) {
                 ModalBottomSheet(onDismissRequest = { showMenu = false }, containerColor = DeepSurface) {
                     Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
@@ -2014,6 +2710,16 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.clickable {
                                 showMenu = false
                                 showPlaylistPicker = true
+                            }
+                        )
+
+                        ListItem(
+                            headlineContent = { Text("View Details", color = TextPure) },
+                            leadingContent = { Icon(Icons.Rounded.Info, tint = Color(0xFF9B51E0), contentDescription = null) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clickable {
+                                showMenu = false
+                                showDetailsDialog = true
                             }
                         )
 
@@ -2045,7 +2751,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // ADD TO PLAYLIST PICKER SHEET
+            if (showDetailsDialog) {
+                ModalBottomSheet(onDismissRequest = { showDetailsDialog = false }, containerColor = DeepSurface) {
+                    Column(Modifier.fillMaxWidth().padding(26.dp).padding(bottom = 36.dp)) {
+                        Text("Track Details", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
+                        Spacer(Modifier.height(18.dp))
+                        DetailRow(label = "Title", value = song.title)
+                        DetailRow(label = "Artist", value = song.artist)
+                        DetailRow(label = "Album", value = song.album)
+                        DetailRow(label = "Length", value = song.durationText + " sec")
+                        DetailRow(label = "Codec", value = "AAC 320 kbps (Lossless Spatial)")
+                        DetailRow(
+                            label = "Storage",
+                            value = if (downloadProgress == -1f) "Offline Local Storage" else "Cloud Stream (JioSaavn CDN)"
+                        )
+                        Spacer(Modifier.height(18.dp))
+                    }
+                }
+            }
+
             if (showPlaylistPicker) {
                 ModalBottomSheet(onDismissRequest = { showPlaylistPicker = false }, containerColor = DeepSurface) {
                     Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
@@ -2073,18 +2797,35 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // UP NEXT RADIO QUEUE
             AnimatedVisibility(visible = showQueue, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
                 Box(Modifier.fillMaxSize().background(VoidBlack)) {
+                    val infiniteMesh = rememberInfiniteTransition(label = "queue_mesh")
+                    val qOffsetX by infiniteMesh.animateFloat(initialValue = -90f, targetValue = 90f, animationSpec = infiniteRepeatable(animation = tween(7000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "qOffset")
+                    Box(Modifier.fillMaxSize().blur(80.dp).alpha(0.85f)) {
+                        Canvas(Modifier.fillMaxSize()) {
+                            drawCircle(color = artworkColor, radius = size.width * 0.45f, center = Offset(size.width / 2 + qOffsetX, size.height / 3))
+                            drawCircle(color = BlobColor1, radius = size.width * 0.40f, center = Offset(size.width / 2 - qOffsetX, size.height / 1.6f))
+                        }
+                    }
+                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, VoidBlack.copy(alpha = 0.4f), VoidBlack.copy(alpha = 0.85f)))))
+
                     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 24.dp)) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("Up Next Radio", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                             IconButton(onClick = { showQueue = false }) { Icon(Icons.Rounded.Close, contentDescription = "Close", tint = TextPure, modifier = Modifier.size(28.dp)) }
                         }
 
-                        Text("Now Resonating", fontSize = 14.sp, color = MeloAccent, fontWeight = FontWeight.Bold)
+                        Text("Now Resonating", fontSize = 14.sp, color = artworkColor, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0x22FFFFFF)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color(0x28FFFFFF))
+                                .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(16.dp))
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)))
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
@@ -2095,11 +2836,11 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Spacer(Modifier.height(20.dp))
-                        Text("Slide right to eject from radio queue", fontSize = 12.sp, color = TextSubtle)
+                        Text("Slide right to eject from queue", fontSize = 12.sp, color = TextSubtle)
                         Spacer(Modifier.height(10.dp))
 
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 60.dp)) {
-                            items(queue.drop(currentQueueIndex + 1), key = { it.id }) { qSong ->
+                            itemsIndexed(queue.drop(currentQueueIndex + 1), key = { index, item -> "${item.id}_$index" }) { _, qSong ->
                                 SwipeToDismissSongRow(
                                     song = qSong,
                                     isLiked = likedSongsList.any { it.id == qSong.id },
@@ -2116,51 +2857,112 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SwipeToDismissSongRow(song: Song, isLiked: Boolean, onSongClick: () -> Unit, onLikeToggle: () -> Unit, onDismiss: () -> Unit) {
+    private fun DetailRow(label: String, value: String) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, color = TextMuted, fontSize = 14.sp)
+            Text(value, color = TextPure, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+    }
+
+    @Composable
+    private fun SwipeToDismissSongRow(
+        song: Song,
+        isLiked: Boolean,
+        onSongClick: () -> Unit,
+        onLikeToggle: () -> Unit,
+        onDismiss: () -> Unit
+    ) {
         val offsetX = remember { Animatable(0f) }
+        val scope = rememberCoroutineScope()
         var isDismissed by remember { mutableStateOf(false) }
 
         if (!isDismissed) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFFE53935).copy(alpha = 0.35f))) {
-                Icon(Icons.Rounded.DeleteSweep, contentDescription = null, tint = TextPure, modifier = Modifier.align(Alignment.CenterStart).padding(start = 16.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFFE53935).copy(alpha = 0.5f))
+            ) {
+                Icon(
+                    Icons.Rounded.DeleteSweep,
+                    contentDescription = "Dismiss",
+                    tint = TextPure,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 20.dp)
+                )
+
+                val cardAlpha = (1f - (offsetX.value / 600f).coerceIn(0f, 1f))
 
                 Row(
-                    Modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0x22FFFFFF)).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp)).clickable { onSongClick() }
+                    Modifier
+                        .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                        .alpha(cardAlpha)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0x28FFFFFF))
+                        .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(16.dp))
+                        .clickable { onSongClick() }
                         .pointerInput(Unit) {
                             detectHorizontalDragGestures(
                                 onDragEnd = {
-                                    if (offsetX.value > 250f) {
-                                        isDismissed = true
-                                        onDismiss()
+                                    if (offsetX.value > 220f) {
+                                        scope.launch {
+                                            offsetX.animateTo(
+                                                targetValue = 1200f,
+                                                animationSpec = tween(280, easing = FastOutSlowInEasing)
+                                            )
+                                            isDismissed = true
+                                            onDismiss()
+                                        }
                                     } else {
-                                        lifecycleScope.launch { offsetX.animateTo(0f) }
+                                        scope.launch {
+                                            offsetX.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = 0.75f,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
                                     }
                                 }
                             ) { change, dragAmount ->
                                 change.consume()
-                                if (dragAmount > 0 || offsetX.value > 0) lifecycleScope.launch { offsetX.snapTo((offsetX.value + dragAmount).coerceAtLeast(0f)) }
+                                if (dragAmount > 0 || offsetX.value > 0) {
+                                    scope.launch {
+                                        offsetX.snapTo((offsetX.value + dragAmount).coerceAtLeast(0f))
+                                    }
+                                }
                             }
                         }
-                        .padding(10.dp),
+                        .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)))
-                    Spacer(Modifier.width(12.dp))
+                    AsyncImage(
+                        model = song.thumbnailUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(50.dp).clip(RoundedCornerShape(12.dp))
+                    )
+                    Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(song.title, fontSize = 14.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
                         Text(song.artist, fontSize = 12.sp, color = Color(0xDDFFFFFF), maxLines = 1)
                     }
                     IconButton(onClick = onLikeToggle) {
-                        Icon(if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, contentDescription = null, tint = if (isLiked) MeloAccent else TextMuted, modifier = Modifier.size(20.dp))
+                        Icon(
+                            if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = null,
+                            tint = if (isLiked) MeloAccent else TextMuted,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
                 }
             }
         }
     }
 
-    // ==========================================
-    // SCENE 06: CINEMATIC MODE
-    // ==========================================
     @Composable
     private fun CinematicLandscapeScene(song: Song, artworkColor: Color, isPlaying: Boolean, currentPositionMs: Float, onExit: () -> Unit, onTogglePlay: () -> Unit, onSeek: (Float) -> Unit, repository: JioSaavnRepository) {
         var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
@@ -2170,9 +2972,6 @@ class MainActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(VoidBlack)
-                .pointerInput(Unit) {
-                    detectTapGestures { /* consume touches */ }
-                }
         ) {
             val infinite = rememberInfiniteTransition(label = "cinematic_blob")
             val offsetX1 by infinite.animateFloat(initialValue = -150f, targetValue = 150f, animationSpec = infiniteRepeatable(animation = tween(8000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "cinematic_offsetX")
@@ -2228,9 +3027,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ==========================================
-    // MINI PLAYER
-    // ==========================================
     @Composable
     private fun PremiumMiniPlayer(
         song: Song,
@@ -2251,8 +3047,8 @@ class MainActivity : ComponentActivity() {
                 .background(
                     Brush.horizontalGradient(
                         0.0f to artworkColor.copy(alpha = if (isPlaying) 0.65f else 0.35f),
-                        0.32f to artworkColor.copy(alpha = if (isPlaying) 0.28f else 0.12f),
-                        0.68f to Color.Transparent,
+                        0.35f to artworkColor.copy(alpha = if (isPlaying) 0.28f else 0.12f),
+                        0.70f to Color.Transparent,
                         1.0f to Color.Transparent
                     )
                 )
@@ -2263,7 +3059,7 @@ class MainActivity : ComponentActivity() {
                 val phase1 by infinite.animateFloat(initialValue = 0f, targetValue = 2f * Math.PI.toFloat(), animationSpec = infiniteRepeatable(animation = tween(2200, easing = LinearEasing)), label = "phase1")
                 val phase2 by infinite.animateFloat(initialValue = 0f, targetValue = 2f * Math.PI.toFloat(), animationSpec = infiniteRepeatable(animation = tween(1600, easing = LinearEasing)), label = "phase2")
 
-                Canvas(Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter).alpha(0.95f)) {
+                Canvas(Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter).alpha(0.85f)) {
                     val path1 = Path()
                     val path2 = Path()
                     path1.moveTo(0f, size.height)
@@ -2287,27 +3083,37 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(50.dp).clip(CircleShape))
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AsyncImage(
+                    model = song.thumbnailUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(50.dp).clip(CircleShape)
+                )
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.basicMarquee())
                     Text(song.artist, fontSize = 12.sp, color = TextSubtle, maxLines = 1)
                 }
-                IconButton(onClick = onPrev) { Icon(Icons.Rounded.SkipPrevious, contentDescription = null, tint = TextPure, modifier = Modifier.size(28.dp)) }
+                IconButton(onClick = onPrev) {
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = null, tint = TextPure, modifier = Modifier.size(28.dp))
+                }
                 IconButton(onClick = onTogglePlay) {
-                    userPausedManually = isPlaying
                     if (isBuffering) CircularProgressIndicator(color = TextPure, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
                     else Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = null, tint = TextPure, modifier = Modifier.size(34.dp))
                 }
-                IconButton(onClick = onNext) { Icon(Icons.Rounded.SkipNext, contentDescription = null, tint = TextPure, modifier = Modifier.size(28.dp)) }
+                IconButton(onClick = onNext) {
+                    Icon(Icons.Rounded.SkipNext, contentDescription = null, tint = TextPure, modifier = Modifier.size(28.dp))
+                }
             }
         }
     }
 
-    // ==========================================
-    // SCRUBBER
-    // ==========================================
     @Composable
     private fun InteractiveWaveScrubber(
         progress: Float,
@@ -2315,26 +3121,57 @@ class MainActivity : ComponentActivity() {
         currentPositionMs: Float,
         totalDurationMs: Float,
         modifier: Modifier,
+        onUserSeekingChange: (Boolean) -> Unit,
         onSeekProgress: (Float) -> Unit
     ) {
         var isDragging by remember { mutableStateOf(false) }
-        var dragProgress by remember { mutableStateOf(0f) }
+        var dragProgress by remember { mutableFloatStateOf(0f) }
         val infinite = rememberInfiniteTransition(label = "scrubber")
-        val phase by infinite.animateFloat(initialValue = 0f, targetValue = 2f * Math.PI.toFloat(), animationSpec = infiniteRepeatable(animation = tween(1500, easing = LinearEasing)), label = "scrubber_phase")
-        val displayProgress = if (isDragging) dragProgress else progress
+        val phase by infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = 2f * Math.PI.toFloat(),
+            animationSpec = infiniteRepeatable(animation = tween(1500, easing = LinearEasing)),
+            label = "scrubber_phase"
+        )
+        val displayProgress = (if (isDragging) dragProgress else progress).coerceIn(0f, 1f)
 
         Column(modifier = modifier) {
             Canvas(
-                Modifier.fillMaxWidth().height(38.dp)
+                Modifier
+                    .fillMaxWidth()
+                    .height(38.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures { offset ->
+                            if (size.width > 0) {
+                                onUserSeekingChange(true)
+                                val seekPercent = (offset.x / size.width.toFloat()).coerceIn(0f, 0.98f)
+                                onSeekProgress(seekPercent)
+                                onUserSeekingChange(false)
+                            }
+                        }
+                    }
                     .pointerInput(Unit) {
                         detectHorizontalDragGestures(
-                            onDragStart = { offset -> isDragging = true; dragProgress = (offset.x / size.width).coerceIn(0f, 1f) },
-                            onDragEnd = { isDragging = false; onSeekProgress(dragProgress) },
-                            onDragCancel = { isDragging = false },
-                            onHorizontalDrag = { change, _ -> change.consume(); dragProgress = (change.position.x / size.width).coerceIn(0f, 1f) }
+                            onDragStart = { offset ->
+                                isDragging = true
+                                onUserSeekingChange(true)
+                                dragProgress = (offset.x / size.width.toFloat()).coerceIn(0f, 0.98f)
+                            },
+                            onDragEnd = {
+                                isDragging = false
+                                onSeekProgress(dragProgress)
+                                onUserSeekingChange(false)
+                            },
+                            onDragCancel = {
+                                isDragging = false
+                                onUserSeekingChange(false)
+                            },
+                            onHorizontalDrag = { change, _ ->
+                                change.consume()
+                                dragProgress = (change.position.x / size.width.toFloat()).coerceIn(0f, 0.98f)
+                            }
                         )
                     }
-                    .pointerInput(Unit) { detectTapGestures { offset -> onSeekProgress((offset.x / size.width).coerceIn(0f, 1f)) } }
             ) {
                 val centerY = size.height / 2
                 drawLine(GlassSurface, Offset(0f, centerY), Offset(size.width, centerY), strokeWidth = 12f, cap = StrokeCap.Round)
@@ -2346,10 +3183,10 @@ class MainActivity : ComponentActivity() {
                 }
                 drawPath(path, accentColor, style = Stroke(width = 12f))
 
-                drawCircle(Color(0x55000000), radius = if (isDragging) 30f else 25f, center = Offset(fillWidth, centerY))
-                drawCircle(Color(0xFF0D0D11), radius = if (isDragging) 24f else 20f, center = Offset(fillWidth, centerY))
-                drawCircle(TextPure, radius = if (isDragging) 19f else 15f, center = Offset(fillWidth, centerY))
-                drawCircle(accentColor, radius = if (isDragging) 10f else 8f, center = Offset(fillWidth, centerY))
+                drawCircle(Color(0x55000000), radius = if (isDragging) 28f else 22f, center = Offset(fillWidth, centerY))
+                drawCircle(Color(0xFF0D0D11), radius = if (isDragging) 22f else 18f, center = Offset(fillWidth, centerY))
+                drawCircle(TextPure, radius = if (isDragging) 18f else 14f, center = Offset(fillWidth, centerY))
+                drawCircle(accentColor, radius = if (isDragging) 10f else 7f, center = Offset(fillWidth, centerY))
             }
 
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -2366,25 +3203,92 @@ class MainActivity : ComponentActivity() {
         return "%d:%02d".format(mins, secs)
     }
 
-    // ==========================================
-    // BOTTOM NAV
-    // ==========================================
+    // REFINED, FROSTED GLASS CAPSULE DESIGN (BALANCED SIZE & SUBTLE SOFT GLOW)
     @Composable
-    private fun MeloBottomNav(selectedTab: MeloTab, onSelectTab: (MeloTab) -> Unit, modifier: Modifier = Modifier) {
-        Box(modifier.clip(RoundedCornerShape(32.dp)).background(Color(0x88000000)).padding(4.dp)) {
-            Row(Modifier.clip(RoundedCornerShape(28.dp)).background(DeepSurface).padding(horizontal = 18.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    private fun MeloBottomNav(
+        selectedTab: MeloTab,
+        onSelectTab: (MeloTab) -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(32.dp))
+                .background(Color(0x88030304))
+                .border(
+                    BorderStroke(
+                        1.dp,
+                        Brush.verticalGradient(
+                            listOf(Color(0x40FFFFFF), Color(0x12FFFFFF))
+                        )
+                    ),
+                    RoundedCornerShape(32.dp)
+                )
+                .padding(4.dp)
+        ) {
+            Row(
+                Modifier
+                    .width(270.dp)
+                    .height(52.dp)
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(DeepSurface),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 MeloTab.entries.forEach { tab ->
                     val active = selectedTab == tab
+                    val animatedBgColor by animateColorAsState(
+                        targetValue = if (active) tab.activeTint.copy(alpha = 0.20f) else Color.Transparent,
+                        animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                        label = "tabBgColor"
+                    )
+                    val iconScale by animateFloatAsState(
+                        targetValue = if (active) 1.08f else 1.0f,
+                        animationSpec = spring(dampingRatio = 0.75f),
+                        label = "iconScale"
+                    )
+
                     Box(
-                        Modifier.clip(RoundedCornerShape(22.dp)).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onSelectTab(tab) }.background(if (active) tab.activeTint.copy(alpha = 0.18f) else Color.Transparent).padding(horizontal = 16.dp, vertical = 9.dp),
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(animatedBgColor)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { onSelectTab(tab) }
+                            .padding(vertical = 4.dp, horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(tab.icon, contentDescription = tab.label, tint = if (active) tab.activeTint else TextMuted, modifier = Modifier.size(22.dp))
-                            AnimatedVisibility(visible = active) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = tab.icon,
+                                contentDescription = tab.label,
+                                tint = if (active) tab.activeTint else TextMuted,
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .graphicsLayer {
+                                        scaleX = iconScale
+                                        scaleY = iconScale
+                                    }
+                            )
+                            AnimatedVisibility(
+                                visible = active,
+                                enter = fadeIn(tween(180)) + expandHorizontally(spring(dampingRatio = 0.8f)),
+                                exit = fadeOut(tween(150)) + shrinkHorizontally(spring(dampingRatio = 0.8f))
+                            ) {
                                 Row {
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(tab.label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = tab.activeTint)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = tab.label,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = tab.activeTint,
+                                        maxLines = 1
+                                    )
                                 }
                             }
                         }

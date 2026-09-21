@@ -19,7 +19,6 @@ class JioSaavnRepository {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // 1. RELIABLE SEARCH WITH HIGH-RES 500x500 COVER ART
     suspend fun searchSongs(query: String): List<Song> = withContext(Dispatchers.IO) {
         val list = mutableListOf<Song>()
         try {
@@ -92,9 +91,11 @@ class JioSaavnRepository {
         list
     }
 
-    // 2. SMART RADIO RECOMMENDATIONS
     suspend fun getRadioRecommendations(seedSong: Song): List<Song> = withContext(Dispatchers.IO) {
-        val recommendations = mutableListOf<Song>()
+        val candidates = mutableListOf<Song>()
+        val seenIds = mutableSetOf(seedSong.id)
+        val seedPrimaryArtist = seedSong.artist.split(",", "&", "feat.", "ft.").firstOrNull()?.trim().orEmpty()
+
         try {
             val recoUrl = "https://www.jiosaavn.com/api.php?__call=reco.getreco&pid=${seedSong.id}&_format=json&_marker=0&api_version=4&ctx=web6dot0"
             val request = Request.Builder().url(recoUrl).header("User-Agent", "Mozilla/5.0").build()
@@ -106,11 +107,11 @@ class JioSaavnRepository {
                 for (elem in array) {
                     val obj = elem.asJsonObject
                     val id = obj.get("id")?.asString ?: continue
-                    if (id == seedSong.id) continue
+                    if (id in seenIds) continue
 
                     val moreInfo = if (obj.has("more_info") && obj.get("more_info").isJsonObject) obj.getAsJsonObject("more_info") else null
                     val title = cleanHtmlEntities(obj.get("song")?.asString ?: obj.get("title")?.asString ?: "Track")
-                    val artist = cleanHtmlEntities(moreInfo?.get("primary_artists")?.asString ?: obj.get("primary_artists")?.asString ?: seedSong.artist)
+                    val artist = cleanHtmlEntities(moreInfo?.get("primary_artists")?.asString ?: obj.get("primary_artists")?.asString ?: "Artist")
                     val album = cleanHtmlEntities(moreInfo?.get("album")?.asString ?: "Single")
                     val highResImage = (obj.get("image")?.asString ?: "")
                         .replace("50x50", "500x500")
@@ -119,24 +120,52 @@ class JioSaavnRepository {
                     val duration = moreInfo?.get("duration")?.asString ?: "210"
                     val encrypted = moreInfo?.get("encrypted_media_url")?.asString ?: obj.get("encrypted_media_url")?.asString ?: ""
 
-                    recommendations.add(Song(id, title, artist, album, highResImage, duration, encrypted))
+                    candidates.add(Song(id, title, artist, album, highResImage, duration, encrypted))
+                    seenIds.add(id)
                 }
             }
         } catch (_: Exception) { }
 
-        if (recommendations.size < 6) {
-            val artistQuery = seedSong.artist.split(",").firstOrNull()?.trim() ?: seedSong.artist
-            val fallbackTracks = searchSongs("$artistQuery Hits")
-            for (track in fallbackTracks) {
-                if (track.id != seedSong.id && recommendations.none { it.id == track.id }) {
-                    recommendations.add(track)
+        val relatedSeeds = getCorrelatedArtistsAndGenres(seedPrimaryArtist)
+        for (query in relatedSeeds) {
+            if (candidates.size >= 25) break
+            val searchResults = searchSongs(query)
+            for (s in searchResults) {
+                if (s.id !in seenIds) {
+                    seenIds.add(s.id)
+                    candidates.add(s)
                 }
             }
         }
-        recommendations
+
+        val diversified = mutableListOf<Song>()
+        val artistCounter = mutableMapOf<String, Int>()
+
+        for (song in candidates) {
+            val primary = song.artist.split(",", "&", "feat.", "ft.").firstOrNull()?.trim()?.lowercase() ?: "unknown"
+            val count = artistCounter.getOrDefault(primary, 0)
+            if (count < 2) {
+                artistCounter[primary] = count + 1
+                diversified.add(song)
+            }
+        }
+
+        diversified.take(20)
     }
 
-    // 3. RESOLVE STREAM URL
+    private fun getCorrelatedArtistsAndGenres(artist: String): List<String> {
+        val lower = artist.lowercase()
+        return when {
+            lower.contains("arijit") -> listOf("Atif Aslam Hits", "Mohit Chauhan Romantic", "Shreya Ghoshal Hits", "KK Melodies", "Jubin Nautiyal")
+            lower.contains("atif") -> listOf("Arijit Singh Hits", "Mustafa Zahid Hits", "Mohit Chauhan", "KK Hits")
+            lower.contains("kk") -> listOf("Mohit Chauhan", "Shaan Hits", "Lucky Ali", "Pritam Romantic")
+            lower.contains("jubin") -> listOf("Arijit Singh", "Armaan Malik", "Vishal Mishra", "Sachin-Jigar")
+            lower.contains("diljit") || lower.contains("ap dhillon") -> listOf("Karan Aujla Hits", "Sidhu Moosewala", "B Praak", "Harrdy Sandhu")
+            lower.contains("prateek") || lower.contains("anuv") -> listOf("Anuv Jain", "Prateek Kuhad", "The Local Train", "Jasleen Royal")
+            else -> listOf("Top Bollywood Hits", "Hindi Romantic Hits", "Soulful Acoustic Hindi")
+        }
+    }
+
     suspend fun getStreamUrl(song: Song): String? = withContext(Dispatchers.IO) {
         if (!song.localPath.isNullOrBlank()) return@withContext song.localPath
         getRemoteDecryptedUrl(song)
@@ -151,15 +180,13 @@ class JioSaavnRepository {
             cipher.init(Cipher.DECRYPT_MODE, secretKey)
             val decoded = android.util.Base64.decode(song.encryptedMediaUrl, android.util.Base64.DEFAULT)
             val decryptedBytes = cipher.doFinal(decoded)
-            val rawUrl = String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
-            rawUrl.replace("_96.mp4", "_160.mp4")
+            String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
 
-    // 4. SYNCED LYRICS
     suspend fun getSyncedLyrics(title: String, artist: String): List<LyricLine> = withContext(Dispatchers.IO) {
         val lines = mutableListOf<LyricLine>()
         try {
