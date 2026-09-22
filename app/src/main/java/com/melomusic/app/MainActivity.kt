@@ -22,6 +22,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -106,6 +107,7 @@ import com.melomusic.app.data.LyricLine
 import com.melomusic.app.data.Song
 import com.melomusic.app.playback.PlayerConnection
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -156,7 +158,7 @@ sealed class NavRoute {
     object Downloads : NavRoute()
 }
 
-data class UserPlaylist(val name: String, var coverUrl: String, val songs: MutableList<Song> = mutableListOf())
+data class UserPlaylist(var name: String, var coverUrl: String, val songs: MutableList<Song> = mutableListOf())
 
 const val MODE_SHUFFLE = 0
 const val MODE_REPEAT_ALL = 1
@@ -171,7 +173,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var player: PlayerConnection
     private val saavnRepository = JioSaavnRepository()
-    private val httpClient = OkHttpClient()
+    private val httpClient = OkHttpClient.Builder().followRedirects(true).build()
     private val gson = Gson()
     private lateinit var prefs: SharedPreferences
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -202,6 +204,9 @@ class MainActivity : ComponentActivity() {
     private var mediaSession: MediaSession? = null
     private var currentArtworkBitmap: Bitmap? = null
 
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var backgroundPlaybackJob: Job? = null
+
     private val updateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
@@ -227,6 +232,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
 
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeloMusic::PlaybackWakeLock")
+
         prefs = getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
         loadPersistedState()
         userProfileName = prefs.getString("user_profile_name", null)
@@ -242,16 +250,67 @@ class MainActivity : ComponentActivity() {
 
         player = PlayerConnection(this, lifecycleScope)
         player.connect()
+
+        startBackgroundPlaybackTracker()
+
         setContent { MeloRoot() }
     }
 
     override fun onDestroy() {
+        backgroundPlaybackJob?.cancel()
+        if (wakeLock?.isHeld == true) wakeLock?.release()
         unregisterReceiver(updateReceiver)
         unregisterReceiver(mediaActionReceiver)
         mediaSession?.release()
         getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         player.release()
         super.onDestroy()
+    }
+
+    private fun startBackgroundPlaybackTracker() {
+        backgroundPlaybackJob?.cancel()
+        backgroundPlaybackJob = lifecycleScope.launch(Dispatchers.Default) {
+            var lastTrackedSongId: String? = null
+            while (true) {
+                delay(200)
+                val state = player.state.value
+                val currentSong = state.song
+
+                if (state.isPlaying) {
+                    if (wakeLock?.isHeld == false) {
+                        try { wakeLock?.acquire(6 * 60 * 60 * 1000L) } catch (_: Exception) {}
+                    }
+
+                    if (lastTrackedSongId != currentSong?.id) {
+                        lastTrackedSongId = currentSong?.id
+                        withContext(Dispatchers.Main) { currentPlaybackPositionMs = 0f }
+                    }
+
+                    if (!isUserSeeking) {
+                        withContext(Dispatchers.Main) { currentPlaybackPositionMs += 200f }
+                    }
+
+                    if (currentSong != null && !isUserSeeking) {
+                        val duration = parseDurationMs(currentSong.durationText)
+                        if (duration > 5000f && currentPlaybackPositionMs >= (duration - 400f)) {
+                            withContext(Dispatchers.Main) { playNext() }
+                            delay(1200)
+                        }
+                    }
+                } else {
+                    if (wakeLock?.isHeld == true && userPausedManually) {
+                        try { wakeLock?.release() } catch (_: Exception) {}
+                    }
+                    if (!state.isBuffering && !userPausedManually && currentSong != null && currentPlaybackPositionMs > 4000f) {
+                        val duration = parseDurationMs(currentSong.durationText)
+                        if (currentPlaybackPositionMs >= (duration - 2500f) || duration <= 8000f) {
+                            withContext(Dispatchers.Main) { playNext() }
+                            delay(1200)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun loadPersistedState() {
@@ -271,9 +330,9 @@ class MainActivity : ComponentActivity() {
             downloadedSongsList.clear()
 
             downloaded.forEach { s ->
-                val file = File(filesDir, "downloads/${s.id}.mp3")
-                if (file.exists() && file.length() > 5000) {
-                    s.localPath = Uri.fromFile(file).toString()
+                val resolvedUri = resolvePlayableUrl(s)
+                if (resolvedUri != null) {
+                    s.localPath = resolvedUri
                     downloadedSongsList.add(s)
                     downloadProgressMap[s.id] = -1f
                 }
@@ -293,7 +352,7 @@ class MainActivity : ComponentActivity() {
     private fun persistLikedSongs() = prefs.edit().putString("liked_songs", gson.toJson(likedSongsList.toList())).apply()
     private fun persistRecentSongs() = prefs.edit().putString("recent_songs", gson.toJson(recentlyPlayedList.toList())).apply()
     private fun persistDownloadedSongs() = prefs.edit().putString("downloaded_songs", gson.toJson(downloadedSongsList.toList())).apply()
-    private fun persistUserPlaylists() = prefs.edit().putString("user_playlists", gson.toJson(userPlaylists.toList())).apply()
+    fun persistUserPlaylists() = prefs.edit().putString("user_playlists", gson.toJson(userPlaylists.toList())).apply()
 
     private fun toggleLikeSong(song: Song) {
         val exists = likedSongsList.any { it.id == song.id }
@@ -317,14 +376,35 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resolvePlayableUrl(song: Song): String? {
-        val localFile = File(filesDir, "downloads/${song.id}.mp3")
-        return if (localFile.exists() && localFile.length() > 5000) {
-            Uri.fromFile(localFile).toString()
-        } else if (!song.localPath.isNullOrBlank() && song.localPath!!.startsWith("file://")) {
-            song.localPath
-        } else {
-            null
+        val downloadDir = File(filesDir, "downloads")
+        val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val candidateIds = listOf(song.id, safeId).distinct()
+        val extensions = listOf("mp4", "mp3", "m4a", "aac")
+
+        for (id in candidateIds) {
+            for (ext in extensions) {
+                val f = File(downloadDir, "$id.$ext")
+                if (f.exists() && f.length() > 5000) {
+                    f.setReadable(true, false)
+                    val uri = Uri.fromFile(f).toString()
+                    song.localPath = uri
+                    return uri
+                }
+            }
         }
+
+        if (!song.localPath.isNullOrBlank()) {
+            val path = song.localPath!!
+            val rawPath = if (path.startsWith("file://")) Uri.parse(path).path else path
+            if (rawPath != null) {
+                val f = File(rawPath)
+                if (f.exists() && f.length() > 5000) {
+                    f.setReadable(true, false)
+                    return Uri.fromFile(f).toString()
+                }
+            }
+        }
+        return null
     }
 
     private fun downloadSongInternally(song: Song) {
@@ -333,15 +413,30 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val streamUrl = saavnRepository.getRemoteDecryptedUrl(song)
+                val existing = resolvePlayableUrl(song)
+                if (existing != null) {
+                    withContext(Dispatchers.Main) {
+                        downloadProgressMap[song.id] = -1f
+                        if (downloadedSongsList.none { it.id == song.id }) downloadedSongsList.add(0, song)
+                        persistDownloadedSongs()
+                    }
+                    return@launch
+                }
+
+                var streamUrl = saavnRepository.getRemoteDecryptedUrl(song)
+                if (streamUrl.isNullOrBlank()) {
+                    streamUrl = saavnRepository.getStreamUrl(song)
+                }
                 if (streamUrl.isNullOrBlank()) {
                     withContext(Dispatchers.Main) { downloadProgressMap.remove(song.id) }
                     return@launch
                 }
 
-                val downloadDir = File(filesDir, "downloads")
-                if (!downloadDir.exists()) downloadDir.mkdirs()
-                val targetFile = File(downloadDir, "${song.id}.mp3")
+                val downloadDir = File(filesDir, "downloads").apply { if (!exists()) mkdirs() }
+                val ext = if (streamUrl.contains(".mp3", ignoreCase = true)) "mp3" else "mp4"
+                val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val targetFile = File(downloadDir, "$safeId.$ext")
+                val tempFile = File(downloadDir, "$safeId.tmp")
 
                 val req = Request.Builder()
                     .url(streamUrl)
@@ -354,8 +449,8 @@ class MainActivity : ComponentActivity() {
                 val totalLength = body.contentLength()
 
                 body.byteStream().use { input ->
-                    FileOutputStream(targetFile).use { output ->
-                        val buffer = ByteArray(8 * 1024)
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(32 * 1024)
                         var read: Int
                         var currentBytes = 0L
 
@@ -371,12 +466,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (targetFile.length() < 5000) {
-                    targetFile.delete()
-                    throw Exception("Corrupted audio file")
+                if (tempFile.length() < 5000) {
+                    tempFile.delete()
+                    throw Exception("Corrupted download file")
                 }
 
-                song.localPath = Uri.fromFile(targetFile).toString()
+                if (targetFile.exists()) targetFile.delete()
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
+                targetFile.setReadable(true, false)
+
+                val localUri = Uri.fromFile(targetFile).toString()
+                song.localPath = localUri
+
                 withContext(Dispatchers.Main) {
                     downloadProgressMap[song.id] = -1f
                     if (downloadedSongsList.none { it.id == song.id }) downloadedSongsList.add(0, song)
@@ -390,8 +492,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun deleteDownloadedSong(song: Song) {
-        val file = File(filesDir, "downloads/${song.id}.mp3")
-        if (file.exists()) file.delete()
+        val downloadDir = File(filesDir, "downloads")
+        val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        listOf(song.id, safeId).distinct().forEach { id ->
+            listOf("mp4", "mp3", "m4a", "aac", "tmp").forEach { ext ->
+                val f = File(downloadDir, "$id.$ext")
+                if (f.exists()) f.delete()
+            }
+        }
         downloadedSongsList.removeAll { it.id == song.id }
         downloadProgressMap.remove(song.id)
         persistDownloadedSongs()
@@ -678,9 +786,6 @@ class MainActivity : ComponentActivity() {
         var showUpdateSheet by remember { mutableStateOf(false) }
         var extractedArtworkColor by remember { mutableStateOf(Color(0xFFFF5252)) }
 
-        var listenedSongTimeMs by remember { mutableFloatStateOf(0f) }
-        var currentSongIdTracked by remember { mutableStateOf<String?>(null) }
-        var lastTriggeredSongId by remember { mutableStateOf<String?>(null) }
         var becauseArtistName by remember { mutableStateOf(prefs.getString("last_listened_artist", null)) }
         var becauseRecommendations by remember { mutableStateOf<List<Song>>(emptyList()) }
 
@@ -704,46 +809,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Dedicated playback progress ticker with seeking protection
         LaunchedEffect(playerState.isPlaying, playerState.song?.id, playMode) {
             updateNativeNotification(playerState.song, playerState.isPlaying, currentPlaybackPositionMs.toLong(), currentArtworkBitmap)
-
-            if (playerState.song != null) {
-                if (playerState.isPlaying) {
-                    if (currentSongIdTracked != playerState.song?.id) {
-                        currentSongIdTracked = playerState.song?.id
-                        listenedSongTimeMs = 0f
-                    }
-
-                    while (playerState.isPlaying) {
-                        delay(100)
-                        if (!isUserSeeking) {
-                            currentPlaybackPositionMs += 100f
-                            listenedSongTimeMs += 100f
-                        }
-
-                        if (listenedSongTimeMs >= 30000f && playerState.song?.id != lastTriggeredSongId) {
-                            lastTriggeredSongId = playerState.song?.id
-                            val artistName = playerState.song?.artist?.split(",")?.firstOrNull()?.trim() ?: playerState.song?.artist ?: ""
-                            if (artistName.isNotBlank()) {
-                                becauseArtistName = artistName
-                                prefs.edit().putString("last_listened_artist", artistName).apply()
-                                lifecycleScope.launch {
-                                    val reco = saavnRepository.searchSongs("$artistName Hits")
-                                    if (reco.isNotEmpty()) becauseRecommendations = reco
-                                }
-                            }
-                        }
-
-                        val songDuration = parseDurationMs(playerState.song!!.durationText)
-                        if (!isUserSeeking && currentPlaybackPositionMs >= (songDuration - 400f) && songDuration > 5000f) {
-                            playNext()
-                            break
-                        }
+            if (playerState.song != null && playerState.isPlaying) {
+                val artistName = playerState.song?.artist?.split(",")?.firstOrNull()?.trim() ?: playerState.song?.artist ?: ""
+                if (artistName.isNotBlank() && artistName != becauseArtistName) {
+                    becauseArtistName = artistName
+                    prefs.edit().putString("last_listened_artist", artistName).apply()
+                    lifecycleScope.launch {
+                        val reco = saavnRepository.searchSongs("$artistName Hits")
+                        if (reco.isNotEmpty()) becauseRecommendations = reco
                     }
                 }
-            } else {
-                currentPlaybackPositionMs = 0f
             }
         }
 
@@ -758,11 +835,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(VoidBlack)
-        ) {
+        Box(Modifier.fillMaxSize().background(VoidBlack)) {
             if (currentRoute == NavRoute.Main) {
                 Box(Modifier.fillMaxSize()) {
                     AnimatedContent(targetState = currentTab, transitionSpec = { fadeIn(tween(350)) togetherWith fadeOut(tween(350)) }, label = "tab") { tab ->
@@ -792,7 +865,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // RESTORED SLIM & PROPORTIONATE NAVIGATION CAPSULE
                     if (playerTier == PlayerTier.MINI) {
                         MeloBottomNav(
                             selectedTab = currentTab,
@@ -810,6 +882,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 Box(Modifier.fillMaxSize()) {
                     when (val route = currentRoute) {
+                        NavRoute.Main -> {}
                         is NavRoute.CreatePlaylist -> CreatePlaylistScene(
                             onBack = { currentRoute = NavRoute.Main },
                             onCreate = { name, img ->
@@ -818,16 +891,25 @@ class MainActivity : ComponentActivity() {
                                 currentRoute = NavRoute.Main
                             }
                         )
-                        is NavRoute.PlaylistDetail -> PlaylistDetailScene(
-                            route = route,
-                            onPlay = { s, q -> startSongPlayback(s, q) },
-                            onDelete = {
-                                userPlaylists.removeAll { it.name == route.name }
-                                persistUserPlaylists()
-                                currentRoute = NavRoute.Main
-                            },
-                            onBack = { currentRoute = NavRoute.Main }
-                        )
+                        is NavRoute.PlaylistDetail -> {
+                            val targetPlaylist = userPlaylists.find { it.name == route.name }
+                                ?: UserPlaylist(route.name, route.cover, route.songs.toMutableList()).also {
+                                    userPlaylists.add(0, it)
+                                    persistUserPlaylists()
+                                }
+                            PlaylistDetailScene(
+                                playlist = targetPlaylist,
+                                onPlay = { s, q -> startSongPlayback(s, q) },
+                                onDelete = {
+                                    userPlaylists.removeAll { it.name == targetPlaylist.name }
+                                    persistUserPlaylists()
+                                    currentRoute = NavRoute.Main
+                                },
+                                onSave = { persistUserPlaylists() },
+                                onBack = { currentRoute = NavRoute.Main },
+                                repo = saavnRepository
+                            )
+                        }
                         is NavRoute.LikedSongs -> SongCollectionDetailScene(
                             title = "Liked Songs",
                             accentColor = Color(0xFFFF4081),
@@ -850,12 +932,10 @@ class MainActivity : ComponentActivity() {
                             onDelete = { deleteDownloadedSong(it) },
                             onBack = { currentRoute = NavRoute.Main }
                         )
-                        else -> {}
                     }
                 }
             }
 
-            // FLOATING MINI PLAYER
             val isKeyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
             val miniPlayerBottomPadding = if (isKeyboardOpen) 10.dp else if (currentRoute == NavRoute.Main) 86.dp else 16.dp
 
@@ -886,7 +966,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // FULL-SCREEN IMMERSIVE PLAYER
             AnimatedVisibility(
                 visible = playerState.song != null && playerTier == PlayerTier.EXPANDED,
                 enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)),
@@ -935,7 +1014,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // CINEMATIC MODE
             AnimatedVisibility(
                 visible = playerState.song != null && playerTier == PlayerTier.CINEMATIC,
                 enter = fadeIn(tween(500)),
@@ -1022,7 +1100,7 @@ class MainActivity : ComponentActivity() {
 
                         ListItem(
                             headlineContent = { Text("Import Playlist", color = TextPure, fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text("Import genuine songs from Spotify or YouTube Music", color = TextMuted) },
+                            supportingContent = { Text("Import songs from Spotify link", color = TextMuted) },
                             leadingContent = { Icon(Icons.Rounded.CloudDownload, tint = Color(0xFFFFD54F), contentDescription = null) },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable {
@@ -1045,7 +1123,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // RELIABLE SPOTIFY PLAYLIST IMPORTER
             if (showImportSheet) {
                 var linkOrName by remember { mutableStateOf("") }
                 var isImporting by remember { mutableStateOf(false) }
@@ -1056,7 +1133,7 @@ class MainActivity : ComponentActivity() {
                     Column(Modifier.fillMaxWidth().padding(26.dp).padding(bottom = 36.dp)) {
                         Text("Sonic Importer", fontSize = 24.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
                         Spacer(Modifier.height(8.dp))
-                        Text("Paste a Spotify playlist link to extract playlist name, original artwork, and accurate tracks.", color = TextMuted, fontSize = 13.sp)
+                        Text("Paste a Spotify playlist link to extract genuine songs.", color = TextMuted, fontSize = 13.sp)
                         Spacer(Modifier.height(24.dp))
 
                         if (isImporting) {
@@ -1090,66 +1167,89 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 isImporting = true
                                 importProgress = 0.05f
-                                importStatus = "Fetching Spotify metadata..."
-                                lifecycleScope.launch {
+                                importStatus = "Connecting to Spotify..."
+                                lifecycleScope.launch(Dispatchers.IO) {
                                     var playlistTitle = "Imported Playlist"
                                     var playlistCover = ""
+                                    val trackQueryList = mutableListOf<Pair<String, String>>()
                                     val resolvedSongs = mutableListOf<Song>()
-                                    val cleanInput = linkOrName.trim()
+                                    var targetUrl = linkOrName.trim()
 
-                                    if (cleanInput.contains("spotify.com")) {
+                                    if (targetUrl.contains("spotify.link")) {
                                         try {
-                                            val playlistIdMatch = Regex("playlist/([a-zA-Z0-9]+)").find(cleanInput)
-                                            val playlistId = playlistIdMatch?.groupValues?.get(1)
+                                            val headReq = Request.Builder().url(targetUrl).header("User-Agent", "Mozilla/5.0").build()
+                                            val headResp = httpClient.newCall(headReq).execute()
+                                            targetUrl = headResp.request.url.toString()
+                                        } catch (_: Exception) {}
+                                    }
 
-                                            if (playlistId != null) {
-                                                val embedUrl = "https://open.spotify.com/embed/playlist/$playlistId"
+                                    if (targetUrl.contains("spotify.com")) {
+                                        try {
+                                            val type = when {
+                                                targetUrl.contains("/album/") -> "album"
+                                                targetUrl.contains("/track/") -> "track"
+                                                else -> "playlist"
+                                            }
+                                            val idMatch = Regex("$type/([a-zA-Z0-9]+)").find(targetUrl)
+                                            val spotifyId = idMatch?.groupValues?.get(1)
+
+                                            try {
+                                                val oembedUrl = "https://open.spotify.com/oembed?url=${URLEncoder.encode(targetUrl, "UTF-8")}"
+                                                val oembedReq = Request.Builder().url(oembedUrl).header("User-Agent", "Mozilla/5.0").build()
+                                                val oembedResp = httpClient.newCall(oembedReq).execute().body?.string() ?: ""
+                                                val oembedJson = JsonParser.parseString(oembedResp).asJsonObject
+                                                playlistTitle = oembedJson.get("title")?.asString ?: playlistTitle
+                                                playlistCover = oembedJson.get("thumbnail_url")?.asString ?: playlistCover
+                                            } catch (_: Exception) {}
+
+                                            if (spotifyId != null) {
+                                                val embedUrl = "https://open.spotify.com/embed/$type/$spotifyId"
                                                 val embedReq = Request.Builder()
                                                     .url(embedUrl)
                                                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                                                    .header("Accept", "text/html,application/xhtml+xml")
+                                                    .header("Accept-Language", "en-US,en;q=0.9")
                                                     .build()
 
                                                 val respHtml = httpClient.newCall(embedReq).execute().body?.string() ?: ""
 
-                                                val nextDataMatch = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""").find(respHtml)
-                                                if (nextDataMatch != null) {
-                                                    val rawJson = nextDataMatch.groupValues[1]
-                                                    val json = JsonParser.parseString(rawJson).asJsonObject
-                                                    val entity = json.getAsJsonObject("props")
-                                                        ?.getAsJsonObject("pageProps")
-                                                        ?.getAsJsonObject("state")
-                                                        ?.getAsJsonObject("data")
-                                                        ?.getAsJsonObject("entity")
+                                                val nextDataMatch = Regex("""<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)</script>""", RegexOption.IGNORE_CASE).find(respHtml)
+                                                val jsonContent = nextDataMatch?.groupValues?.get(1)
 
-                                                    if (entity != null) {
-                                                        playlistTitle = entity.get("name")?.asString
-                                                            ?: entity.get("title")?.asString
-                                                                    ?: "Spotify Playlist"
+                                                if (!jsonContent.isNullOrBlank()) {
+                                                    try {
+                                                        val root = JsonParser.parseString(jsonContent).asJsonObject
+                                                        val entity = root.getAsJsonObject("props")
+                                                            ?.getAsJsonObject("pageProps")
+                                                            ?.getAsJsonObject("state")
+                                                            ?.getAsJsonObject("data")
+                                                            ?.getAsJsonObject("entity")
 
-                                                        val images = entity.getAsJsonObject("visualIdentity")?.getAsJsonArray("image")
-                                                        if (images != null && images.size() > 0) {
-                                                            playlistCover = images.get(0).asJsonObject.get("url")?.asString.orEmpty()
-                                                        }
+                                                        if (entity != null) {
+                                                            val name = entity.get("name")?.asString ?: entity.get("title")?.asString
+                                                            if (!name.isNullOrBlank()) playlistTitle = name
 
-                                                        val trackList = entity.getAsJsonArray("trackList")
-                                                        if (trackList != null && trackList.size() > 0) {
-                                                            val total = trackList.size().coerceAtMost(40)
-                                                            for (i in 0 until total) {
-                                                                val trackObj = trackList.get(i).asJsonObject
-                                                                val tTitle = trackObj.get("title")?.asString ?: ""
-                                                                val tSubtitle = trackObj.get("subtitle")?.asString ?: ""
-
-                                                                withContext(Dispatchers.Main) {
-                                                                    importProgress = 0.1f + ((i.toFloat() / total.toFloat()) * 0.85f)
-                                                                    importStatus = "Resolving track ${i + 1}/$total: $tTitle"
-                                                                }
-
-                                                                val matched = saavnRepository.searchSongs("$tTitle $tSubtitle")
-                                                                if (matched.isNotEmpty()) {
-                                                                    resolvedSongs.add(matched[0])
+                                                            val trackArray = entity.getAsJsonArray("trackList")
+                                                            if (trackArray != null) {
+                                                                for (i in 0 until trackArray.size()) {
+                                                                    val tObj = trackArray.get(i).asJsonObject
+                                                                    val tName = tObj.get("title")?.asString ?: tObj.get("name")?.asString ?: ""
+                                                                    val tArtist = tObj.get("subtitle")?.asString ?: ""
+                                                                    if (tName.isNotBlank()) {
+                                                                        trackQueryList.add(Pair(tName, tArtist))
+                                                                    }
                                                                 }
                                                             }
+                                                        }
+                                                    } catch (_: Exception) {}
+                                                }
+
+                                                if (trackQueryList.isEmpty()) {
+                                                    val pattern = Regex(""""title"\s*:\s*"([^"]+)"\s*,\s*"subtitle"\s*:\s*"([^"]+)"""")
+                                                    pattern.findAll(respHtml).forEach { match ->
+                                                        val tName = match.groupValues[1].trim()
+                                                        val tArtist = match.groupValues[2].trim()
+                                                        if (tName.isNotBlank() && trackQueryList.none { it.first == tName }) {
+                                                            trackQueryList.add(Pair(tName, tArtist))
                                                         }
                                                     }
                                                 }
@@ -1159,24 +1259,39 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    if (resolvedSongs.isEmpty()) {
-                                        playlistTitle = if (cleanInput.length > 25) "Imported Playlist" else cleanInput.replaceFirstChar { it.uppercase() }
+                                    if (trackQueryList.isNotEmpty()) {
+                                        val total = trackQueryList.size.coerceAtMost(40)
+                                        for (i in 0 until total) {
+                                            val (trackTitle, trackArtist) = trackQueryList[i]
+                                            withContext(Dispatchers.Main) {
+                                                importProgress = 0.1f + ((i.toFloat() / total.toFloat()) * 0.85f)
+                                                importStatus = "Resolving track ${i + 1}/$total: $trackTitle"
+                                            }
+                                            val matched = saavnRepository.searchSongs("$trackTitle $trackArtist")
+                                            if (matched.isNotEmpty()) {
+                                                resolvedSongs.add(matched[0])
+                                            }
+                                        }
+                                    } else {
+                                        playlistTitle = if (targetUrl.length > 25) "Imported Playlist" else targetUrl.replaceFirstChar { it.uppercase() }
                                         resolvedSongs.addAll(saavnRepository.searchSongs(playlistTitle))
                                     }
 
                                     val finalCover = playlistCover.ifBlank { resolvedSongs.firstOrNull()?.thumbnailUrl ?: PRESET_COVERS[0] }
 
-                                    userPlaylists.add(
-                                        0,
-                                        UserPlaylist(
-                                            name = playlistTitle,
-                                            coverUrl = finalCover,
-                                            songs = resolvedSongs
+                                    withContext(Dispatchers.Main) {
+                                        userPlaylists.add(
+                                            0,
+                                            UserPlaylist(
+                                                name = playlistTitle,
+                                                coverUrl = finalCover,
+                                                songs = resolvedSongs
+                                            )
                                         )
-                                    )
-                                    persistUserPlaylists()
-                                    isImporting = false
-                                    showImportSheet = false
+                                        persistUserPlaylists()
+                                        isImporting = false
+                                        showImportSheet = false
+                                    }
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().height(52.dp),
@@ -1300,7 +1415,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // ==========================================
-    // SCENE 01: HOME (REFINED MODERN GRADIENT & HERO LOGO)
+    // SCENE 01: HOME
     // ==========================================
     @Composable
     private fun HomeScene(
@@ -1334,7 +1449,6 @@ class MainActivity : ComponentActivity() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            // REFINED MULTI-LAYERED AMBIENT GRADIENT
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -1379,7 +1493,7 @@ class MainActivity : ComponentActivity() {
                                 painter = painterResource(id = R.drawable.ic_melo_logo),
                                 contentDescription = "Melo Logo",
                                 tint = Color.Unspecified,
-                                modifier = Modifier.size(75.dp)
+                                modifier = Modifier.size(73.dp)
                             )
                             IconButton(onClick = onAccountClick, modifier = Modifier.size(44.dp).clip(CircleShape).background(GlassSurface)) {
                                 Icon(Icons.Rounded.AccountCircle, contentDescription = "Account", tint = Color(0xFFFFD54F), modifier = Modifier.size(28.dp))
@@ -1675,7 +1789,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // COMPACT INFINITE AUTO-SLIDING CAROUSEL (RESILIENT AUTO-SLIDE)
+    // COMPACT INFINITE AUTO-SLIDING CAROUSEL
     @Composable
     private fun TrendingHits3DCarousel(
         songs: List<Song>,
@@ -1768,7 +1882,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // ==========================================
-    // SCENE 02: EXPLORE (VIBRANT & ATMOSPHERIC)
+    // SCENE 02: EXPLORE
     // ==========================================
     @Composable
     private fun ExploreScene(onPlaySongWithRadio: (Song) -> Unit, repo: JioSaavnRepository) {
@@ -1787,7 +1901,6 @@ class MainActivity : ComponentActivity() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            // LIVED-IN AMBIENT BACKDROP GLOW
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -1845,7 +1958,7 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.weight(1.05f).fillMaxHeight(),
                                     tag = "VIBE 01",
                                     title = "Pop Odyssey",
-                                    subtitle = "Future Nostalgia & Disco",
+                                    subtitle = "",
                                     gradient = listOf(Color(0xFFFF2A6D), Color(0xFF8E24AA)),
                                     vectorType = 1,
                                     onClick = { query = "Pop Hits"; lifecycleScope.launch { results = repo.searchSongs("Pop Hits") } }
@@ -1855,7 +1968,7 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.weight(1f).fillMaxWidth(),
                                         tag = "WAVE 02",
                                         title = "Desi Hip-Hop",
-                                        subtitle = "Underground Beats",
+                                        subtitle = "",
                                         gradient = listOf(Color(0xFF00E5FF), Color(0xFF0052D4)),
                                         vectorType = 2,
                                         onClick = { query = "Desi Hip Hop"; lifecycleScope.launch { results = repo.searchSongs("Desi Hip Hop") } }
@@ -1864,7 +1977,7 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.weight(1f).fillMaxWidth(),
                                         tag = "AFTER HOURS",
                                         title = "Acoustic Gold",
-                                        subtitle = "Unplugged Warmth",
+                                        subtitle = "",
                                         gradient = listOf(Color(0xFFFFB300), Color(0xFFFF3D00)),
                                         vectorType = 3,
                                         onClick = { query = "Acoustic Hits"; lifecycleScope.launch { results = repo.searchSongs("Acoustic Hits") } }
@@ -1936,7 +2049,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // IMPROVED ATMOSPHERE CARD (ICON BOX REMOVED, BEAUTIFIED MESH & TAGS)
     @Composable
     private fun ExploreAtmosphereCard(
         modifier: Modifier,
@@ -1953,7 +2065,6 @@ class MainActivity : ComponentActivity() {
                 .background(Brush.linearGradient(gradient))
                 .clickable { onClick() }
         ) {
-            // Organic Geometric / Sonic Wave Accents
             Canvas(Modifier.fillMaxSize()) {
                 when (vectorType) {
                     1 -> {
@@ -1972,11 +2083,6 @@ class MainActivity : ComponentActivity() {
                             color = Color.White.copy(alpha = 0.10f),
                             radius = size.width * 0.55f,
                             center = Offset(size.width * 0.9f, size.height * 0.25f)
-                        )
-                        drawCircle(
-                            color = Color.White.copy(alpha = 0.08f),
-                            radius = size.width * 0.35f,
-                            center = Offset(size.width * 0.15f, size.height * 0.85f)
                         )
                     }
                     2 -> {
@@ -2008,7 +2114,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Soft Vignette Scrim
             Box(
                 Modifier
                     .fillMaxSize()
@@ -2019,14 +2124,12 @@ class MainActivity : ComponentActivity() {
                     )
             )
 
-            // Content Typography
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(16.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Subtle Tag Header
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -2042,7 +2145,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // Title & Subtitle
                 Column {
                     Text(
                         text = title,
@@ -2065,7 +2167,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // ==========================================
-    // SCENE 03: MY WORLD (COLLECTIONS)
+    // SCENE 03: MY WORLD
     // ==========================================
     @Composable
     private fun MyWorldScene(
@@ -2241,34 +2343,446 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ==========================================
+    // PLAYLIST DETAIL SCENE (WITH 3-DOT MENU & MATCHING COLOR SCHEME)
+    // ==========================================
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun PlaylistDetailScene(route: NavRoute.PlaylistDetail, onPlay: (Song, List<Song>) -> Unit, onDelete: () -> Unit, onBack: () -> Unit) {
-        Column(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().height(320.dp)) {
-                AsyncImage(model = route.cover, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, VoidBlack))))
-                Row(Modifier.fillMaxWidth().padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp, start = 16.dp, end = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure, modifier = Modifier.size(30.dp)) }
-                    IconButton(onClick = onDelete) { Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete Playlist", tint = MeloAccent, modifier = Modifier.size(30.dp)) }
-                }
-                Column(Modifier.align(Alignment.BottomStart).padding(24.dp)) {
-                    Text(route.name, fontSize = 36.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(6.dp))
-                    Text("${route.songs.size} Frequencies", fontSize = 14.sp, color = TextMuted)
-                }
+    private fun PlaylistDetailScene(
+        playlist: UserPlaylist,
+        onPlay: (Song, List<Song>) -> Unit,
+        onDelete: () -> Unit,
+        onSave: () -> Unit,
+        onBack: () -> Unit,
+        repo: JioSaavnRepository
+    ) {
+        val context = LocalContext.current
+        var dominantColor by remember { mutableStateOf(DeepSurface) }
+        var showMenu by remember { mutableStateOf(false) }
+
+        var showEditSheet by remember { mutableStateOf(false) }
+        var editName by remember { mutableStateOf(playlist.name) }
+        var editCover by remember { mutableStateOf(playlist.coverUrl) }
+
+        var showAddSongsSheet by remember { mutableStateOf(false) }
+        var searchSongQuery by remember { mutableStateOf("") }
+        var searchSongResults by remember { mutableStateOf<List<Song>>(emptyList()) }
+
+        var showRemoveSongsSheet by remember { mutableStateOf(false) }
+        val selectedSongsToRemove = remember { mutableStateListOf<Song>() }
+        var showRemoveConfirmation by remember { mutableStateOf(false) }
+
+        var showDeleteConfirmation by remember { mutableStateOf(false) }
+
+        val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null) editCover = uri.toString()
+        }
+
+        LaunchedEffect(playlist.coverUrl) {
+            if (playlist.coverUrl.isNotBlank()) {
+                val (color, _) = extractDominantColorAndBitmap(context, playlist.coverUrl)
+                dominantColor = color
             }
-            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(top = 16.dp, bottom = 40.dp)) {
-                if (route.songs.isEmpty()) item { Text("No frequencies added yet.", color = TextMuted) }
-                items(route.songs) { song ->
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(DeepSurface).clickable { onPlay(song, route.songs) }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)))
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Medium, maxLines = 1)
-                            Text(song.artist, fontSize = 12.sp, color = TextMuted, maxLines = 1)
+        }
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(dominantColor)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(360.dp)
+                ) {
+                    AsyncImage(
+                        model = playlist.coverUrl,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color.Transparent,
+                                        0.35f to Color.Transparent,
+                                        0.65f to dominantColor.copy(alpha = 0.55f),
+                                        0.85f to dominantColor.copy(alpha = 0.88f),
+                                        1.0f to dominantColor
+                                    )
+                                )
+                            )
+                    )
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
+                                start = 16.dp,
+                                end = 16.dp
+                            ),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure, modifier = Modifier.size(30.dp))
+                        }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "Options", tint = TextPure, modifier = Modifier.size(30.dp))
+                        }
+                    }
+
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(24.dp)
+                    ) {
+                        Text(playlist.name, fontSize = 36.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold, maxLines = 2)
+                        Spacer(Modifier.height(6.dp))
+                        Text("${playlist.songs.size} Frequencies", fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f))
+                    }
+                }
+
+                LazyColumn(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(top = 16.dp, bottom = 120.dp)
+                ) {
+                    if (playlist.songs.isEmpty()) {
+                        item { Text("No frequencies added yet.", color = TextMuted) }
+                    }
+                    items(playlist.songs) { song ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.28f))
+                                .clickable { onPlay(song, playlist.songs) }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            AsyncImage(
+                                model = song.thumbnailUrl,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp))
+                            )
+                            Spacer(Modifier.width(16.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Medium, maxLines = 1)
+                                Text(song.artist, fontSize = 12.sp, color = Color.White.copy(alpha = 0.75f), maxLines = 1)
+                            }
                         }
                     }
                 }
+            }
+
+            if (showMenu) {
+                ModalBottomSheet(
+                    onDismissRequest = { showMenu = false },
+                    containerColor = DeepSurface
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
+                        Text(playlist.name, fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif, maxLines = 1)
+                        Spacer(Modifier.height(18.dp))
+
+                        ListItem(
+                            headlineContent = { Text("Edit Playlist", color = TextPure) },
+                            supportingContent = { Text("Change name and cover image", color = TextMuted) },
+                            leadingContent = { Icon(Icons.Rounded.Edit, tint = Color(0xFF00E5FF), contentDescription = null) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable {
+                                showMenu = false
+                                editName = playlist.name
+                                editCover = playlist.coverUrl
+                                showEditSheet = true
+                            }
+                        )
+
+                        ListItem(
+                            headlineContent = { Text("Add Songs", color = TextPure) },
+                            supportingContent = { Text("Search and append tracks", color = TextMuted) },
+                            leadingContent = { Icon(Icons.Rounded.Add, tint = Color(0xFFFFD54F), contentDescription = null) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable {
+                                showMenu = false
+                                searchSongQuery = ""
+                                searchSongResults = emptyList()
+                                showAddSongsSheet = true
+                            }
+                        )
+
+                        if (playlist.songs.isNotEmpty()) {
+                            ListItem(
+                                headlineContent = { Text("Remove Songs", color = TextPure) },
+                                supportingContent = { Text("Select tracks to remove from collection", color = TextMuted) },
+                                leadingContent = { Icon(Icons.Rounded.PlaylistRemove, tint = Color(0xFFFFB74D), contentDescription = null) },
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable {
+                                    showMenu = false
+                                    selectedSongsToRemove.clear()
+                                    showRemoveSongsSheet = true
+                                }
+                            )
+                        }
+
+                        ListItem(
+                            headlineContent = { Text("Delete Whole Playlist", color = MeloAccent, fontWeight = FontWeight.Bold) },
+                            supportingContent = { Text("Permanently remove this collection", color = TextMuted) },
+                            leadingContent = { Icon(Icons.Rounded.DeleteOutline, tint = MeloAccent, contentDescription = null) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable {
+                                showMenu = false
+                                showDeleteConfirmation = true
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (showEditSheet) {
+                ModalBottomSheet(onDismissRequest = { showEditSheet = false }, containerColor = DeepSurface) {
+                    Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
+                        Text("Edit Playlist", fontSize = 22.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
+                        Spacer(Modifier.height(18.dp))
+
+                        Box(
+                            Modifier
+                                .size(130.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(GlassSurface)
+                                .align(Alignment.CenterHorizontally)
+                                .clickable { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AsyncImage(model = editCover, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        }
+                        Spacer(Modifier.height(12.dp))
+
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            item {
+                                Box(
+                                    Modifier
+                                        .size(50.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(GlassSurface)
+                                        .clickable { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Rounded.AddPhotoAlternate, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(22.dp))
+                                }
+                            }
+                            items(PRESET_COVERS) { preset ->
+                                Box(
+                                    Modifier
+                                        .size(50.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .border(2.dp, if (editCover == preset) Color(0xFFFFD54F) else Color.Transparent, RoundedCornerShape(12.dp))
+                                        .clickable { editCover = preset }
+                                ) {
+                                    AsyncImage(model = preset, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(18.dp))
+                        BasicTextField(
+                            value = editName,
+                            onValueChange = { editName = it },
+                            textStyle = TextStyle(color = TextPure, fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                            singleLine = true,
+                            cursorBrush = SolidColor(Color(0xFFFFD54F)),
+                            modifier = Modifier.fillMaxWidth().background(VoidBlack, RoundedCornerShape(14.dp)).border(1.dp, GlassSurface, RoundedCornerShape(14.dp)).padding(14.dp)
+                        )
+                        Spacer(Modifier.height(20.dp))
+
+                        Button(
+                            onClick = {
+                                if (editName.isNotBlank()) {
+                                    playlist.name = editName.trim()
+                                    playlist.coverUrl = editCover
+                                    onSave()
+                                    showEditSheet = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F)),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text("SAVE CHANGES", color = VoidBlack, fontWeight = FontWeight.Black)
+                        }
+                    }
+                }
+            }
+
+            if (showAddSongsSheet) {
+                ModalBottomSheet(onDismissRequest = { showAddSongsSheet = false }, containerColor = DeepSurface) {
+                    Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(20.dp)) {
+                        Text("Add Songs to Playlist", fontSize = 22.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
+                        Spacer(Modifier.height(16.dp))
+
+                        BasicTextField(
+                            value = searchSongQuery,
+                            onValueChange = { q ->
+                                searchSongQuery = q
+                                if (q.length > 2) {
+                                    lifecycleScope.launch {
+                                        searchSongResults = repo.searchSongs(q)
+                                    }
+                                }
+                            },
+                            textStyle = TextStyle(color = TextPure, fontSize = 15.sp),
+                            singleLine = true,
+                            cursorBrush = SolidColor(Color(0xFF00E5FF)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(VoidBlack, RoundedCornerShape(14.dp))
+                                .border(1.dp, GlassSurface, RoundedCornerShape(14.dp))
+                                .padding(14.dp),
+                            decorationBox = { inner -> if (searchSongQuery.isEmpty()) Text("Search tracks or artists...", color = TextMuted, fontSize = 14.sp) else inner() }
+                        )
+                        Spacer(Modifier.height(16.dp))
+
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+                            items(searchSongResults) { song ->
+                                val alreadyAdded = playlist.songs.any { it.id == song.id }
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(VoidBlack)
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    AsyncImage(
+                                        model = song.thumbnailUrl,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp))
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(song.title, color = TextPure, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(song.artist, color = TextMuted, fontSize = 12.sp, maxLines = 1)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            if (!alreadyAdded) {
+                                                playlist.songs.add(song)
+                                                if (playlist.coverUrl.isBlank()) playlist.coverUrl = song.thumbnailUrl
+                                                onSave()
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            if (alreadyAdded) Icons.Rounded.Check else Icons.Rounded.Add,
+                                            contentDescription = null,
+                                            tint = if (alreadyAdded) Color(0xFF00E676) else Color(0xFFFFD54F)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showRemoveSongsSheet) {
+                ModalBottomSheet(onDismissRequest = { showRemoveSongsSheet = false }, containerColor = DeepSurface) {
+                    Column(Modifier.fillMaxWidth().fillMaxHeight(0.85f).padding(20.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Select Songs to Remove", fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Serif)
+                            TextButton(
+                                onClick = { if (selectedSongsToRemove.isNotEmpty()) showRemoveConfirmation = true },
+                                enabled = selectedSongsToRemove.isNotEmpty()
+                            ) {
+                                Text("Remove (${selectedSongsToRemove.size})", color = if (selectedSongsToRemove.isNotEmpty()) MeloAccent else TextSubtle, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+                            items(playlist.songs) { song ->
+                                val isSelected = selectedSongsToRemove.any { it.id == song.id }
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (isSelected) Color(0x33FF5252) else VoidBlack)
+                                        .border(1.dp, if (isSelected) MeloAccent else Color.Transparent, RoundedCornerShape(14.dp))
+                                        .clickable {
+                                            if (isSelected) selectedSongsToRemove.removeAll { it.id == song.id }
+                                            else selectedSongsToRemove.add(song)
+                                        }
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { checked ->
+                                            if (checked) selectedSongsToRemove.add(song)
+                                            else selectedSongsToRemove.removeAll { it.id == song.id }
+                                        },
+                                        colors = CheckboxDefaults.colors(checkedColor = MeloAccent, uncheckedColor = TextMuted)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    AsyncImage(model = song.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
+                                    Spacer(Modifier.width(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(song.title, color = TextPure, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                        Text(song.artist, color = TextMuted, fontSize = 12.sp, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showRemoveConfirmation) {
+                AlertDialog(
+                    onDismissRequest = { showRemoveConfirmation = false },
+                    title = { Text("Remove Songs?", color = TextPure, fontWeight = FontWeight.Bold) },
+                    text = { Text("Are you sure you want to remove ${selectedSongsToRemove.size} song(s) from '${playlist.name}'?", color = TextMuted) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val removeIds = selectedSongsToRemove.map { it.id }.toSet()
+                            playlist.songs.removeAll { it.id in removeIds }
+                            onSave()
+                            showRemoveConfirmation = false
+                            showRemoveSongsSheet = false
+                        }) { Text("Remove", color = MeloAccent, fontWeight = FontWeight.Bold) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRemoveConfirmation = false }) { Text("Cancel", color = TextPure) }
+                    },
+                    containerColor = DeepSurface
+                )
+            }
+
+            if (showDeleteConfirmation) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteConfirmation = false },
+                    title = { Text("Delete Playlist?", color = TextPure, fontWeight = FontWeight.Bold) },
+                    text = { Text("Are you sure you want to delete '${playlist.name}'? All collected frequencies will be erased.", color = TextMuted) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showDeleteConfirmation = false
+                            onDelete()
+                        }) { Text("Delete", color = MeloAccent, fontWeight = FontWeight.Bold) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteConfirmation = false }) { Text("Cancel", color = TextPure) }
+                    },
+                    containerColor = DeepSurface
+                )
             }
         }
     }
@@ -3203,7 +3717,6 @@ class MainActivity : ComponentActivity() {
         return "%d:%02d".format(mins, secs)
     }
 
-    // REFINED, FROSTED GLASS CAPSULE DESIGN (BALANCED SIZE & SUBTLE SOFT GLOW)
     @Composable
     private fun MeloBottomNav(
         selectedTab: MeloTab,
