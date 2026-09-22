@@ -128,8 +128,6 @@ private val TextPure = Color(0xFFFFFFFF)
 private val TextMuted = Color(0x9EFFFFFF)
 private val TextSubtle = Color(0x60FFFFFF)
 private val MeloAccent = Color(0xFFFF5252)
-private val BlobColor1 = Color(0xFF9B51E0)
-private val BlobColor3 = Color(0xFF00E5FF)
 
 val PRESET_COVERS = listOf(
     "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600",
@@ -330,9 +328,9 @@ class MainActivity : ComponentActivity() {
             downloadedSongsList.clear()
 
             downloaded.forEach { s ->
-                val resolvedUri = resolvePlayableUrl(s)
-                if (resolvedUri != null) {
-                    s.localPath = resolvedUri
+                val resolvedPath = resolvePlayableUrl(s)
+                if (resolvedPath != null) {
+                    s.localPath = resolvedPath
                     downloadedSongsList.add(s)
                     downloadProgressMap[s.id] = -1f
                 }
@@ -376,19 +374,28 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resolvePlayableUrl(song: Song): String? {
-        val downloadDir = File(filesDir, "downloads")
+        val dirs = listOf(
+            File(filesDir, "downloads"),
+            filesDir,
+            getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+            getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        ).filterNotNull()
+
         val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val candidateIds = listOf(song.id, safeId).distinct()
         val extensions = listOf("mp4", "mp3", "m4a", "aac")
 
-        for (id in candidateIds) {
-            for (ext in extensions) {
-                val f = File(downloadDir, "$id.$ext")
-                if (f.exists() && f.length() > 5000) {
-                    f.setReadable(true, false)
-                    val uri = Uri.fromFile(f).toString()
-                    song.localPath = uri
-                    return uri
+        for (dir in dirs) {
+            if (!dir.exists()) continue
+            for (id in candidateIds) {
+                for (ext in extensions) {
+                    val f = File(dir, "$id.$ext")
+                    if (f.exists() && f.length() > 5000) {
+                        f.setReadable(true, false)
+                        val absPath = f.absolutePath
+                        song.localPath = absPath
+                        return absPath
+                    }
                 }
             }
         }
@@ -400,7 +407,9 @@ class MainActivity : ComponentActivity() {
                 val f = File(rawPath)
                 if (f.exists() && f.length() > 5000) {
                     f.setReadable(true, false)
-                    return Uri.fromFile(f).toString()
+                    val abs = f.absolutePath
+                    song.localPath = abs
+                    return abs
                 }
             }
         }
@@ -476,8 +485,8 @@ class MainActivity : ComponentActivity() {
                 tempFile.delete()
                 targetFile.setReadable(true, false)
 
-                val localUri = Uri.fromFile(targetFile).toString()
-                song.localPath = localUri
+                val localAbsPath = targetFile.absolutePath
+                song.localPath = localAbsPath
 
                 withContext(Dispatchers.Main) {
                     downloadProgressMap[song.id] = -1f
@@ -492,12 +501,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun deleteDownloadedSong(song: Song) {
-        val downloadDir = File(filesDir, "downloads")
+        val dirs = listOf(
+            File(filesDir, "downloads"),
+            filesDir,
+            getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+            getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        ).filterNotNull()
+
         val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        listOf(song.id, safeId).distinct().forEach { id ->
-            listOf("mp4", "mp3", "m4a", "aac", "tmp").forEach { ext ->
-                val f = File(downloadDir, "$id.$ext")
-                if (f.exists()) f.delete()
+        val candidateIds = listOf(song.id, safeId).distinct()
+        dirs.forEach { dir ->
+            candidateIds.forEach { id ->
+                listOf("mp4", "mp3", "m4a", "aac", "tmp").forEach { ext ->
+                    val f = File(dir, "$id.$ext")
+                    if (f.exists()) f.delete()
+                }
             }
         }
         downloadedSongsList.removeAll { it.id == song.id }
@@ -785,6 +803,7 @@ class MainActivity : ComponentActivity() {
         var showImportSheet by remember { mutableStateOf(false) }
         var showUpdateSheet by remember { mutableStateOf(false) }
         var extractedArtworkColor by remember { mutableStateOf(Color(0xFFFF5252)) }
+        var extractedSecondaryColor by remember { mutableStateOf(Color(0xFF00E5FF)) }
 
         var becauseArtistName by remember { mutableStateOf(prefs.getString("last_listened_artist", null)) }
         var becauseRecommendations by remember { mutableStateOf<List<Song>>(emptyList()) }
@@ -802,8 +821,9 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(playerState.song?.id, playerState.song?.thumbnailUrl) {
             val url = playerState.song?.thumbnailUrl
             if (!url.isNullOrBlank()) {
-                val (color, bmp) = extractDominantColorAndBitmap(context, url)
-                extractedArtworkColor = color
+                val (primary, secondary, bmp) = extractTwoDominantColorsAndBitmap(context, url)
+                extractedArtworkColor = primary
+                extractedSecondaryColor = secondary
                 currentArtworkBitmap = bmp
                 updateNativeNotification(playerState.song, playerState.isPlaying, currentPlaybackPositionMs.toLong(), bmp)
             }
@@ -975,6 +995,7 @@ class MainActivity : ComponentActivity() {
                     ImmersivePlayerScene(
                         song = song,
                         artworkColor = extractedArtworkColor,
+                        secondaryColor = extractedSecondaryColor,
                         isPlaying = playerState.isPlaying,
                         isBuffering = playerState.isBuffering,
                         currentPositionMs = currentPlaybackPositionMs,
@@ -1023,6 +1044,7 @@ class MainActivity : ComponentActivity() {
                     CinematicLandscapeScene(
                         song = song,
                         artworkColor = extractedArtworkColor,
+                        secondaryColor = extractedSecondaryColor,
                         isPlaying = playerState.isPlaying,
                         currentPositionMs = currentPlaybackPositionMs,
                         onExit = {
@@ -1355,7 +1377,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun extractDominantColorAndBitmap(context: Context, imageUrl: String): Pair<Color, Bitmap?> {
+    private suspend fun extractTwoDominantColorsAndBitmap(context: Context, imageUrl: String): Triple<Color, Color, Bitmap?> {
         return withContext(Dispatchers.IO) {
             try {
                 val loader = context.imageLoader
@@ -1363,11 +1385,13 @@ class MainActivity : ComponentActivity() {
                 val result = (loader.execute(request) as? SuccessResult)?.drawable
                 val bitmap = (result as? BitmapDrawable)?.bitmap
                 if (bitmap != null) {
-                    var bestColor = android.graphics.Color.DKGRAY
-                    var highestScore = -1f
+                    var bestColor1 = android.graphics.Color.DKGRAY
+                    var bestColor2 = android.graphics.Color.parseColor("#00E5FF")
+                    var highestScore1 = -1f
+                    var highestScore2 = -1f
                     val hsv = FloatArray(3)
-                    val stepX = (bitmap.width / 30).coerceAtLeast(1)
-                    val stepY = (bitmap.height / 30).coerceAtLeast(1)
+                    val stepX = (bitmap.width / 24).coerceAtLeast(1)
+                    val stepY = (bitmap.height / 24).coerceAtLeast(1)
 
                     for (x in 0 until bitmap.width step stepX) {
                         for (y in 0 until bitmap.height step stepY) {
@@ -1377,25 +1401,43 @@ class MainActivity : ComponentActivity() {
                             val sat = hsv[1]
                             val value = hsv[2]
 
-                            if (sat > 0.12f && value > 0.12f) {
+                            if (sat > 0.15f && value > 0.15f) {
                                 val score = sat * 2.2f + (1.0f - kotlin.math.abs(value - 0.65f))
-                                if (score > highestScore) {
-                                    highestScore = score
-                                    bestColor = pixel
+                                if (score > highestScore1) {
+                                    highestScore2 = highestScore1
+                                    bestColor2 = bestColor1
+                                    highestScore1 = score
+                                    bestColor1 = pixel
+                                } else if (score > highestScore2 && kotlin.math.abs(pixel - bestColor1) > 50000) {
+                                    highestScore2 = score
+                                    bestColor2 = pixel
                                 }
                             }
                         }
                     }
 
-                    if (highestScore == -1f) bestColor = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
-                    android.graphics.Color.colorToHSV(bestColor, hsv)
+                    if (highestScore1 == -1f) bestColor1 = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+                    if (highestScore2 == -1f) bestColor2 = android.graphics.Color.parseColor("#00E5FF")
+
+                    android.graphics.Color.colorToHSV(bestColor1, hsv)
                     if (hsv[2] < 0.60f) hsv[2] = 0.70f
                     if (hsv[1] < 0.45f) hsv[1] = 0.60f
-                    val boosted = android.graphics.Color.HSVToColor(hsv)
-                    Pair(Color(boosted), bitmap)
-                } else Pair(Color(0xFFFF5252), null)
-            } catch (_: Exception) { Pair(Color(0xFFFF5252), null) }
+                    val boosted1 = android.graphics.Color.HSVToColor(hsv)
+
+                    android.graphics.Color.colorToHSV(bestColor2, hsv)
+                    if (hsv[2] < 0.60f) hsv[2] = 0.70f
+                    if (hsv[1] < 0.45f) hsv[1] = 0.60f
+                    val boosted2 = android.graphics.Color.HSVToColor(hsv)
+
+                    Triple(Color(boosted1), Color(boosted2), bitmap)
+                } else Triple(Color(0xFFFF5252), Color(0xFF00E5FF), null)
+            } catch (_: Exception) { Triple(Color(0xFFFF5252), Color(0xFF00E5FF), null) }
         }
+    }
+
+    private suspend fun extractDominantColorAndBitmap(context: Context, imageUrl: String): Pair<Color, Bitmap?> {
+        val (c1, _, bmp) = extractTwoDominantColorsAndBitmap(context, imageUrl)
+        return Pair(c1, bmp)
     }
 
     @Composable
@@ -1789,7 +1831,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // COMPACT INFINITE AUTO-SLIDING CAROUSEL
     @Composable
     private fun TrendingHits3DCarousel(
         songs: List<Song>,
@@ -1881,9 +1922,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ==========================================
-    // SCENE 02: EXPLORE
-    // ==========================================
     @Composable
     private fun ExploreScene(onPlaySongWithRadio: (Song) -> Unit, repo: JioSaavnRepository) {
         var query by remember { mutableStateOf("") }
@@ -2154,13 +2192,15 @@ class MainActivity : ComponentActivity() {
                         lineHeight = 20.sp
                     )
                     Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = subtitle,
-                        fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.75f),
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1
-                    )
+                    if (subtitle.isNotBlank()) {
+                        Text(
+                            text = subtitle,
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
@@ -2344,7 +2384,7 @@ class MainActivity : ComponentActivity() {
     }
 
     // ==========================================
-    // PLAYLIST DETAIL SCENE (WITH 3-DOT MENU & MATCHING COLOR SCHEME)
+    // PLAYLIST DETAIL SCENE
     // ==========================================
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -2997,6 +3037,7 @@ class MainActivity : ComponentActivity() {
     private fun ImmersivePlayerScene(
         song: Song,
         artworkColor: Color,
+        secondaryColor: Color,
         isPlaying: Boolean,
         isBuffering: Boolean,
         currentPositionMs: Float,
@@ -3034,17 +3075,39 @@ class MainActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(VoidBlack)
+                .pointerInput(Unit) { detectTapGestures { } }
         ) {
             val infinite = rememberInfiniteTransition(label = "blob_infinite")
-            val offsetX1 by infinite.animateFloat(initialValue = -80f, targetValue = 80f, animationSpec = infiniteRepeatable(animation = tween(7000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "offsetX1")
-            val offsetY1 by infinite.animateFloat(initialValue = -90f, targetValue = 90f, animationSpec = infiniteRepeatable(animation = tween(6000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "offsetY1")
-            val offsetX2 by infinite.animateFloat(initialValue = 80f, targetValue = -80f, animationSpec = infiniteRepeatable(animation = tween(8500, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "offsetX2")
+            val offsetX1 by infinite.animateFloat(
+                initialValue = -70f,
+                targetValue = 70f,
+                animationSpec = infiniteRepeatable(animation = tween(7500, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+                label = "offsetX1"
+            )
+            val offsetY1 by infinite.animateFloat(
+                initialValue = -75f,
+                targetValue = 75f,
+                animationSpec = infiniteRepeatable(animation = tween(6500, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+                label = "offsetY1"
+            )
 
-            Box(Modifier.fillMaxSize().blur(80.dp).alpha(0.92f)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .blur(60.dp)
+                    .alpha(0.85f)
+            ) {
                 Canvas(Modifier.fillMaxSize()) {
-                    drawCircle(color = artworkColor, radius = size.width * 0.44f, center = Offset(size.width / 2 + offsetX1, size.height / 3 + offsetY1))
-                    drawCircle(color = BlobColor1, radius = size.width * 0.40f, center = Offset(size.width / 2 + offsetX2, size.height / 1.6f - offsetY1))
-                    drawCircle(color = BlobColor3, radius = size.width * 0.32f, center = Offset(size.width / 3 - offsetX1, size.height / 2))
+                    drawCircle(
+                        color = artworkColor,
+                        radius = size.width * 0.52f,
+                        center = Offset(size.width / 2 + offsetX1, size.height * 0.35f + offsetY1)
+                    )
+                    drawCircle(
+                        color = secondaryColor,
+                        radius = size.width * 0.48f,
+                        center = Offset(size.width / 2 - offsetX1, size.height * 0.65f - offsetY1)
+                    )
                 }
             }
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, VoidBlack.copy(alpha = 0.35f), VoidBlack.copy(alpha = 0.85f)))))
@@ -3315,10 +3378,10 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().background(VoidBlack)) {
                     val infiniteMesh = rememberInfiniteTransition(label = "queue_mesh")
                     val qOffsetX by infiniteMesh.animateFloat(initialValue = -90f, targetValue = 90f, animationSpec = infiniteRepeatable(animation = tween(7000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "qOffset")
-                    Box(Modifier.fillMaxSize().blur(80.dp).alpha(0.85f)) {
+                    Box(Modifier.fillMaxSize().blur(60.dp).alpha(0.85f)) {
                         Canvas(Modifier.fillMaxSize()) {
-                            drawCircle(color = artworkColor, radius = size.width * 0.45f, center = Offset(size.width / 2 + qOffsetX, size.height / 3))
-                            drawCircle(color = BlobColor1, radius = size.width * 0.40f, center = Offset(size.width / 2 - qOffsetX, size.height / 1.6f))
+                            drawCircle(color = artworkColor, radius = size.width * 0.50f, center = Offset(size.width / 2 + qOffsetX, size.height * 0.35f))
+                            drawCircle(color = secondaryColor, radius = size.width * 0.45f, center = Offset(size.width / 2 - qOffsetX, size.height * 0.65f))
                         }
                     }
                     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, VoidBlack.copy(alpha = 0.4f), VoidBlack.copy(alpha = 0.85f)))))
@@ -3478,7 +3541,17 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun CinematicLandscapeScene(song: Song, artworkColor: Color, isPlaying: Boolean, currentPositionMs: Float, onExit: () -> Unit, onTogglePlay: () -> Unit, onSeek: (Float) -> Unit, repository: JioSaavnRepository) {
+    private fun CinematicLandscapeScene(
+        song: Song,
+        artworkColor: Color,
+        secondaryColor: Color,
+        isPlaying: Boolean,
+        currentPositionMs: Float,
+        onExit: () -> Unit,
+        onTogglePlay: () -> Unit,
+        onSeek: (Float) -> Unit,
+        repository: JioSaavnRepository
+    ) {
         var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
         LaunchedEffect(song.id) { lyrics = repository.getSyncedLyrics(song.title, song.artist) }
 
@@ -3486,13 +3559,14 @@ class MainActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(VoidBlack)
+                .pointerInput(Unit) { detectTapGestures { } }
         ) {
             val infinite = rememberInfiniteTransition(label = "cinematic_blob")
             val offsetX1 by infinite.animateFloat(initialValue = -150f, targetValue = 150f, animationSpec = infiniteRepeatable(animation = tween(8000, easing = LinearEasing), repeatMode = RepeatMode.Reverse), label = "cinematic_offsetX")
-            Box(Modifier.fillMaxSize().blur(90.dp).alpha(0.85f)) {
+            Box(Modifier.fillMaxSize().blur(70.dp).alpha(0.85f)) {
                 Canvas(Modifier.fillMaxSize()) {
-                    drawCircle(color = artworkColor, radius = size.height * 0.70f, center = Offset(size.width / 3 + offsetX1, size.height / 2))
-                    drawCircle(color = BlobColor1, radius = size.height * 0.70f, center = Offset(size.width / 1.5f - offsetX1, size.height / 2))
+                    drawCircle(color = artworkColor, radius = size.height * 0.75f, center = Offset(size.width / 3 + offsetX1, size.height / 2))
+                    drawCircle(color = secondaryColor, radius = size.height * 0.75f, center = Offset(size.width / 1.5f - offsetX1, size.height / 2))
                 }
             }
             Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(VoidBlack.copy(alpha = 0.3f), VoidBlack.copy(alpha = 0.8f)))))
