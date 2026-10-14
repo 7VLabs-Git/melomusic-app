@@ -74,6 +74,8 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
@@ -125,6 +127,7 @@ import com.melomusic.app.playback.PlayerConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -150,13 +153,13 @@ private val TextSubtle = Color(0x60FFFFFF)
 private val MeloAccent = Color(0xFFFF5252)
 
 val PRESET_COVERS = listOf(
-    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600",
-    "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=600",
-    "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600",
-    "https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=600",
-    "https://images.unsplash.com/photo-1539185441755-769473a23570?w=600",
-    "https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=600",
-    "https://images.unsplash.com/photo-1445985543470-41fdd6ce755d?w=600"
+    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=85", // Liquid Obsidian & Gold 3D Silk
+    "https://images.unsplash.com/photo-1634017839464-5c339ebe3cb4?w=800&q=85", // Iridescent Cyber Chromatic Glass
+    "https://cdn.pixabay.com/photo/2023/12/07/11/11/girl-8435339_640.png", // moody Classical Fine-Art Oil Painting
+    "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=800&q=85", // Crimson Eclipse & Dark Mist
+    "https://images.unsplash.com/photo-1604871000636-074fa5117945?w=800&q=85", // Neon Tokyo Midnight Rain & Bokeh
+    "https://images.unsplash.com/photo-1614850523459-c2f4c699c52e?w=800&q=85", // Deep Amethyst & Velvet Fluid Wave
+    "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=800&q=85"  // Vintage Vinyl & Warm Analog Neon
 )
 
 enum class MeloTab(val label: String, val icon: ImageVector, val activeTint: Color) {
@@ -432,6 +435,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private var isAppInForeground by mutableStateOf(true)
+
+    override fun onStart() {
+        super.onStart()
+        isAppInForeground = true
+    }
+
+    override fun onStop() {
+        isAppInForeground = false
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -1279,6 +1294,7 @@ class MainActivity : ComponentActivity() {
                                 becauseList = becauseRecommendations,
                                 isLoggedIn = userProfileName != null,
                                 userName = userProfileName.orEmpty(),
+                                isAuroraActive = isAppInForeground && playerTier == PlayerTier.MINI,
                                 onAccountClick = { showAccountSheet = true }
                             )
                             MeloTab.EXPLORE -> ExploreScene(
@@ -1922,16 +1938,24 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     if (trackQueryList.isNotEmpty()) {
-                                        val total = trackQueryList.size.coerceAtMost(40)
-                                        for (i in 0 until total) {
-                                            val (trackTitle, trackArtist) = trackQueryList[i]
-                                            withContext(Dispatchers.Main) {
-                                                importProgress = 0.1f + ((i.toFloat() / total.toFloat()) * 0.85f)
-                                                importStatus = "Resolving track ${i + 1}/$total: $trackTitle"
+                                        val cappedTracks = trackQueryList.take(40)
+                                        val total = cappedTracks.size
+                                        var completedCount = 0
+
+                                        cappedTracks.chunked(5).forEach { batch ->
+                                            val batchMatches = coroutineScope {
+                                                batch.map { (trackTitle, trackArtist) ->
+                                                    async(Dispatchers.IO) {
+                                                        saavnRepository.searchSongs("$trackTitle $trackArtist").firstOrNull()
+                                                    }
+                                                }.awaitAll().filterNotNull()
                                             }
-                                            val matched = saavnRepository.searchSongs("$trackTitle $trackArtist")
-                                            if (matched.isNotEmpty()) {
-                                                resolvedSongs.add(matched[0])
+                                            resolvedSongs.addAll(batchMatches)
+                                            completedCount = (completedCount + batch.size).coerceAtMost(total)
+                                            val lastTitleInBatch = batch.lastOrNull()?.first.orEmpty()
+                                            withContext(Dispatchers.Main) {
+                                                importProgress = 0.1f + ((completedCount.toFloat() / total.toFloat()) * 0.85f)
+                                                importStatus = "Resolved $completedCount/$total: $lastTitleInBatch"
                                             }
                                         }
                                     } else {
@@ -2218,7 +2242,26 @@ class MainActivity : ComponentActivity() {
     )
 
     @Composable
-    private fun GeminiAuroraHeader(modifier: Modifier = Modifier) {
+    private fun GeminiAuroraHeader(
+        isActive: Boolean = true,
+        modifier: Modifier = Modifier
+    ) {
+        if (!isActive) {
+            // 0% GPU static fallback when covered by Expanded Player or screen is off
+            Box(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .height(500.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            0.0f to Color(0xFF140D26),
+                            0.65f to VoidBlack.copy(alpha = 0.90f),
+                            1.0f to VoidBlack
+                        )
+                    )
+            )
+            return
+        }
         val infinite = rememberInfiniteTransition(label = "living_gemini_aurora")
 
         val colorCycle by infinite.animateFloat(
@@ -2278,30 +2321,30 @@ class MainActivity : ComponentActivity() {
                 ),
                 hsv
             )
-            // Force high saturation and max luminance so mid-transitions stay hyper-vivid
-            hsv[1] = hsv[1].coerceAtLeast(0.88f)
-            hsv[2] = hsv[2].coerceAtLeast(0.96f)
+            // Lock ultra-vivid saturation (0.96+) and punchy, prominent luminance (0.86..0.96)
+            hsv[1] = hsv[1].coerceAtLeast(0.96f)
+            hsv[2] = hsv[2].coerceIn(0.86f, 0.96f)
             return Color(android.graphics.Color.HSVToColor(hsv))
         }
 
         val crownPalette = remember {
             listOf(
-                Color(0xFF0055FF), // Hyper Cobalt Blue
-                Color(0xFF00F0FF), // Pure Electric Cyan
-                Color(0xFFB829FF), // Ultra Neon Violet
-                Color(0xFFFF1E56), // Vivid Crimson-Rose
-                Color(0xFFFFBE00), // Saturated Golden Amber
-                Color(0xFF00E676)  // Luminous Aurora Emerald
+                Color(0xFF0048FF), // Vivid Electric Cobalt
+                Color(0xFF00D8F5), // Luminous Cyber Cyan
+                Color(0xFF9D00FF), // Vivid Royal Violet
+                Color(0xFFFF003C), // Punchy Crimson-Rose
+                Color(0xFFFFAA00), // Rich Golden Amber
+                Color(0xFF00D65B)  // Vivid Aurora Emerald
             )
         }
         val wingPalette = remember {
             listOf(
-                Color(0xFF00E5FF), // Electric Aqua
-                Color(0xFF7C3AED), // Deep Vivid Purple
-                Color(0xFFFF007F), // Hyper Magenta
-                Color(0xFFFF8800), // Radiant Orange-Gold
-                Color(0xFF76FF03), // Electric Lime
-                Color(0xFF2979FF)  // Vivid Sapphire
+                Color(0xFF00C8FF), // Vivid Electric Aqua
+                Color(0xFF7000FF), // Deep Hyper Indigo
+                Color(0xFFFF0077), // Vivid Neon Magenta
+                Color(0xFFFF6600), // Radiant Solar Orange
+                Color(0xFF33E600), // Vivid Lime
+                Color(0xFF1A5CFF)  // Brilliant Sapphire
             )
         }
 
@@ -2317,22 +2360,23 @@ class MainActivity : ComponentActivity() {
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .blur(64.dp) // Tighter blur keeps saturation punchy while staying smooth
+                    .blur(62.dp)
             ) {
                 val w = size.width
                 val h = size.height
 
-                // Orb 1: High-Intensity Top-Left Crown
+                // Orb 1: Prominent Vivid Top-Left Crown
                 val c1 = Offset(
-                    x = w * (0.22f + 0.22f * sin(orbitPhase)),
+                    x = w * (0.22f + 0.20f * sin(orbitPhase)),
                     y = h * (0.04f + 0.08f * cos(orbitPhase * 2f))
                 )
-                val r1 = w * 0.88f * breathPrimary
+                val r1 = w * 0.86f * breathPrimary
+
                 drawCircle(
                     brush = Brush.radialGradient(
-                        0.0f to colorA.copy(alpha = 0.96f),
-                        0.38f to colorA.copy(alpha = 0.68f),
-                        0.72f to colorB.copy(alpha = 0.26f),
+                        0.0f to colorA.copy(alpha = 0.92f),
+                        0.40f to colorA.copy(alpha = 0.62f),
+                        0.74f to colorB.copy(alpha = 0.24f),
                         1.0f to Color.Transparent,
                         center = c1,
                         radius = r1
@@ -2342,17 +2386,18 @@ class MainActivity : ComponentActivity() {
                     blendMode = BlendMode.Screen
                 )
 
-                // Orb 2: High-Saturation Top-Right Wing
+                // Orb 2: Prominent Vivid Top-Right Wing
                 val c2 = Offset(
-                    x = w * (0.80f + 0.18f * cos(orbitPhase)),
-                    y = h * (0.12f + 0.09f * sin(orbitPhase))
+                    x = w * (0.80f + 0.17f * cos(orbitPhase)),
+                    y = h * (0.11f + 0.08f * sin(orbitPhase))
                 )
-                val r2 = w * 0.85f * breathSecondary
+                val r2 = w * 0.84f * breathSecondary
+
                 drawCircle(
                     brush = Brush.radialGradient(
-                        0.0f to colorB.copy(alpha = 0.92f),
-                        0.42f to colorC.copy(alpha = 0.54f),
-                        0.82f to Color.Transparent,
+                        0.0f to colorB.copy(alpha = 0.88f),
+                        0.42f to colorC.copy(alpha = 0.50f),
+                        0.80f to Color.Transparent,
                         center = c2,
                         radius = r2
                     ),
@@ -2361,16 +2406,16 @@ class MainActivity : ComponentActivity() {
                     blendMode = BlendMode.Screen
                 )
 
-                // Orb 3: Center Atmospheric Core
+                // Orb 3: Vivid Center Atmospheric Core
                 val c3 = Offset(
-                    x = w * (0.50f - 0.16f * sin(orbitPhase)),
-                    y = h * (0.20f - 0.06f * cos(orbitPhase))
+                    x = w * (0.50f - 0.15f * sin(orbitPhase)),
+                    y = h * (0.18f - 0.06f * cos(orbitPhase))
                 )
-                val r3 = w * 0.70f * ((breathPrimary + breathSecondary) * 0.5f)
+                val r3 = w * 0.68f * ((breathPrimary + breathSecondary) * 0.5f)
                 drawCircle(
                     brush = Brush.radialGradient(
-                        0.0f to colorC.copy(alpha = 0.82f),
-                        0.48f to colorA.copy(alpha = 0.38f),
+                        0.0f to colorC.copy(alpha = 0.72f),
+                        0.48f to colorA.copy(alpha = 0.32f),
                         1.0f to Color.Transparent,
                         center = c3,
                         radius = r3
@@ -2381,15 +2426,15 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            // Vignette melt into VoidBlack
+            // Smooth melt into VoidBlack at the bottom while keeping the top 100% unobstructed and vivid
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             0.0f to Color.Transparent,
-                            0.50f to Color.Transparent,
-                            0.80f to VoidBlack.copy(alpha = 0.80f),
+                            0.46f to Color.Transparent,
+                            0.78f to VoidBlack.copy(alpha = 0.82f),
                             1.0f to VoidBlack
                         )
                     )
@@ -2408,6 +2453,7 @@ class MainActivity : ComponentActivity() {
         becauseList: List<Song>,
         isLoggedIn: Boolean,
         userName: String,
+        isAuroraActive: Boolean = true,
         onAccountClick: () -> Unit
     ) {
         var isLoading by remember { mutableStateOf(!isHomeFeedLoaded) }
@@ -2492,7 +2538,7 @@ class MainActivity : ComponentActivity() {
         }
 
         Box(Modifier.fillMaxSize()) {
-            GeminiAuroraHeader()
+            GeminiAuroraHeader(isActive = isAuroraActive)
 
             LazyColumn(
                 state = scrollState,
@@ -2954,13 +3000,15 @@ class MainActivity : ComponentActivity() {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 24.dp)
             )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                text = subtitle,
-                fontSize = 12.sp,
-                color = TextMuted,
-                modifier = Modifier.padding(horizontal = 24.dp)
-            )
+            if (subtitle.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = subtitle,
+                    fontSize = 12.sp,
+                    color = TextMuted,
+                    modifier = Modifier.padding(horizontal = 24.dp)
+                )
+            }
             Spacer(Modifier.height(14.dp))
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 24.dp),
@@ -3101,8 +3149,18 @@ class MainActivity : ComponentActivity() {
     }
 
     // ==========================================
-    // SCENE 02: EXPLORE
+    // SCENE 02: REDESIGNED EXPLORE & SEARCH
     // ==========================================
+    private data class ExploreCategoryItem(
+        val tag: String,
+        val title: String,
+        val subtitle: String,
+        val query: String,
+        val colors: List<Color>,
+        val icon: ImageVector,
+        val patternType: Int
+    )
+
     @Composable
     private fun ExploreScene(
         onPlaySongTap: (Song) -> Unit,
@@ -3110,6 +3168,8 @@ class MainActivity : ComponentActivity() {
         repo: JioSaavnRepository
     ) {
         val focusManager = LocalFocusManager.current
+        val searchFocusRequester = remember { FocusRequester() }
+
         var query by remember { mutableStateOf("") }
         var results by remember { mutableStateOf<List<Song>>(emptyList()) }
         var isSearching by remember { mutableStateOf(false) }
@@ -3122,6 +3182,119 @@ class MainActivity : ComponentActivity() {
             mutableStateListOf<String>().apply {
                 addAll(saved.split("||").filter { it.isNotBlank() }.take(8))
             }
+        }
+
+        val categories = remember {
+            listOf(
+                ExploreCategoryItem(
+                    tag = "CYPHER",
+                    title = "Desi Hip-Hop",
+                    subtitle = "Seedhe Maut, KR\$NA, DIVINE",
+                    query = "Desi Hip Hop Rap Hits",
+                    colors = listOf(Color(0xFF1E3C72), Color(0xFF0A1428)),
+                    icon = Icons.Rounded.GraphicEq,
+                    patternType = 1
+                ),
+                ExploreCategoryItem(
+                    tag = "TURBO",
+                    title = "Punjabi Wave",
+                    subtitle = "Karan Aujla, Diljit, Shubh",
+                    query = "Punjabi Chartbusters Hits",
+                    colors = listOf(Color(0xFF880E4F), Color(0xFF260517)),
+                    icon = Icons.Rounded.Bolt,
+                    patternType = 2
+                ),
+                ExploreCategoryItem(
+                    tag = "AESTHETIC",
+                    title = "Midnight Lo-Fi",
+                    subtitle = "Slowed, reverb & rain",
+                    query = "Bollywood Lofi Slowed Reverb",
+                    colors = listOf(Color(0xFF4A148C), Color(0xFF140726)),
+                    icon = Icons.Rounded.NightlightRound,
+                    patternType = 3
+                ),
+                ExploreCategoryItem(
+                    tag = "HEARTBEAT",
+                    title = "Bollywood Romance",
+                    subtitle = "Arijit Singh, Atif, Pritam",
+                    query = "Romantic Hindi Love Songs",
+                    colors = listOf(Color(0xFFB71C1C), Color(0xFF2B0707)),
+                    icon = Icons.Rounded.Favorite,
+                    patternType = 1
+                ),
+                ExploreCategoryItem(
+                    tag = "UNPLUGGED",
+                    title = "Indie & Acoustic",
+                    subtitle = "Anuv Jain, Prateek Kuhad",
+                    query = "Indie Hindi Acoustic Chill",
+                    colors = listOf(Color(0xFF00695C), Color(0xFF041F1B)),
+                    icon = Icons.Rounded.Spa,
+                    patternType = 2
+                ),
+                ExploreCategoryItem(
+                    tag = "ADRENALINE",
+                    title = "Gym & Phonk",
+                    subtitle = "Hard bass & rage energy",
+                    query = "Gym Phonk Workout Bass",
+                    colors = listOf(Color(0xFFE65100), Color(0xFF290F02)),
+                    icon = Icons.Rounded.FitnessCenter,
+                    patternType = 3
+                ),
+                ExploreCategoryItem(
+                    tag = "TIMELESS",
+                    title = "90s & 2000s Gold",
+                    subtitle = "KK, Sonu Nigam, Shaan",
+                    query = "90s 2000s Bollywood Classics KK",
+                    colors = listOf(Color(0xFF827717), Color(0xFF211E05)),
+                    icon = Icons.Rounded.Album,
+                    patternType = 1
+                ),
+                ExploreCategoryItem(
+                    tag = "BILLBOARD",
+                    title = "Global Pop & R&B",
+                    subtitle = "The Weeknd, Drake, Dua Lipa",
+                    query = "The Weeknd Global English Hits",
+                    colors = listOf(Color(0xFF0D47A1), Color(0xFF051530)),
+                    icon = Icons.Rounded.Public,
+                    patternType = 2
+                ),
+                ExploreCategoryItem(
+                    tag = "DEVOTION",
+                    title = "Sufi & Soul",
+                    subtitle = "Nusrat, Rahat, Coke Studio",
+                    query = "Sufi Qawwali Coke Studio Hits",
+                    colors = listOf(Color(0xFF3E2723), Color(0xFF140C0A)),
+                    icon = Icons.Rounded.AutoAwesome,
+                    patternType = 3
+                ),
+                ExploreCategoryItem(
+                    tag = "AFTERHOURS",
+                    title = "Sad & Melancholy",
+                    subtitle = "Deeplate emotional echoes",
+                    query = "Sad Heartbreak Hindi Songs",
+                    colors = listOf(Color(0xFF263238), Color(0xFF0B0F12)),
+                    icon = Icons.Rounded.WaterDrop,
+                    patternType = 1
+                ),
+                ExploreCategoryItem(
+                    tag = "EUPHORIA",
+                    title = "Club & Party",
+                    subtitle = "High-energy dance floor",
+                    query = "Bollywood Party Club Dance Hits",
+                    colors = listOf(Color(0xFF6A1B9A), Color(0xFF1B0629)),
+                    icon = Icons.Rounded.Celebration,
+                    patternType = 2
+                ),
+                ExploreCategoryItem(
+                    tag = "DEEP WORK",
+                    title = "Instrumental Focus",
+                    subtitle = "Ambient piano & study flow",
+                    query = "Instrumental Study Focus Ambient",
+                    colors = listOf(Color(0xFF006064), Color(0xFF031B1C)),
+                    icon = Icons.Rounded.LensBlur,
+                    patternType = 3
+                )
+            )
         }
 
         fun saveSearchQuery(q: String) {
@@ -3150,7 +3323,7 @@ class MainActivity : ComponentActivity() {
                 return@LaunchedEffect
             }
             isSearching = true
-            delay(320)
+            delay(280)
             val fetched = repo.searchSongs(trimmed)
             results = fetched
             isSearching = false
@@ -3164,20 +3337,19 @@ class MainActivity : ComponentActivity() {
             isTrendingLoading = false
         }
 
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(VoidBlack)) {
+            // Subtle, deep ambient top gradient (no harsh neon glow)
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(520.dp)
+                    .height(340.dp)
                     .background(
-                        Brush.radialGradient(
+                        Brush.verticalGradient(
                             colors = listOf(
-                                Color(0x3800E5FF),
-                                Color(0x1E7C4DFF),
-                                Color.Transparent
-                            ),
-                            center = Offset(300f, 0f),
-                            radius = 950f
+                                Color(0xFF12131A),
+                                Color(0xFF09090D),
+                                VoidBlack
+                            )
                         )
                     )
             )
@@ -3185,113 +3357,176 @@ class MainActivity : ComponentActivity() {
             Column(
                 Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 24.dp)
-                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp)
+                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 14.dp)
             ) {
-                val shadowRadius by animateDpAsState(if (isFocused) 20.dp else 0.dp, label = "search_shadow")
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .shadow(shadowRadius, CircleShape, ambientColor = Color(0xFF00E5FF), spotColor = Color(0xFF00E5FF))
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(Color(0x22FFFFFF))
-                        .border(
-                            width = 1.dp,
-                            color = if (isFocused) Color(0xFF00E5FF) else Color(0x22FFFFFF),
-                            shape = RoundedCornerShape(26.dp)
-                        )
-                        .padding(horizontal = 18.dp, vertical = 14.dp)
+                // Header Title (Collapses smoothly when actively typing a query)
+                AnimatedVisibility(
+                    visible = query.isEmpty(),
+                    enter = expandVertically(tween(240)) + fadeIn(tween(220)),
+                    exit = shrinkVertically(tween(200)) + fadeOut(tween(150))
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (query.isNotEmpty()) {
-                            Icon(
-                                Icons.AutoMirrored.Rounded.ArrowBack,
-                                contentDescription = "Back",
-                                tint = Color(0xFF00E5FF),
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .clickable {
-                                        query = ""
-                                        results = emptyList()
-                                        focusManager.clearFocus()
-                                    }
-                            )
-                        } else {
-                            Icon(
-                                Icons.Rounded.Search,
-                                contentDescription = null,
-                                tint = if (isFocused) Color(0xFF00E5FF) else TextMuted
-                            )
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        BasicTextField(
-                            value = query,
-                            onValueChange = { query = it },
-                            textStyle = TextStyle(color = TextPure, fontSize = 15.sp, fontWeight = FontWeight.Medium),
-                            cursorBrush = SolidColor(Color(0xFF00E5FF)),
-                            singleLine = true,
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                            ),
-                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                                onSearch = {
-                                    saveSearchQuery(query)
-                                    focusManager.clearFocus()
-                                }
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .onFocusChanged { isFocused = it.isFocused },
-                            decorationBox = { inner ->
-                                if (query.isEmpty()) {
-                                    Text("Search songs, artists, or start a radio...", color = TextMuted, fontSize = 14.sp)
-                                } else {
-                                    inner()
-                                }
-                            }
+                    Column(Modifier.padding(horizontal = 22.dp)) {
+                        Text(
+                            text = "Explore",
+                            fontSize = 34.sp,
+                            color = TextPure,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Bold
                         )
-                        if (isSearching) {
-                            CircularProgressIndicator(
-                                color = Color(0xFF00E5FF),
-                                strokeWidth = 2.dp,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.height(14.dp))
+                    }
+                }
+
+                // Clean, Zero-Glow Architectural Search Bar with Instant Cursor Support
+                val borderTint by animateColorAsState(
+                    targetValue = if (isFocused) Color(0xFFFFCD01).copy(alpha = 0.75f) else Color(0xFF23232C),
+                    animationSpec = tween(200),
+                    label = "search_border"
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .height(52.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xFF121217))
+                        .border(1.dp, borderTint, RoundedCornerShape(16.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            searchFocusRequester.requestFocus()
                         }
-                        if (query.isNotEmpty()) {
-                            Icon(
-                                Icons.Rounded.Close,
-                                contentDescription = "Clear",
-                                tint = TextMuted,
-                                modifier = Modifier.clickable {
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (query.isNotEmpty() || isFocused) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "Back",
+                            tint = TextPure,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
                                     query = ""
                                     results = emptyList()
+                                    focusManager.clearFocus()
                                 }
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = "Search",
+                            tint = TextMuted,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    Spacer(Modifier.width(12.dp))
+
+                    BasicTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        textStyle = TextStyle(
+                            color = TextPure,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        ),
+                        cursorBrush = SolidColor(Color(0xFFFFCD01)),
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                        ),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onSearch = {
+                                saveSearchQuery(query)
+                                focusManager.clearFocus()
+                            }
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(searchFocusRequester)
+                            .onFocusChanged { isFocused = it.isFocused },
+                        decorationBox = { innerTextField ->
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (query.isEmpty()) {
+                                    Text(
+                                        text = "Songs, artists, or moods...",
+                                        color = TextSubtle,
+                                        fontSize = 14.5.sp
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+
+                    AnimatedVisibility(visible = isSearching, enter = fadeIn(), exit = fadeOut()) {
+                        CircularProgressIndicator(
+                            color = Color(0xFFFFCD01),
+                            strokeWidth = 2.dp,
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .size(16.dp)
+                        )
+                    }
+
+                    AnimatedVisibility(visible = query.isNotEmpty(), enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .clickable {
+                                    query = ""
+                                    results = emptyList()
+                                    searchFocusRequester.requestFocus()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Clear",
+                                tint = TextPure,
+                                modifier = Modifier.size(14.dp)
                             )
                         }
                     }
                 }
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
 
+                // Quick Mood/Artist Pills
                 LazyRow(
+                    contentPadding = PaddingValues(horizontal = 22.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val quickTags = listOf("Desi Hip-Hop", "Punjabi Hits", "Arijit Singh", "Lo-Fi Slowed", "90s Classics", "The Weeknd", "Gym Phonk")
+                    val quickTags = listOf(
+                        "Arijit Singh", "Karan Aujla", "Seedhe Maut", "Diljit Dosanjh",
+                        "Lo-Fi Slowed", "The Weeknd", "90s Classics", "Anuv Jain", "Gym Phonk"
+                    )
                     items(quickTags) { tag ->
                         val active = query.equals(tag, ignoreCase = true)
                         Box(
                             Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (active) Color(0xFF00E5FF) else Color(0x18FFFFFF))
-                                .border(1.dp, if (active) Color(0xFF00E5FF) else Color(0x1FFFFFFF), RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (active) Color(0xFFFFCD01) else Color(0xFF14141A))
+                                .border(
+                                    1.dp,
+                                    if (active) Color(0xFFFFCD01) else Color(0xFF23232C),
+                                    RoundedCornerShape(12.dp)
+                                )
                                 .clickable {
                                     query = if (active) "" else tag
                                     if (!active) saveSearchQuery(tag)
                                     focusManager.clearFocus()
                                 }
-                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                                .padding(horizontal = 13.dp, vertical = 7.dp)
                         ) {
                             Text(
                                 text = tag,
@@ -3303,269 +3538,367 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
-                if (query.isEmpty()) {
-                    LazyColumn(
-                        Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 180.dp)
-                    ) {
-                        if (recentSearches.isNotEmpty()) {
+                // Smooth Animated Content Switcher between Browse Mode & Live Search Results
+                AnimatedContent(
+                    targetState = query.trim().length >= 2,
+                    transitionSpec = {
+                        (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 16 })
+                            .togetherWith(fadeOut(tween(160)))
+                    },
+                    label = "explore_mode_switch"
+                ) { isShowingSearchResults ->
+                    if (!isShowingSearchResults) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 22.dp),
+                            contentPadding = PaddingValues(bottom = 180.dp)
+                        ) {
+                            // 1. Recent Searches Strip
+                            if (recentSearches.isNotEmpty()) {
+                                item {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "RECENT SEARCHES",
+                                            fontSize = 11.sp,
+                                            letterSpacing = 1.3.sp,
+                                            color = TextMuted,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            "Clear",
+                                            fontSize = 12.sp,
+                                            color = Color(0xFFFFCD01),
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.clickable {
+                                                recentSearches.clear()
+                                                prefs.edit().remove("recent_search_queries").apply()
+                                            }
+                                        )
+                                    }
+                                    Spacer(Modifier.height(10.dp))
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        items(recentSearches) { recent ->
+                                            Row(
+                                                Modifier
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(Color(0xFF121217))
+                                                    .border(1.dp, Color(0xFF23232C), RoundedCornerShape(10.dp))
+                                                    .clickable {
+                                                        query = recent
+                                                        focusManager.clearFocus()
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    Icons.Rounded.History,
+                                                    contentDescription = null,
+                                                    tint = TextSubtle,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(recent, fontSize = 12.5.sp, color = TextPure, fontWeight = FontWeight.Medium)
+                                            }
+                                        }
+                                    }
+                                    Spacer(Modifier.height(26.dp))
+                                }
+                            }
+
+                            // 2. Browse Sonic Realms (12 Categories in 2x6 Grid)
                             item {
+                                Text(
+                                    "BROWSE SONIC REALMS",
+                                    fontSize = 11.sp,
+                                    letterSpacing = 1.4.sp,
+                                    color = TextMuted,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(12.dp))
+                            }
+
+                            val chunkedCategories = categories.chunked(2)
+                            items(chunkedCategories) { rowPair ->
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    rowPair.forEach { cat ->
+                                        ExploreCategoryTile(
+                                            modifier = Modifier.weight(1f),
+                                            item = cat,
+                                            onClick = {
+                                                query = cat.query
+                                                saveSearchQuery(cat.title)
+                                                focusManager.clearFocus()
+                                            }
+                                        )
+                                    }
+                                    if (rowPair.size == 1) Spacer(Modifier.weight(1f))
+                                }
+                                Spacer(Modifier.height(12.dp))
+                            }
+
+                            // 3. Global & Indian Trending Chart
+                            item {
+                                Spacer(Modifier.height(18.dp))
                                 Row(
                                     Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Recent Searches", fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold)
                                     Text(
-                                        "Clear All",
-                                        fontSize = 12.sp,
-                                        color = Color(0xFF00E5FF),
-                                        modifier = Modifier.clickable {
-                                            recentSearches.clear()
-                                            prefs.edit().remove("recent_search_queries").apply()
-                                        }
-                                    )
-                                }
-                                Spacer(Modifier.height(10.dp))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(recentSearches) { recent ->
-                                        Row(
-                                            Modifier
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(DeepSurface)
-                                                .border(1.dp, GlassSurface, RoundedCornerShape(12.dp))
-                                                .clickable { query = recent }
-                                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(Icons.Rounded.History, contentDescription = null, tint = TextSubtle, modifier = Modifier.size(14.dp))
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(recent, fontSize = 12.sp, color = TextPure)
-                                        }
-                                    }
-                                }
-                                Spacer(Modifier.height(24.dp))
-                            }
-                        }
-
-                        item {
-                            Text("Explore", fontSize = 26.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
-                            Spacer(Modifier.height(22.dp))
-                        }
-
-                        item {
-                            Text("Curated Atmospheres", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(14.dp))
-                            Row(
-                                Modifier.fillMaxWidth().height(175.dp),
-                                horizontalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                ExploreAtmosphereCard(
-                                    modifier = Modifier.weight(1.05f).fillMaxHeight(),
-                                    tag = "PULSE",
-                                    title = "Pop Odyssey",
-                                    subtitle = "",
-                                    gradient = listOf(Color(0xFFFF2A6D), Color(0xFF8E24AA)),
-                                    vectorType = 1,
-                                    onClick = { query = "Pop Hits" }
-                                )
-                                Column(
-                                    Modifier.weight(1f).fillMaxHeight(),
-                                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    ExploreAtmosphereCard(
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                                        tag = "CYPHER",
-                                        title = "Desi Hip-Hop",
-                                        subtitle = "",
-                                        gradient = listOf(Color(0xFF00E5FF), Color(0xFF0052D4)),
-                                        vectorType = 2,
-                                        onClick = { query = "Desi Hip Hop" }
-                                    )
-                                    ExploreAtmosphereCard(
-                                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                                        tag = "UNPLUGGED",
-                                        title = "Acoustic Gold",
-                                        subtitle = "",
-                                        gradient = listOf(Color(0xFFFFB300), Color(0xFFFF3D00)),
-                                        vectorType = 3,
-                                        onClick = { query = "Acoustic Hits" }
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(32.dp))
-                        }
-
-                        item {
-                            Text("Trending Songs", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
-                            Spacer(Modifier.height(4.dp))
-                            Spacer(Modifier.height(14.dp))
-                        }
-
-                        if (isTrendingLoading) {
-                            items(6) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(DeepSurface).padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(shimmerBrush))
-                                    Spacer(Modifier.width(14.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Box(Modifier.fillMaxWidth(0.6f).height(15.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
-                                        Spacer(Modifier.height(6.dp))
-                                        Box(Modifier.fillMaxWidth(0.35f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
-                                    }
-                                }
-                            }
-                        } else {
-                            itemsIndexed(trendingSongs.take(10), key = { _, s -> s.id }) { index, song ->
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(DeepSurface)
-                                        .combinedClickable(
-                                            onClick = { onPlaySongTap(song) },
-                                            onLongClick = { onSongOptions(song) }
-                                        )
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "#%02d".format(index + 1),
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Black,
-                                        color = if (index < 3) Color(0xFF00E5FF) else TextSubtle,
-                                        modifier = Modifier.width(36.dp)
-                                    )
-                                    AsyncImage(
-                                        model = song.thumbnailUrl,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp))
-                                    )
-                                    Spacer(Modifier.width(14.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(song.title, fontSize = 15.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
-                                        Text(
-                                            text = song.artist,
-                                            fontSize = 12.sp,
-                                            color = TextMuted,
-                                            maxLines = 1,
-                                            modifier = Modifier.combinedClickable(
-                                                onClick = { onPlaySongTap(song) },
-                                                onLongClick = { startArtistRadio(song.artist) }
-                                            )
-                                        )
-                                    }
-                                    DownloadStateIcon(
-                                        progress = downloadProgressMap[song.id]
-                                            ?: (if (downloadedSongsList.any { it.id == song.id }) -1f else 0f),
-                                        onClick = { downloadSongInternally(song) }
-                                    )
-                                    IconButton(onClick = { onSongOptions(song) }, modifier = Modifier.size(32.dp)) {
-                                        Icon(Icons.Rounded.MoreVert, contentDescription = "Options", tint = TextMuted, modifier = Modifier.size(18.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(bottom = 180.dp)
-                    ) {
-                        if (!isSearching && results.isEmpty() && query.trim().length >= 2) {
-                            item {
-                                Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) {
-                                    Text("No matching frequencies found for \"$query\"", color = TextMuted, fontSize = 14.sp)
-                                }
-                            }
-                        }
-                        itemsIndexed(results, key = { idx, s -> "${s.id}_$idx" }) { index, song ->
-                            val isBestMatch = index == 0
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(
-                                        if (isBestMatch) Brush.horizontalGradient(listOf(Color(0xFF003D4D), Color(0xFF0C1929)))
-                                        else SolidColor(DeepSurface)
-                                    )
-                                    .border(
-                                        1.dp,
-                                        if (isBestMatch) Color(0xFF00E5FF).copy(alpha = 0.7f) else Color.Transparent,
-                                        RoundedCornerShape(18.dp)
-                                    )
-                                    .combinedClickable(
-                                        onClick = {
-                                            saveSearchQuery(query)
-                                            focusManager.clearFocus()
-                                            onPlaySongTap(song)
-                                        },
-                                        onLongClick = { onSongOptions(song) }
-                                    )
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                AsyncImage(
-                                    model = song.thumbnailUrl,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(52.dp).clip(RoundedCornerShape(12.dp))
-                                )
-                                Spacer(Modifier.width(14.dp))
-                                Column(Modifier.weight(1f)) {
-                                    if (isBestMatch) {
-                                        Text(
-                                            "TOP RESULT • TAP FOR RADIO",
-                                            fontSize = 9.sp,
-                                            letterSpacing = 1.sp,
-                                            color = Color(0xFF00E5FF),
-                                            fontWeight = FontWeight.Black
-                                        )
-                                        Spacer(Modifier.height(2.dp))
-                                    }
-                                    Text(
-                                        song.title,
-                                        fontSize = 15.sp,
-                                        color = if (isBestMatch) TextPure else TextPure.copy(alpha = 0.92f),
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1
-                                    )
-                                    Text(
-                                        text = song.artist,
-                                        fontSize = 12.sp,
+                                        "TRENDING CHARTS",
+                                        fontSize = 11.sp,
+                                        letterSpacing = 1.4.sp,
                                         color = TextMuted,
-                                        maxLines = 1,
-                                        modifier = Modifier.combinedClickable(
-                                            onClick = {
-                                                saveSearchQuery(query)
-                                                focusManager.clearFocus()
-                                                onPlaySongTap(song)
-                                            },
-                                            onLongClick = { startArtistRadio(song.artist) }
-                                        )
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        "Top 10",
+                                        fontSize = 11.5.sp,
+                                        color = Color(0xFFFFCD01),
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                 }
-                                DownloadStateIcon(
-                                    progress = downloadProgressMap[song.id]
-                                        ?: (if (downloadedSongsList.any { it.id == song.id }) -1f else 0f),
-                                    onClick = { downloadSongInternally(song) }
-                                )
-                                IconButton(
-                                    onClick = { onSongOptions(song) },
-                                    modifier = Modifier.size(34.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.MoreVert,
-                                        contentDescription = "Queue Options",
-                                        tint = if (isBestMatch) Color(0xFF00E5FF) else TextMuted,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                Spacer(Modifier.height(12.dp))
+                            }
+
+                            if (isTrendingLoading) {
+                                items(6) {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(DeepSurface)
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(shimmerBrush))
+                                        Spacer(Modifier.width(14.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Box(Modifier.fillMaxWidth(0.6f).height(15.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            Spacer(Modifier.height(6.dp))
+                                            Box(Modifier.fillMaxWidth(0.35f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                        }
+                                    }
+                                }
+                            } else {
+                                itemsIndexed(trendingSongs.take(10), key = { _, s -> s.id }) { index, song ->
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp)
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(Color(0xFF111116))
+                                            .border(1.dp, Color(0xFF1F1F27), RoundedCornerShape(16.dp))
+                                            .combinedClickable(
+                                                onClick = { onPlaySongTap(song) },
+                                                onLongClick = { onSongOptions(song) }
+                                            )
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "#%02d".format(index + 1),
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = if (index < 3) Color(0xFFFFCD01) else TextSubtle,
+                                            modifier = Modifier.width(34.dp)
+                                        )
+                                        AsyncImage(
+                                            model = song.thumbnailUrl,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp))
+                                        )
+                                        Spacer(Modifier.width(14.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(song.title, fontSize = 14.5.sp, color = TextPure, fontWeight = FontWeight.Bold, maxLines = 1)
+                                            Spacer(Modifier.height(2.dp))
+                                            Text(
+                                                text = song.artist,
+                                                fontSize = 12.sp,
+                                                color = TextMuted,
+                                                maxLines = 1,
+                                                modifier = Modifier.combinedClickable(
+                                                    onClick = { onPlaySongTap(song) },
+                                                    onLongClick = { startArtistRadio(song.artist) }
+                                                )
+                                            )
+                                        }
+                                        DownloadStateIcon(
+                                            progress = downloadProgressMap[song.id]
+                                                ?: (if (downloadedSongsList.any { it.id == song.id }) -1f else 0f),
+                                            onClick = { downloadSongInternally(song) }
+                                        )
+                                        IconButton(onClick = { onSongOptions(song) }, modifier = Modifier.size(32.dp)) {
+                                            Icon(Icons.Rounded.MoreVert, contentDescription = "Options", tint = TextMuted, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Live Search Results View
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 22.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 180.dp)
+                        ) {
+                            if (isSearching && results.isEmpty()) {
+                                items(6) {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(Color(0xFF121217))
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)).background(shimmerBrush))
+                                        Spacer(Modifier.width(14.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Box(Modifier.fillMaxWidth(0.65f).height(15.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                            Spacer(Modifier.height(8.dp))
+                                            Box(Modifier.fillMaxWidth(0.40f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(shimmerBrush))
+                                        }
+                                    }
+                                }
+                            } else if (!isSearching && results.isEmpty()) {
+                                item {
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 64.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.SearchOff,
+                                            contentDescription = null,
+                                            tint = TextSubtle,
+                                            modifier = Modifier.size(42.dp)
+                                        )
+                                        Spacer(Modifier.height(12.dp))
+                                        Text(
+                                            "No matches found for \"$query\"",
+                                            color = TextPure,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "Try searching for another song, artist, or mood",
+                                            color = TextMuted,
+                                            fontSize = 12.5.sp
+                                        )
+                                    }
+                                }
+                            } else {
+                                itemsIndexed(results, key = { idx, s -> "${s.id}_$idx" }) { index, song ->
+                                    val isBestMatch = index == 0
+                                    Row(
+                                        Modifier
+                                            .animateItem()
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(
+                                                if (isBestMatch) {
+                                                    Brush.horizontalGradient(
+                                                        listOf(Color(0xFF1F1A0C), Color(0xFF121217))
+                                                    )
+                                                } else {
+                                                    SolidColor(Color(0xFF121217))
+                                                }
+                                            )
+                                            .border(
+                                                1.dp,
+                                                if (isBestMatch) Color(0xFFFFCD01).copy(alpha = 0.45f) else Color(0xFF22222A),
+                                                RoundedCornerShape(18.dp)
+                                            )
+                                            .combinedClickable(
+                                                onClick = {
+                                                    saveSearchQuery(query)
+                                                    focusManager.clearFocus()
+                                                    onPlaySongTap(song)
+                                                },
+                                                onLongClick = { onSongOptions(song) }
+                                            )
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        AsyncImage(
+                                            model = song.thumbnailUrl,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(if (isBestMatch) 56.dp else 50.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                        )
+                                        Spacer(Modifier.width(14.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            if (isBestMatch) {
+                                                Text(
+                                                    "TOP MATCH",
+                                                    fontSize = 9.sp,
+                                                    letterSpacing = 1.2.sp,
+                                                    color = Color(0xFFFFCD01),
+                                                    fontWeight = FontWeight.Black
+                                                )
+                                                Spacer(Modifier.height(2.dp))
+                                            }
+                                            Text(
+                                                song.title,
+                                                fontSize = 15.sp,
+                                                color = TextPure,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Spacer(Modifier.height(2.dp))
+                                            Text(
+                                                text = song.artist,
+                                                fontSize = 12.sp,
+                                                color = TextMuted,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.combinedClickable(
+                                                    onClick = {
+                                                        saveSearchQuery(query)
+                                                        focusManager.clearFocus()
+                                                        onPlaySongTap(song)
+                                                    },
+                                                    onLongClick = { startArtistRadio(song.artist) }
+                                                )
+                                            )
+                                        }
+                                        DownloadStateIcon(
+                                            progress = downloadProgressMap[song.id]
+                                                ?: (if (downloadedSongsList.any { it.id == song.id }) -1f else 0f),
+                                            onClick = { downloadSongInternally(song) }
+                                        )
+                                        IconButton(
+                                            onClick = { onSongOptions(song) },
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.MoreVert,
+                                                contentDescription = "Queue Options",
+                                                tint = if (isBestMatch) Color(0xFFFFCD01) else TextMuted,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3576,113 +3909,94 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun ExploreAtmosphereCard(
-        modifier: Modifier,
-        tag: String,
-        title: String,
-        subtitle: String,
-        gradient: List<Color>,
-        vectorType: Int,
+    private fun ExploreCategoryTile(
+        modifier: Modifier = Modifier,
+        item: ExploreCategoryItem,
         onClick: () -> Unit
     ) {
         Box(
             modifier = modifier
-                .clip(RoundedCornerShape(24.dp))
-                .background(Brush.linearGradient(gradient))
+                .height(104.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.linearGradient(item.colors))
+                .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp))
                 .clickable { onClick() }
         ) {
             Canvas(Modifier.fillMaxSize()) {
-                when (vectorType) {
+                when (item.patternType) {
                     1 -> {
-                        val path = Path().apply {
-                            moveTo(size.width * 0.2f, 0f)
-                            cubicTo(
-                                size.width * 0.7f, size.height * 0.25f,
-                                size.width * 0.1f, size.height * 0.65f,
-                                size.width, size.height * 0.85f
-                            )
-                            lineTo(size.width, 0f)
-                            close()
-                        }
-                        drawPath(path, Color.White.copy(alpha = 0.16f))
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.06f),
+                            radius = size.height * 0.72f,
+                            center = Offset(size.width * 0.90f, size.height * 0.25f)
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.08f),
+                            radius = size.height * 0.45f,
+                            center = Offset(size.width * 0.92f, size.height * 0.20f),
+                            style = Stroke(width = 2.dp.toPx())
+                        )
                     }
                     2 -> {
-                        for (i in 1..4) {
+                        for (i in 1..3) {
                             drawCircle(
                                 color = Color.White.copy(alpha = 0.05f * i),
-                                radius = (size.height * 0.40f) * i,
-                                center = Offset(size.width * 0.88f, size.height * 0.5f),
-                                style = Stroke(width = 3.5f)
+                                radius = (size.height * 0.32f) * i,
+                                center = Offset(size.width * 0.88f, size.height * 0.75f),
+                                style = Stroke(width = 2.5f)
                             )
                         }
                     }
-                    3 -> {
-                        val barWidth = 7f
-                        val gap = 9f
-                        var startX = size.width * 0.55f
-                        listOf(0.35f, 0.65f, 0.25f, 0.85f, 0.5f, 0.75f, 0.3f).forEach { ratio ->
-                            val barH = size.height * 0.65f * ratio
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.20f),
-                                start = Offset(startX, size.height - 18f),
-                                end = Offset(startX, size.height - 18f - barH),
-                                strokeWidth = barWidth,
-                                cap = StrokeCap.Round
+                    else -> {
+                        val path = Path().apply {
+                            moveTo(size.width * 0.45f, size.height)
+                            cubicTo(
+                                size.width * 0.65f, size.height * 0.55f,
+                                size.width * 0.80f, size.height * 0.85f,
+                                size.width, size.height * 0.30f
                             )
-                            startX += barWidth + gap
+                            lineTo(size.width, size.height)
+                            close()
                         }
+                        drawPath(path, Color.White.copy(alpha = 0.07f))
                     }
                 }
             }
 
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x60000000))))
-            )
-
             Column(
-                modifier = Modifier.fillMaxSize().padding(16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(14.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                if (tag.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color.Black.copy(alpha = 0.25f))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = tag,
-                            fontSize = 9.sp,
-                            color = Color.White.copy(alpha = 0.9f),
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.2.sp
-                        )
-                    }
-                } else {
-                    Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = item.tag,
+                        fontSize = 8.5.sp,
+                        color = Color.White.copy(alpha = 0.70f),
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.2.sp
+                    )
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
 
-                Column {
-                    Text(
-                        text = title,
-                        fontSize = 16.sp,
-                        color = TextPure,
-                        fontWeight = FontWeight.Black,
-                        lineHeight = 20.sp
-                    )
-                    if (subtitle.isNotBlank()) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = subtitle,
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.75f),
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1
-                        )
-                    }
-                }
+                Text(
+                    text = item.title,
+                    fontSize = 16.sp,
+                    color = TextPure,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
@@ -3738,49 +4052,36 @@ class MainActivity : ComponentActivity() {
                 Modifier.fillMaxSize().padding(horizontal = 22.dp),
                 contentPadding = PaddingValues(
                     top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 18.dp,
-                    bottom = 180.dp
+                    bottom = 240.dp
                 )
             ) {
-                // 1. Header & Quick Actions
+                // 1. Header & Quick Actions (Clean 28.sp Title + Only Import Icon on Top-Right)
                 item {
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "My World",
-                                fontSize = 36.sp,
-                                color = TextPure,
-                                fontFamily = FontFamily.Serif,
-                                fontWeight = FontWeight.Bold
+                        Text(
+                            text = "My World",
+                            fontSize = 28.sp,
+                            color = TextPure,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = onImportPlaylist,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.CloudDownload,
+                                contentDescription = "Import Spotify",
+                                tint = Color(0xFF00E5FF),
+                                modifier = Modifier.size(24.dp)
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            IconButton(
-                                onClick = onImportPlaylist,
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.08f))
-                                    .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-                            ) {
-                                Icon(Icons.Rounded.CloudDownload, contentDescription = "Import Spotify", tint = Color(0xFF00E5FF), modifier = Modifier.size(20.dp))
-                            }
-                            IconButton(
-                                onClick = onCreatePlaylist,
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFFFFD54F))
-                            ) {
-                                Icon(Icons.Rounded.Add, contentDescription = "Create Playlist", tint = VoidBlack, modifier = Modifier.size(24.dp))
-                            }
-                        }
                     }
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(20.dp))
                 }
 
                 // 2. Sonic Footprint Glass Telemetry Strip
@@ -3812,7 +4113,7 @@ class MainActivity : ComponentActivity() {
                         // Featured Full-Width Hero Bento Card: Liked Songs
                         BentoVaultHeroCard(
                             title = "Liked Songs",
-                            subtitle = if (likedSongs.isEmpty()) "" else "${likedSongs.size} curated favorites",
+                            subtitle = "",
                             previewSongs = likedSongs.take(3),
                             icon = Icons.Rounded.Favorite,
                             accentColor = Color(0xFFFF4081),
@@ -4007,76 +4308,120 @@ class MainActivity : ComponentActivity() {
         Box(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(Brush.horizontalGradient(gradientColors))
-                .border(1.dp, accentColor.copy(alpha = 0.35f), RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(22.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFF2D0C20),
+                            Color(0xFF170B16),
+                            Color(0xFF111116)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    brush = Brush.horizontalGradient(
+                        listOf(accentColor.copy(alpha = 0.45f), Color.White.copy(alpha = 0.08f))
+                    ),
+                    shape = RoundedCornerShape(22.dp)
+                )
                 .clickable { onClick() }
-                .padding(20.dp)
+                .padding(horizontal = 18.dp, vertical = 18.dp)
         ) {
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(accentColor.copy(alpha = 0.22f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(icon, contentDescription = null, tint = accentColor, modifier = Modifier.size(20.dp))
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(title, fontSize = 19.sp, color = TextPure, fontWeight = FontWeight.Bold)
-                            Text(subtitle, fontSize = 12.sp, color = Color.White.copy(alpha = 0.78f))
-                        }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Rich Heart Emblem
+                    Box(
+                        Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf( Color(0xFFFF4081), Color(0xFFC51162))
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = TextPure,
+                            modifier = Modifier.size(26.dp)
+                        )
                     }
-                    if (previewSongs.isNotEmpty()) {
-                        Spacer(Modifier.height(14.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy((-10).dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            previewSongs.forEach { s ->
+
+                    Spacer(Modifier.width(15.dp))
+
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = title,
+                            fontSize = 18.sp,
+                            color = TextPure,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = (-0.3).sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                if (previewSongs.isNotEmpty()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy((-10).dp)) {
+                            previewSongs.take(3).forEach { s ->
                                 AsyncImage(
                                     model = s.thumbnailUrl,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(34.dp)
+                                        .size(30.dp)
                                         .clip(CircleShape)
-                                        .border(1.5.dp, VoidBlack, CircleShape)
+                                        .border(1.5.dp, Color(0xFF170B16), CircleShape)
                                 )
                             }
-                            Spacer(Modifier.width(18.dp))
-                            Text(
-                                text = previewSongs.joinToString(", ") { it.title },
-                                fontSize = 11.sp,
-                                color = TextMuted,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(TextPure)
+                                .clickable { onQuickPlay() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Rounded.PlayArrow,
+                                contentDescription = "Play Liked",
+                                tint = VoidBlack,
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                     }
-                }
-                Spacer(Modifier.width(12.dp))
-                if (previewSongs.isNotEmpty()) {
-                    IconButton(
-                        onClick = onQuickPlay,
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(accentColor)
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Play Liked", tint = VoidBlack, modifier = Modifier.size(26.dp))
-                    }
                 } else {
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = TextMuted)
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.06f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Rounded.ChevronRight,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -4229,6 +4574,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
     // ==========================================
     // FULL-SCREEN PROFILE & SETTINGS PORTAL
     // ==========================================
@@ -4266,8 +4612,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val bgVoid = Color(0xFF070709)
-        val cardSurface = Color(0xFF121217)
-        val cardBorder = Color(0xFF23232C)
+        val cardSurface = Color(0xFF111116)
+        val cardBorder = Color(0xFF202029)
         val meloGold = Color(0xFFFFCD01)
         val pureWhite = Color(0xFFF7F7FA)
         val mutedText = Color(0xFF8E8E98)
@@ -4275,7 +4621,7 @@ class MainActivity : ComponentActivity() {
         val displayName = userProfileName?.takeIf { it.isNotBlank() }
             ?: supabaseSync.currentUserEmail?.substringBefore("@")
             ?: "Melo Listener"
-        val userEmail = supabaseSync.currentUserEmail ?: "Local Sanctuary Mode"
+        val userEmail = supabaseSync.currentUserEmail ?: "Local Device Profile"
         val initials = displayName.trim().split("\\s+".toRegex())
             .mapNotNull { it.firstOrNull()?.uppercaseChar() }
             .take(2)
@@ -4287,15 +4633,16 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .background(bgVoid)
         ) {
+            // Subtle top gold atmospheric glow
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(260.dp)
-                    .blur(85.dp)
+                    .height(240.dp)
+                    .blur(80.dp)
             ) {
                 drawCircle(
                     brush = Brush.radialGradient(
-                        0.0f to meloGold.copy(alpha = 0.14f),
+                        0.0f to meloGold.copy(alpha = 0.12f),
                         0.75f to Color.Transparent,
                         center = Offset(size.width / 2f, 0f),
                         radius = size.width / 1.3f
@@ -4309,8 +4656,9 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing),
-                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp)
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 14.dp)
             ) {
+                // 1. Minimal Top Bar
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -4335,112 +4683,123 @@ class MainActivity : ComponentActivity() {
                         Text(
                             text = "Account",
                             color = pureWhite,
-                            fontSize = 17.sp,
+                            fontSize = 16.5.sp,
                             fontWeight = FontWeight.Bold
                         )
 
-                        Spacer(Modifier.size(38.dp))
+                        IconButton(
+                            onClick = {
+                                tempName = displayName
+                                showEditNameDialog = true
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.06f))
+                        ) {
+                            Icon(
+                                Icons.Rounded.Edit,
+                                contentDescription = "Edit Name",
+                                tint = meloGold,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(22.dp))
                 }
 
+                // 2. Clean Centered Identity Header + Glass Stats Bar
                 item {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(22.dp))
+                            .clip(RoundedCornerShape(24.dp))
                             .background(cardSurface)
-                            .border(1.dp, cardBorder, RoundedCornerShape(22.dp))
-                            .padding(20.dp)
+                            .border(1.dp, cardBorder, RoundedCornerShape(24.dp))
+                            .padding(vertical = 22.dp, horizontal = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(64.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(meloGold, Color(0xFFFF8F00))
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = initials,
-                                    color = VoidBlack,
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.Black
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.linearGradient(
+                                        listOf(meloGold, Color(0xFFFF9100))
+                                    )
                                 )
-                            }
-
-                            Spacer(Modifier.width(16.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = displayName,
-                                        color = pureWhite,
-                                        fontSize = 20.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Icon(
-                                        imageVector = Icons.Rounded.Edit,
-                                        contentDescription = "Edit Name",
-                                        tint = meloGold,
-                                        modifier = Modifier
-                                            .size(16.dp)
-                                            .clickable {
-                                                tempName = displayName
-                                                showEditNameDialog = true
-                                            }
-                                    )
-                                }
-                                Spacer(Modifier.height(3.dp))
-                                Text(
-                                    text = userEmail,
-                                    color = mutedText,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold)
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                }
-                            }
+                                .border(2.dp, Color.White.copy(alpha = 0.18f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = initials,
+                                color = VoidBlack,
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.Black
+                            )
                         }
 
-                        Spacer(Modifier.height(18.dp))
+                        Spacer(Modifier.height(12.dp))
+
+                        Text(
+                            text = displayName,
+                            color = pureWhite,
+                            fontSize = 21.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = (-0.3).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = userEmail,
+                                color = mutedText,
+                                fontSize = 12.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(Modifier.height(20.dp))
                         HorizontalDivider(color = cardBorder)
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(16.dp))
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             SanctuaryStatPill(count = likedSongsList.size.toString(), label = "Liked", accent = Color(0xFFFF4081))
+                            Box(Modifier.width(1.dp).height(24.dp).background(cardBorder))
                             SanctuaryStatPill(count = userPlaylists.size.toString(), label = "Playlists", accent = meloGold)
+                            Box(Modifier.width(1.dp).height(24.dp).background(cardBorder))
                             SanctuaryStatPill(count = downloadedSongsList.size.toString(), label = "Offline", accent = Color(0xFF00E676))
+                            Box(Modifier.width(1.dp).height(24.dp).background(cardBorder))
                             SanctuaryStatPill(count = recentlyPlayedList.size.toString(), label = "History", accent = Color(0xFF00E5FF))
                         }
                     }
                     Spacer(Modifier.height(22.dp))
                 }
 
+                // 3. Cloud Backup Section
                 item {
                     Text(
-                        text = "CLOUD VAULT",
+                        text = "CLOUD SYNC",
                         color = mutedText,
-                        fontSize = 11.sp,
+                        fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.4.sp,
                         modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
@@ -4454,10 +4813,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         if (supabaseSync.isLoggedIn) {
                             ProfileSettingRow(
-                                icon = Icons.Rounded.CloudSync,
+                                icon = Icons.Rounded.CloudDone,
                                 iconTint = Color(0xFF00E676),
-                                title = if (isSyncingNow) "Syncing Vault..." else "Sync Cloud Vault Now",
-                                subtitle = "Push & pull playlists, likes, and listening history",
+                                title = if (isSyncingNow) "Backing up..." else "Backup Vault Now",
+                                subtitle = "",
                                 onClick = {
                                     if (!isSyncingNow) {
                                         isSyncingNow = true
@@ -4484,20 +4843,21 @@ class MainActivity : ComponentActivity() {
                             ProfileSettingRow(
                                 icon = Icons.Rounded.Login,
                                 iconTint = meloGold,
-                                title = "Sign in to Cloud Vault",
-                                subtitle = "Connect Google or Email to back up your music",
+                                title = "Sign in to Cloud",
+                                subtitle = "",
                                 onClick = onSignInRequest
                             )
                         }
                     }
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(20.dp))
                 }
 
+                // 4. Audio & Playback Section
                 item {
                     Text(
                         text = "AUDIO & PLAYBACK",
                         color = mutedText,
-                        fontSize = 11.sp,
+                        fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.4.sp,
                         modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
@@ -4512,7 +4872,7 @@ class MainActivity : ComponentActivity() {
                         ProfileSettingRow(
                             icon = Icons.Rounded.GraphicEq,
                             iconTint = meloGold,
-                            title = "Streaming & Download Quality",
+                            title = "Audio Quality",
                             subtitle = streamingQuality,
                             onClick = {
                                 val options = listOf("320 kbps (Extreme)", "160 kbps (High)", "96 kbps (Data Saver)")
@@ -4526,7 +4886,7 @@ class MainActivity : ComponentActivity() {
                             icon = Icons.Rounded.Radio,
                             iconTint = Color(0xFF00E5FF),
                             title = "Endless Smart Radio",
-                            subtitle = "Auto-queue similar songs",
+                            subtitle = "",
                             checked = autoRadioEnabled,
                             onCheckedChange = {
                                 autoRadioEnabled = it
@@ -4546,14 +4906,15 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(20.dp))
                 }
 
+                // 5. Storage & System Section
                 item {
                     Text(
-                        text = "STORAGE & DATA",
+                        text = "STORAGE & SYSTEM",
                         color = mutedText,
-                        fontSize = 11.sp,
+                        fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.4.sp,
                         modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
@@ -4568,8 +4929,8 @@ class MainActivity : ComponentActivity() {
                         ProfileSettingRow(
                             icon = Icons.Rounded.CleaningServices,
                             iconTint = Color(0xFFFFB74D),
-                            title = "Clear Artwork & Stream Cache",
-                            subtitle = "Currently using $cacheSizeMb",
+                            title = "Clear Cache",
+                            subtitle = "$cacheSizeMb used",
                             onClick = {
                                 lifecycleScope.launch(Dispatchers.IO) {
                                     runCatching { context.cacheDir.deleteRecursively() }
@@ -4585,7 +4946,7 @@ class MainActivity : ComponentActivity() {
                             icon = Icons.Rounded.OfflinePin,
                             iconTint = Color(0xFF00E676),
                             title = "Offline Downloads",
-                            subtitle = "${downloadedSongsList.size} tracks ($downloadsSizeMb)",
+                            subtitle = "${downloadedSongsList.size} tracks • $downloadsSizeMb",
                             onClick = {
                                 if (downloadedSongsList.isNotEmpty()) {
                                     showClearDownloadsDialog = true
@@ -4594,64 +4955,45 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         )
-                    }
-                    Spacer(Modifier.height(22.dp))
-                }
-
-                item {
-                    Text(
-                        text = "ABOUT MELO",
-                        color = mutedText,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.4.sp,
-                        modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(cardSurface)
-                            .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
-                    ) {
+                        HorizontalDivider(color = cardBorder, modifier = Modifier.padding(horizontal = 16.dp))
                         ProfileSettingRow(
                             icon = Icons.Rounded.SystemUpdateAlt,
                             iconTint = Color(0xFF00E5FF),
                             title = "Software Update",
-                            subtitle = "Installed build: $currentAppVersionName",
+                            subtitle = "Build $currentAppVersionName",
                             onClick = onCheckUpdates
                         )
                     }
-                    Spacer(Modifier.height(28.dp))
+                    Spacer(Modifier.height(26.dp))
                 }
 
+                // 6. Clean Red Log Out Button with Confirmation
                 if (supabaseSync.isLoggedIn || userProfileName != null) {
                     item {
-                        Box(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MeloAccent.copy(alpha = 0.14f))
-                                .border(1.dp, MeloAccent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                                .height(50.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MeloAccent.copy(alpha = 0.12f))
+                                .border(1.dp, MeloAccent.copy(alpha = 0.40f), RoundedCornerShape(14.dp))
                                 .clickable { showLogoutDialog = true },
-                            contentAlignment = Alignment.Center
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Logout,
-                                    contentDescription = "Log Out",
-                                    tint = MeloAccent,
-                                    modifier = Modifier.size(19.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    text = "Log Out",
-                                    color = MeloAccent,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Rounded.Logout,
+                                contentDescription = "Log Out",
+                                tint = MeloAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "Log Out",
+                                color = MeloAccent,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                         Spacer(Modifier.height(24.dp))
                     }
@@ -4661,7 +5003,7 @@ class MainActivity : ComponentActivity() {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 42.dp),
+                            .padding(bottom = 36.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -4792,7 +5134,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onClick() }
-                .padding(horizontal = 16.dp, vertical = 15.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -4802,13 +5144,15 @@ class MainActivity : ComponentActivity() {
                     .background(iconTint.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(19.dp))
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = TextPure, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(2.dp))
-                Text(subtitle, color = TextMuted, fontSize = 12.sp)
+                if (subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(subtitle, color = TextMuted, fontSize = 12.sp)
+                }
             }
             Icon(
                 Icons.Rounded.ChevronRight,
@@ -4842,13 +5186,15 @@ class MainActivity : ComponentActivity() {
                     .background(iconTint.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(19.dp))
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = TextPure, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(2.dp))
-                Text(subtitle, color = TextMuted, fontSize = 12.sp)
+                if (subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(subtitle, color = TextMuted, fontSize = 12.sp)
+                }
             }
             Switch(
                 checked = checked,
@@ -5319,9 +5665,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 5. Minimal Bottom Mode Switcher
+                // 5. Minimal Bottom Mode Switcher + Properly Spaced "7V LABS" Footer
                 item {
-                    Spacer(Modifier.height(26.dp))
+                    Spacer(Modifier.height(24.dp))
                     Row(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
@@ -5345,7 +5691,18 @@ class MainActivity : ComponentActivity() {
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Spacer(Modifier.height(72.dp))
+
+                    Spacer(Modifier.height(if (isSignUp) 48.dp else 84.dp))
+
+                    Text(
+                        text = "7V LABS",
+                        color = mutedText.copy(alpha = 0.45f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 3.5.sp
+                    )
+
+                    Spacer(Modifier.height(28.dp))
                 }
             }
 
@@ -5365,19 +5722,6 @@ class MainActivity : ComponentActivity() {
                         .size(width = animatedLogoWidth, height = animatedLogoHeight)
                 )
             }
-
-            // Permanent "7V LABS" signature on BOTH Sign In & Create Account pages, positioned slightly higher
-            Text(
-                text = "7V LABS",
-                color = mutedText.copy(alpha = 0.45f),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 3.5.sp,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 38.dp)
-            )
         }
     }
 
@@ -5525,174 +5869,6 @@ class MainActivity : ComponentActivity() {
                 topLeft = Offset(w * 0.50f, h * 0.41f),
                 size = androidx.compose.ui.geometry.Size(w * 0.46f, stroke * 0.92f)
             )
-        }
-    }
-
-    @Composable
-    private fun GoldAuthField(
-        label: String,
-        value: String,
-        onValueChange: (String) -> Unit,
-        placeholder: String,
-        isPassword: Boolean = false,
-        passwordVisible: Boolean = false,
-        onTogglePassword: (() -> Unit)? = null,
-        isFocused: Boolean,
-        fieldSurface: Color,
-        fieldBorder: Color,
-        goldAccent: Color,
-        textColor: Color,
-        mutedColor: Color,
-        onFocusChange: (Boolean) -> Unit
-    ) {
-        val visualTransformation = if (isPassword && !passwordVisible) {
-            androidx.compose.ui.text.input.PasswordVisualTransformation()
-        } else {
-            androidx.compose.ui.text.input.VisualTransformation.None
-        }
-
-        Column(Modifier.fillMaxWidth()) {
-            Text(
-                text = label,
-                color = if (isFocused) goldAccent else mutedColor,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.height(7.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(fieldSurface)
-                    .border(
-                        width = if (isFocused) 1.5.dp else 1.dp,
-                        color = if (isFocused) goldAccent else fieldBorder,
-                        shape = RoundedCornerShape(14.dp)
-                    )
-                    .padding(horizontal = 16.dp, vertical = 15.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BasicTextField(
-                        value = value,
-                        onValueChange = onValueChange,
-                        singleLine = true,
-                        visualTransformation = visualTransformation,
-                        textStyle = TextStyle(
-                            color = textColor,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Normal
-                        ),
-                        cursorBrush = SolidColor(goldAccent),
-                        modifier = Modifier
-                            .weight(1f)
-                            .onFocusChanged { onFocusChange(it.isFocused) },
-                        decorationBox = { inner ->
-                            if (value.isEmpty()) {
-                                Text(placeholder, color = mutedColor.copy(alpha = 0.55f), fontSize = 14.5.sp)
-                            } else {
-                                inner()
-                            }
-                        }
-                    )
-                    if (isPassword && onTogglePassword != null) {
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = if (passwordVisible) "HIDE" else "SHOW",
-                            color = goldAccent,
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 1.sp,
-                            modifier = Modifier.clickable { onTogglePassword() }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun SanctuaryInputField(
-        label: String,
-        value: String,
-        onValueChange: (String) -> Unit,
-        placeholder: String,
-        leadingIcon: ImageVector,
-        isPassword: Boolean = false,
-        passwordVisible: Boolean = false,
-        onTogglePassword: (() -> Unit)? = null,
-        isFocused: Boolean,
-        accentColor: Color,
-        onFocusChange: (Boolean) -> Unit
-    ) {
-        val visualTransformation = if (isPassword && !passwordVisible) {
-            androidx.compose.ui.text.input.PasswordVisualTransformation()
-        } else {
-            androidx.compose.ui.text.input.VisualTransformation.None
-        }
-
-        Column(Modifier.fillMaxWidth()) {
-            Text(
-                text = label,
-                fontSize = 10.sp,
-                letterSpacing = 1.4.sp,
-                color = if (isFocused) accentColor else TextMuted,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0xFF06060A))
-                    .border(
-                        width = if (isFocused) 1.5.dp else 1.dp,
-                        color = if (isFocused) accentColor else Color.White.copy(alpha = 0.12f),
-                        shape = RoundedCornerShape(14.dp)
-                    )
-                    .padding(horizontal = 14.dp, vertical = 13.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = leadingIcon,
-                        contentDescription = null,
-                        tint = if (isFocused) accentColor else TextSubtle,
-                        modifier = Modifier.size(19.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    BasicTextField(
-                        value = value,
-                        onValueChange = onValueChange,
-                        singleLine = true,
-                        visualTransformation = visualTransformation,
-                        textStyle = TextStyle(
-                            color = TextPure,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Medium
-                        ),
-                        cursorBrush = SolidColor(accentColor),
-                        modifier = Modifier
-                            .weight(1f)
-                            .onFocusChanged { onFocusChange(it.isFocused) },
-                        decorationBox = { inner ->
-                            if (value.isEmpty()) {
-                                Text(placeholder, color = TextSubtle, fontSize = 14.sp)
-                            } else {
-                                inner()
-                            }
-                        }
-                    )
-                    if (isPassword && onTogglePassword != null) {
-                        Icon(
-                            imageVector = if (passwordVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = "Toggle Password",
-                            tint = TextMuted,
-                            modifier = Modifier
-                                .size(19.dp)
-                                .clickable { onTogglePassword() }
-                        )
-                    }
-                }
-            }
         }
     }
 
@@ -6593,6 +6769,9 @@ class MainActivity : ComponentActivity() {
                             }
                         } else {
                             SyncedLyricsViewport(
+                                song = song,
+                                artworkColor = artworkColor,
+                                secondaryColor = secondaryColor,
                                 lyrics = lyrics,
                                 currentPositionProvider = currentPositionProvider,
                                 onSeek = onSeek
@@ -6979,13 +7158,22 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SyncedLyricsViewport(
+        song: Song,
+        artworkColor: Color,
+        secondaryColor: Color,
         lyrics: List<LyricLine>,
         currentPositionProvider: () -> Float,
         onSeek: (Float) -> Unit
     ) {
+        val context = LocalContext.current
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
         val listState = rememberLazyListState()
         val isSynced = remember(lyrics) { lyrics.any { it.time >= 0f } }
         val currentPositionMs = currentPositionProvider()
+
+        var selectedLyricIndexForShare by remember { mutableStateOf<Int?>(null) }
+        var extraLinesCount by remember { mutableIntStateOf(0) } // 0 = 1 line, 1 = 2 lines, 2 = 3 lines
+        var isGeneratingCard by remember { mutableStateOf(false) }
 
         val activeLyricIndex = remember(lyrics, currentPositionMs, isSynced) {
             if (!isSynced) -1
@@ -7003,9 +7191,11 @@ class MainActivity : ComponentActivity() {
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp),
-            contentPadding = PaddingValues(top = 40.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentPadding = PaddingValues(top = 24.dp, bottom = 140.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
             if (lyrics.isEmpty()) {
                 item {
@@ -7017,29 +7207,48 @@ class MainActivity : ComponentActivity() {
                         fontWeight = FontWeight.Medium
                     )
                 }
+            } else {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.IosShare,
+                            contentDescription = null,
+                            tint = Color(0xFFFFCD01),
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "HOLD ANY LINE TO SHARE LYRIC CARD",
+                            fontSize = 9.5.sp,
+                            letterSpacing = 1.2.sp,
+                            color = TextPure.copy(alpha = 0.85f),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
+
             itemsIndexed(lyrics) { index, line ->
                 val isActive = if (isSynced) index == activeLyricIndex else true
                 val scale by animateFloatAsState(
-                    targetValue = if (!isSynced) 1f else if (isActive) 1.06f else 0.96f,
+                    targetValue = if (!isSynced) 1f else if (isActive) 1.04f else 0.96f,
                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                     label = "lyric_scale"
                 )
                 val alpha by animateFloatAsState(
-                    targetValue = if (!isSynced) 0.88f else if (isActive) 1f else 0.28f,
+                    targetValue = if (!isSynced) 0.90f else if (isActive) 1f else 0.32f,
                     animationSpec = tween(180),
                     label = "lyric_alpha"
                 )
 
-                Text(
-                    text = line.text,
-                    fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.Black,
-                    fontSize = if (isSynced) 28.sp else 22.sp,
-                    color = if (isActive) TextPure else TextMuted,
-                    lineHeight = if (isSynced) 36.sp else 32.sp,
-                    softWrap = true,
-                    textAlign = TextAlign.Start,
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .graphicsLayer {
@@ -7048,10 +7257,516 @@ class MainActivity : ComponentActivity() {
                             scaleY = scale
                             this.alpha = alpha
                         }
-                        .clickable(enabled = isSynced && line.time >= 0f) {
-                            onSeek(line.time * 1000f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .combinedClickable(
+                            onClick = {
+                                if (isSynced && line.time >= 0f) {
+                                    onSeek(line.time * 1000f)
+                                } else {
+                                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    extraLinesCount = 0
+                                    selectedLyricIndexForShare = index
+                                }
+                            },
+                            onLongClick = {
+                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                extraLinesCount = 0
+                                selectedLyricIndexForShare = index
+                            }
+                        )
+                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = line.text,
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Black,
+                        fontSize = if (isSynced) 26.sp else 21.sp,
+                        color = if (isActive) TextPure else TextMuted,
+                        lineHeight = if (isSynced) 34.sp else 29.sp,
+                        softWrap = true,
+                        textAlign = TextAlign.Start,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        // Full-Expanded Shareable Lyric Card Bottom Sheet
+        if (selectedLyricIndexForShare != null) {
+            val startIdx = selectedLyricIndexForShare!!
+            val maxExtra = (lyrics.lastIndex - startIdx).coerceIn(0, 2)
+            val selectedLines = (0..extraLinesCount.coerceAtMost(maxExtra))
+                .mapNotNull { offset -> lyrics.getOrNull(startIdx + offset)?.text?.trim() }
+                .filter { it.isNotEmpty() }
+            val combinedLyricText = selectedLines.joinToString("\n")
+
+            val shareSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+            ModalBottomSheet(
+                onDismissRequest = {
+                    if (!isGeneratingCard) selectedLyricIndexForShare = null
+                },
+                sheetState = shareSheetState,
+                containerColor = Color(0xFF0B0B10),
+                scrimColor = Color.Black.copy(alpha = 0.72f)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Share Lyric Card",
+                            color = TextPure,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(
+                            onClick = { if (!isGeneratingCard) selectedLyricIndexForShare = null },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.08f))
+                        ) {
+                            Icon(
+                                Icons.Rounded.Close,
+                                contentDescription = "Close",
+                                tint = TextPure,
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
+                    }
+
+                    Spacer(Modifier.height(18.dp))
+
+                    // Live Luxury Preview of the Lyric Card
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(28.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        artworkColor.copy(alpha = 0.90f),
+                                        secondaryColor.copy(alpha = 0.55f),
+                                        Color(0xFF09090E)
+                                    ),
+                                    start = Offset(0f, 0f),
+                                    end = Offset(900f, 1100f)
+                                )
+                            )
+                            .border(
+                                width = 1.dp,
+                                brush = Brush.linearGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = 0.32f),
+                                        Color.White.copy(alpha = 0.06f)
+                                    )
+                                ),
+                                shape = RoundedCornerShape(28.dp)
+                            )
+                            .padding(24.dp)
+                    ) {
+                        Column {
+                            // Top Track Metadata Header
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                AsyncImage(
+                                    model = song.thumbnailUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .border(1.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(14.dp))
+                                )
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = song.title,
+                                        color = TextPure,
+                                        fontSize = 16.5.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = song.artist,
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(24.dp))
+
+                            // Bold Editorial Lyric Lines
+                            Text(
+                                text = combinedLyricText,
+                                color = TextPure,
+                                fontSize = if (combinedLyricText.length > 85) 20.sp else 23.sp,
+                                fontWeight = FontWeight.Black,
+                                lineHeight = if (combinedLyricText.length > 85) 28.sp else 31.sp,
+                                letterSpacing = (-0.3).sp
+                            )
+
+                            Spacer(Modifier.height(28.dp))
+
+                            // Clean Melo Vector Logo Footer (No "7V LABS")
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Start,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = com.melomusic.app.R.drawable.ic_melo_logo),
+                                    contentDescription = "Melo",
+                                    tint = Color.Unspecified,
+                                    modifier = Modifier
+                                        .width(62.dp)
+                                        .height(30.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Line Count Selector Pills (1 Line / 2 Lines / 3 Lines)
+                    if (maxExtra >= 1) {
+                        Spacer(Modifier.height(16.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            for (count in 0..maxExtra) {
+                                val isChosen = extraLinesCount == count
+                                val label = when (count) {
+                                    0 -> "1 Line"
+                                    1 -> "2 Lines"
+                                    else -> "3 Lines"
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(
+                                            if (isChosen) Color(0xFFFFCD01)
+                                            else Color.White.copy(alpha = 0.07f)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (isChosen) Color(0xFFFFCD01) else Color.White.copy(alpha = 0.12f),
+                                            RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable { extraLinesCount = count }
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (isChosen) VoidBlack else TextPure,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(22.dp))
+
+                    Button(
+                        onClick = {
+                            if (!isGeneratingCard) {
+                                isGeneratingCard = true
+                                lifecycleScope.launch {
+                                    shareMeloLyricStoryCard(
+                                        context = context,
+                                        song = song,
+                                        lyricText = combinedLyricText,
+                                        primaryColor = artworkColor,
+                                        secondaryColor = secondaryColor
+                                    )
+                                    isGeneratingCard = false
+                                    selectedLyricIndexForShare = null
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFCD01)),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        if (isGeneratingCard) {
+                            CircularProgressIndicator(
+                                color = VoidBlack,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.Share,
+                                contentDescription = null,
+                                tint = VoidBlack,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "Share Lyric Card",
+                                color = VoidBlack,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun shareMeloLyricStoryCard(
+        context: Context,
+        song: Song,
+        lyricText: String,
+        primaryColor: Color,
+        secondaryColor: Color
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val width = 1080
+            val height = 1920
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+
+            val c1 = android.graphics.Color.argb(
+                255,
+                (primaryColor.red * 255).toInt(),
+                (primaryColor.green * 255).toInt(),
+                (primaryColor.blue * 255).toInt()
+            )
+            val c2 = android.graphics.Color.argb(
+                255,
+                (secondaryColor.red * 255).toInt(),
+                (secondaryColor.green * 255).toInt(),
+                (secondaryColor.blue * 255).toInt()
+            )
+            val obsidian = android.graphics.Color.parseColor("#060609")
+
+            // 1. Rich Multi-Layered Story Backdrop (Deep Obsidian + Dual Radial Aura Orbs)
+            canvas.drawColor(obsidian)
+
+            val topOrbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.RadialGradient(
+                    width * 0.22f, height * 0.20f, width * 0.95f,
+                    intArrayOf(
+                        android.graphics.Color.argb(215, (primaryColor.red * 255).toInt(), (primaryColor.green * 255).toInt(), (primaryColor.blue * 255).toInt()),
+                        android.graphics.Color.argb(95, (secondaryColor.red * 255).toInt(), (secondaryColor.green * 255).toInt(), (secondaryColor.blue * 255).toInt()),
+                        android.graphics.Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.52f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
                 )
+            }
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), topOrbPaint)
+
+            val bottomOrbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.RadialGradient(
+                    width * 0.82f, height * 0.78f, width * 0.85f,
+                    intArrayOf(
+                        android.graphics.Color.argb(175, (secondaryColor.red * 255).toInt(), (secondaryColor.green * 255).toInt(), (secondaryColor.blue * 255).toInt()),
+                        android.graphics.Color.argb(70, (primaryColor.red * 255).toInt(), (primaryColor.green * 255).toInt(), (primaryColor.blue * 255).toInt()),
+                        android.graphics.Color.TRANSPARENT
+                    ),
+                    floatArrayOf(0f, 0.55f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bottomOrbPaint)
+
+            // 2. Pre-measure Lyric Text Height so the Card Dynamically Fits the Selected Lines!
+            val cardLeft = 86f
+            val cardRight = width - 86f
+            val innerPadding = 72f
+            val contentWidth = (cardRight - cardLeft - (innerPadding * 2)).toInt()
+
+            val lyricPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textSize = when {
+                    lyricText.length > 140 -> 50f
+                    lyricText.length > 85 -> 58f
+                    else -> 66f
+                }
+                typeface = android.graphics.Typeface.create("sans-serif-black", android.graphics.Typeface.BOLD)
+                letterSpacing = -0.015f
+            }
+
+            val staticLayout = android.text.StaticLayout.Builder
+                .obtain(lyricText, 0, lyricText.length, lyricPaint, contentWidth)
+                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(16f, 1.08f)
+                .setIncludePad(false)
+                .build()
+
+            val headerHeight = 164f
+            val footerHeight = 110f
+            val totalCardHeight = (innerPadding + headerHeight + 76f + staticLayout.height + 88f + footerHeight + innerPadding)
+                .coerceAtLeast(760f)
+
+            val cardTop = ((height - totalCardHeight) / 2f).coerceAtLeast(220f)
+            val cardBottom = cardTop + totalCardHeight
+            val cardRect = android.graphics.RectF(cardLeft, cardTop, cardRight, cardBottom)
+
+            // 3. Soft Ambient Drop Shadow + Luxury Frosted Gradient Card
+            val shadowPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.argb(140, 0, 0, 0)
+                setShadowLayer(56f, 0f, 28f, android.graphics.Color.argb(190, 0, 0, 0))
+            }
+            canvas.drawRoundRect(cardRect, 68f, 68f, shadowPaint)
+
+            val cardPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.LinearGradient(
+                    cardLeft, cardTop, cardRight, cardBottom,
+                    intArrayOf(
+                        android.graphics.Color.argb(242, (primaryColor.red * 195).toInt(), (primaryColor.green * 195).toInt(), (primaryColor.blue * 195).toInt()),
+                        android.graphics.Color.argb(246, (secondaryColor.red * 115).toInt(), (secondaryColor.green * 115).toInt(), (secondaryColor.blue * 115).toInt()),
+                        android.graphics.Color.parseColor("#F40B0B12")
+                    ),
+                    floatArrayOf(0f, 0.48f, 1f),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRoundRect(cardRect, 68f, 68f, cardPaint)
+
+            // Specular Glass Rim Border
+            val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 3.5f
+                shader = android.graphics.LinearGradient(
+                    cardLeft, cardTop, cardRight, cardBottom,
+                    intArrayOf(
+                        android.graphics.Color.argb(110, 255, 255, 255),
+                        android.graphics.Color.argb(25, 255, 255, 255)
+                    ),
+                    null,
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRoundRect(cardRect, 68f, 68f, borderPaint)
+
+            // Subtle Decorative Quote Watermark in Top-Right of Card
+            val quoteWatermarkPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.argb(24, 255, 255, 255)
+                textSize = 240f
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.SERIF, android.graphics.Typeface.BOLD)
+            }
+            canvas.drawText("“", cardRight - 185f, cardTop + 230f, quoteWatermarkPaint)
+
+            // 4. Load & Draw Rounded Album Cover Art
+            val loader = context.imageLoader
+            val req = ImageRequest.Builder(context)
+                .data(song.thumbnailUrl)
+                .size(360, 360)
+                .allowHardware(false)
+                .build()
+            val artDrawable = (loader.execute(req) as? SuccessResult)?.drawable
+            val artBmp = (artDrawable as? BitmapDrawable)?.bitmap
+
+            val artSize = 160f
+            val artLeft = cardLeft + innerPadding
+            val artTop = cardTop + innerPadding
+            if (artBmp != null) {
+                val scaledArt = Bitmap.createScaledBitmap(artBmp, artSize.toInt(), artSize.toInt(), true)
+                val saveCount = canvas.save()
+                val clipPath = android.graphics.Path().apply {
+                    addRoundRect(
+                        android.graphics.RectF(artLeft, artTop, artLeft + artSize, artTop + artSize),
+                        36f, 36f,
+                        android.graphics.Path.Direction.CW
+                    )
+                }
+                canvas.clipPath(clipPath)
+                canvas.drawBitmap(scaledArt, artLeft, artTop, null)
+                canvas.restoreToCount(saveCount)
+            }
+
+            // 5. Song Title & Artist Header
+            val titlePaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textSize = 45f
+                typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+            }
+            val artistPaint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.argb(200, 255, 255, 255)
+                textSize = 33f
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            }
+
+            val textStartX = artLeft + artSize + 36f
+            val maxHeaderWidth = (cardRight - innerPadding) - textStartX
+            val ellipsizedTitle = android.text.TextUtils.ellipsize(
+                song.title, titlePaint, maxHeaderWidth, android.text.TextUtils.TruncateAt.END
+            ).toString()
+            val ellipsizedArtist = android.text.TextUtils.ellipsize(
+                song.artist, artistPaint, maxHeaderWidth, android.text.TextUtils.TruncateAt.END
+            ).toString()
+
+            canvas.drawText(ellipsizedTitle, textStartX, artTop + 72f, titlePaint)
+            canvas.drawText(ellipsizedArtist, textStartX, artTop + 124f, artistPaint)
+
+            // 6. Draw Lyric Block
+            val lyricStartY = artTop + artSize + 76f
+            canvas.save()
+            canvas.translate(artLeft, lyricStartY)
+            staticLayout.draw(canvas)
+            canvas.restore()
+
+            // 7. Draw Official Melo Vector Logo at Bottom-Left (No "7V LABS")
+            val logoDrawable = ContextCompat.getDrawable(context, com.melomusic.app.R.drawable.ic_melo_logo)
+            if (logoDrawable != null) {
+                val logoW = 135
+                val logoH = 76
+                val logoLeft = artLeft.toInt()
+                val logoTop = (cardBottom - innerPadding - logoH + 12f).toInt()
+                logoDrawable.setBounds(logoLeft, logoTop, logoLeft + logoW, logoTop + logoH)
+                logoDrawable.draw(canvas)
+            }
+
+            // 8. Save PNG & Open Native Share Sheet
+            val shareDir = File(context.cacheDir, "lyric_cards").apply { if (!exists()) mkdirs() }
+            val outFile = File(shareDir, "melo_lyric_${System.currentTimeMillis()}.png")
+            FileOutputStream(outFile).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                out.flush()
+            }
+
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                outFile
+            )
+
+            withContext(Dispatchers.Main) {
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                    putExtra(Intent.EXTRA_TEXT, "“$lyricText” — ${song.title} by ${song.artist}")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(shareIntent, "Share Lyric Card"))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Could not generate Lyric Card", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -7294,6 +8009,9 @@ class MainActivity : ComponentActivity() {
 
                 Box(Modifier.weight(0.58f).fillMaxHeight()) {
                     SyncedLyricsViewport(
+                        song = song,
+                        artworkColor = artworkColor,
+                        secondaryColor = secondaryColor,
                         lyrics = lyrics,
                         currentPositionProvider = currentPositionProvider,
                         onSeek = onSeek

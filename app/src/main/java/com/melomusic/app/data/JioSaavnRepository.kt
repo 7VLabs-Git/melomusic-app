@@ -220,6 +220,26 @@ class YouTubeMusicRadioEngine(private val httpClient: OkHttpClient) {
 // -------------------------------------------------------------
 class JioSaavnRepository(private val context: Context? = null) {
 
+    private val vaultPrefs by lazy {
+        context?.getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
+    }
+
+    private fun applyPreferredBitrate(rawUrl: String): String {
+        val qualityPref = vaultPrefs?.getString("pref_streaming_quality", "320 kbps (Extreme)").orEmpty()
+        val targetSuffix = when {
+            qualityPref.contains("96") -> "_96.mp4"
+            qualityPref.contains("160") -> "_160.mp4"
+            else -> "_320.mp4"
+        }
+        return rawUrl
+            .replace("_96.mp4", targetSuffix)
+            .replace("_160.mp4", targetSuffix)
+            .replace("_320.mp4", targetSuffix)
+            .replace("_96.mp3", targetSuffix.replace(".mp4", ".mp3"))
+            .replace("_160.mp3", targetSuffix.replace(".mp4", ".mp3"))
+            .replace("_320.mp3", targetSuffix.replace(".mp4", ".mp3"))
+    }
+
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -512,12 +532,17 @@ class JioSaavnRepository(private val context: Context? = null) {
         val isDataSaver96 = userPrefQuality?.startsWith("96") == true
 
         val cached = db?.songDao()?.getSongById(song.id)
-        if (cached != null && !isDataSaver96) {
-            if (preferredBitrate == NetworkQualityHelper.AudioBitratePreference.HIGH_320 && !cached.streamUrl320.isNullOrBlank()) {
-                return@withContext cached.streamUrl320
-            }
-            if (!cached.streamUrl160.isNullOrBlank()) {
-                return@withContext cached.streamUrl160
+        if (cached != null) {
+            val baseCachedUrl = cached.streamUrl320?.takeIf { it.isNotBlank() }
+                ?: cached.streamUrl160?.takeIf { it.isNotBlank() }
+            if (baseCachedUrl != null) {
+                return@withContext if (!userPrefQuality.isNullOrBlank()) {
+                    applyPreferredBitrate(baseCachedUrl)
+                } else if (preferredBitrate == NetworkQualityHelper.AudioBitratePreference.HIGH_320 && !cached.streamUrl320.isNullOrBlank()) {
+                    cached.streamUrl320
+                } else {
+                    cached.streamUrl160 ?: baseCachedUrl
+                }
             }
         }
 
@@ -571,7 +596,8 @@ class JioSaavnRepository(private val context: Context? = null) {
             cipher.init(Cipher.DECRYPT_MODE, secretKey)
             val decoded = android.util.Base64.decode(enc, android.util.Base64.DEFAULT)
             val decryptedBytes = cipher.doFinal(decoded)
-            String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
+            val httpsUrl = String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
+            applyPreferredBitrate(httpsUrl)
         } catch (e: Exception) {
             e.printStackTrace()
             null
