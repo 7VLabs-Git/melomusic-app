@@ -1,65 +1,116 @@
+// File: app/src/main/java/com/melomusic/app/playback/MusicService.kt
 package com.melomusic.app.playback
 
-import android.net.Uri
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
+import android.app.PendingIntent
+import android.content.Intent
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import com.melomusic.app.data.Song
+import com.melomusic.app.MainActivity
 
 @UnstableApi
 class MusicService : MediaSessionService() {
-
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
+
+    companion object {
+        var onSkipNextRequested: (() -> Unit)? = null
+        var onSkipPreviousRequested: (() -> Unit)? = null
+    }
 
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Build HTTP DataSource with cross-protocol redirect support
+        // Configure Media3 Notification Provider
+        setMediaNotificationProvider(
+            DefaultMediaNotificationProvider.Builder(this)
+                .setChannelId("melo_media3_playback_channel")
+                .build()
+        )
+
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
 
+        val defaultDataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
-            .setDataSourceFactory(httpDataSourceFactory)
+            .setDataSourceFactory(defaultDataSourceFactory)
 
-        // 2. Initialize ExoPlayer instance
-        player = ExoPlayer.Builder(this)
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
+        val exoPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(audioAttributes, true) // Auto audio-focus & ducking
             .setHandleAudioBecomingNoisy(true)
             .build()
 
-        // 3. Attach MediaSession for system/notification controls
-        mediaSession = MediaSession.Builder(this, player!!).build()
-    }
+        player = exoPlayer
 
-    /**
-     * Plays a resolved direct CDN URL while attaching display metadata for notification/lockscreen.
-     */
-    fun playStream(streamUrl: String, song: Song) {
-        val mediaItem = MediaItem.Builder()
-            .setUri(Uri.parse(streamUrl))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(song.title)
-                    .setArtist(song.artist)
-                    .setArtworkUri(Uri.parse(song.thumbnailUrl))
+        // Wrap ExoPlayer so Lockscreen / Bluetooth Next & Prev buttons always stay enabled
+        // and trigger our custom Smart Queue in MainActivity
+        val forwardingPlayer = object : ForwardingPlayer(exoPlayer) {
+            override fun getAvailableCommands(): Player.Commands {
+                return super.getAvailableCommands()
+                    .buildUpon()
+                    .add(COMMAND_SEEK_TO_NEXT)
+                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .add(COMMAND_SEEK_TO_PREVIOUS)
+                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
                     .build()
-            )
-            .build()
+            }
 
-        player?.apply {
-            setMediaItem(mediaItem)
-            prepare()
-            play()
+            override fun isCommandAvailable(command: Int): Boolean {
+                if (command == COMMAND_SEEK_TO_NEXT ||
+                    command == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
+                    command == COMMAND_SEEK_TO_PREVIOUS ||
+                    command == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+                ) {
+                    return true
+                }
+                return super.isCommandAvailable(command)
+            }
+
+            override fun seekToNext() {
+                onSkipNextRequested?.invoke()
+            }
+
+            override fun seekToNextMediaItem() {
+                onSkipNextRequested?.invoke()
+            }
+
+            override fun seekToPrevious() {
+                onSkipPreviousRequested?.invoke()
+            }
+
+            override fun seekToPreviousMediaItem() {
+                onSkipPreviousRequested?.invoke()
+            }
         }
+
+        val sessionActivityPendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
+            .setSessionActivity(sessionActivityPendingIntent)
+            .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {

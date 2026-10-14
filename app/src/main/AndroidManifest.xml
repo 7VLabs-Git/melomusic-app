@@ -1,21 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- FIX: without POST_NOTIFICATIONS on Android 13+, the media notification is
-         silently dropped. Media3 then cannot promote MusicService to the foreground,
-         and the system kills playback within seconds of the app being backgrounded. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
-    <!-- Needed for the GitHub Auto-Updater -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
-
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".MeloApplication"
@@ -48,9 +39,6 @@
                 android:resource="@xml/provider_paths" />
         </provider>
 
-        <!-- FIX: exported must be false. An exported MediaSessionService lets any app
-             on the device bind and drive your player. Media3 only needs the
-             intent-filter for the system media controls to discover the session. -->
         <service
             android:name=".playback.MusicService"
             android:exported="false"
@@ -60,7 +48,6 @@
             </intent-filter>
         </service>
 
-        <!-- Lets hardware buttons and Bluetooth headsets wake playback. -->
         <receiver
             android:name="androidx.media3.session.MediaButtonReceiver"
             android:exported="true">
@@ -68,7 +55,5 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>
-
     </application>
-
 </manifest>

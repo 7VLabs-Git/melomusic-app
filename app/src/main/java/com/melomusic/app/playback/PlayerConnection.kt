@@ -1,7 +1,9 @@
+// File: app/src/main/java/com/melomusic/app/playback/PlayerConnection.kt
 package com.melomusic.app.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -17,25 +19,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 
-/**
- * THE MISSING PIECE.
- *
- * A MediaSessionService does not play anything on its own — it is a host. Something has
- * to connect to its session as a MediaController and issue setMediaItem/prepare/play.
- * Nothing in the uploaded project ever did that, so even a perfectly valid stream URL
- * would have produced silence.
- *
- * Create one of these in your Application or a ViewModel, call connect() once, and
- * drive everything through it.
- */
+@androidx.media3.common.util.UnstableApi
 class PlayerConnection(
     private val context: Context,
     private val scope: CoroutineScope
 ) {
-
     private var controller: MediaController? = null
-
     private val _state = MutableStateFlow(PlaybackState())
     val state: StateFlow<PlaybackState> = _state.asStateFlow()
 
@@ -43,6 +34,7 @@ class PlayerConnection(
         val song: Song? = null,
         val isPlaying: Boolean = false,
         val isBuffering: Boolean = false,
+        val isEnded: Boolean = false,
         val positionMs: Long = 0L,
         val durationMs: Long = 0L,
         val error: String? = null
@@ -50,17 +42,46 @@ class PlayerConnection(
 
     fun connect(onReady: () -> Unit = {}) {
         if (controller != null) return
-
         val token = SessionToken(context, ComponentName(context, MusicService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
-
         future.addListener({
             val c = future.get()
             controller = c
             c.addListener(playerListener)
+
+            // CRITICAL FIX: Rehydrate state if MusicService is already holding a song when Activity reopens
+            c.currentMediaItem?.let { item ->
+                val meta = item.mediaMetadata
+                val restoredSong = Song(
+                    id = item.mediaId.ifBlank { "restored" },
+                    title = meta.title?.toString() ?: "Unknown Track",
+                    artist = meta.artist?.toString() ?: "Unknown Artist",
+                    album = meta.albumTitle?.toString() ?: "",
+                    thumbnailUrl = meta.artworkUri?.toString() ?: "",
+                    durationText = ((c.duration.coerceAtLeast(210000L)) / 1000L).toString(),
+                    encryptedMediaUrl = ""
+                )
+                _state.value = _state.value.copy(
+                    song = _state.value.song ?: restoredSong,
+                    isPlaying = c.isPlaying,
+                    isBuffering = c.playbackState == Player.STATE_BUFFERING,
+                    positionMs = c.currentPosition.coerceAtLeast(0L),
+                    durationMs = c.duration.coerceAtLeast(0L)
+                )
+            }
+
             startPositionTicker()
             onReady()
         }, MoreExecutors.directExecutor())
+    }
+
+    /**
+     * Restores the last active song into the UI state (for MiniPlayer visibility) without auto-playing.
+     */
+    fun restoreLastSongIfIdle(savedSong: Song) {
+        if (_state.value.song == null) {
+            _state.value = _state.value.copy(song = savedSong, isPlaying = false)
+        }
     }
 
     fun release() {
@@ -69,39 +90,40 @@ class PlayerConnection(
         controller = null
     }
 
-    /**
-     * Resolve the stream, hand it to the session, play.
-     * `resolveStreamUrl` is suspending, so this must not be called from a
-     * non-cancellable context.
-     */
     fun play(song: Song, resolveStreamUrl: suspend (Song) -> String?) {
         scope.launch {
             _state.value = _state.value.copy(
                 song = song,
                 isBuffering = true,
+                isEnded = false,
                 error = null,
                 positionMs = 0L
             )
-
-            val url = runCatching { resolveStreamUrl(song) }.getOrNull()
-
-            if (url.isNullOrBlank()) {
+            val rawUrl = runCatching { resolveStreamUrl(song) }.getOrNull()
+            if (rawUrl.isNullOrBlank()) {
                 _state.value = _state.value.copy(
                     isBuffering = false,
-                    error = "No playable stream for \"${song.title}\"."
+                    error = "Unable to resolve stream for \"${song.title}\"."
                 )
                 return@launch
             }
 
+            val playableUri = when {
+                rawUrl.startsWith("http://") || rawUrl.startsWith("https://") -> Uri.parse(rawUrl)
+                rawUrl.startsWith("file://") -> Uri.parse(rawUrl)
+                rawUrl.startsWith("content://") -> Uri.parse(rawUrl)
+                else -> Uri.fromFile(File(rawUrl))
+            }
+
             val item = MediaItem.Builder()
-                .setUri(url)
+                .setUri(playableUri)
                 .setMediaId(song.id)
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(song.title)
                         .setArtist(song.artist)
                         .setAlbumTitle(song.album)
-                        .setArtworkUri(android.net.Uri.parse(song.thumbnailUrl))
+                        .setArtworkUri(Uri.parse(song.thumbnailUrl))
                         .setIsBrowsable(false)
                         .setIsPlayable(true)
                         .build()
@@ -110,15 +132,19 @@ class PlayerConnection(
 
             controller?.apply {
                 setMediaItem(item)
-                prepare()      // <- omitted in most broken players
+                prepare()
                 playWhenReady = true
                 play()
             }
         }
     }
 
-    fun togglePlayPause() {
+    fun togglePlayPause(resolveIfIdle: (() -> Unit)? = null) {
         val c = controller ?: return
+        if (c.mediaItemCount == 0 && _state.value.song != null) {
+            resolveIfIdle?.invoke()
+            return
+        }
         if (c.isPlaying) c.pause() else c.play()
     }
 
@@ -141,15 +167,15 @@ class PlayerConnection(
         override fun onPlaybackStateChanged(playbackState: Int) {
             _state.value = _state.value.copy(
                 isBuffering = playbackState == Player.STATE_BUFFERING,
+                isEnded = playbackState == Player.STATE_ENDED,
                 durationMs = controller?.duration?.coerceAtLeast(0L) ?: 0L
             )
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            // 403 here almost always means the stream URL was minted for a different
-            // client than the one fetching it, or it has already expired.
             _state.value = _state.value.copy(
                 isBuffering = false,
+                isPlaying = false,
                 error = "${error.errorCodeName}: ${error.message}"
             )
         }
@@ -166,7 +192,7 @@ class PlayerConnection(
                         )
                     }
                 }
-                delay(250)
+                delay(80)
             }
         }
     }
