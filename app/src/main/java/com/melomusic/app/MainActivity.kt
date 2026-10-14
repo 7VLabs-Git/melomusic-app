@@ -245,6 +245,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun performFullLogout() {
+        cloudSyncDebounceJob?.cancel()
         supabaseSync.signOut()
         userProfileName = null
         likedSongsList.clear()
@@ -821,6 +822,7 @@ class MainActivity : ComponentActivity() {
         }
 
         radioRecommendationJob?.cancel()
+        if (!prefs.getBoolean("pref_auto_radio", true)) return
         radioRecommendationJob = lifecycleScope.launch {
             val freshRadioTracks = saavnRepository.getRadioRecommendations(seedSong, moodHint)
             withContext(Dispatchers.Main) {
@@ -923,7 +925,8 @@ class MainActivity : ComponentActivity() {
             resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
         }
 
-        if (currentQueue.size - currentQueueIndex <= 3 && !isRefillingQueue) {
+        val autoRadioEnabled = prefs.getBoolean("pref_auto_radio", true)
+        if (autoRadioEnabled && currentQueue.size - currentQueueIndex <= 3 && !isRefillingQueue) {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val hasNetwork = cm?.activeNetwork != null
             if (hasNetwork) {
@@ -1636,7 +1639,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column(Modifier.fillMaxWidth().padding(24.dp).padding(bottom = 32.dp)) {
                         Text(
-                            "Melo Sanctuary",
+                            "Melo MUSIC",
                             fontSize = 24.sp,
                             color = TextPure,
                             fontWeight = FontWeight.Bold,
@@ -2829,7 +2832,7 @@ class MainActivity : ComponentActivity() {
                                 if (cachedDhhHits.isNotEmpty()) {
                                     HomeSongShelf(
                                         title = "Desi Hip-Hop & Rap",
-                                        subtitle = "Raw bars & heavy basslines",
+                                        subtitle = "",
                                         songs = cachedDhhHits,
                                         onPlay = { s -> onPlay(s, cachedDhhHits) },
                                         onLongPress = { s -> onSongOptions(s) }
@@ -2840,7 +2843,7 @@ class MainActivity : ComponentActivity() {
                                 if (cachedPunjabiWave.isNotEmpty()) {
                                     HomeSongShelf(
                                         title = "Punjabi Chartbusters",
-                                        subtitle = "Non-stop club & drive anthems",
+                                        subtitle = "",
                                         songs = cachedPunjabiWave,
                                         onPlay = { s -> onPlay(s, cachedPunjabiWave) },
                                         onLongPress = { s -> onSongOptions(s) }
@@ -2888,7 +2891,7 @@ class MainActivity : ComponentActivity() {
                                 if (cachedLofiSanctuary.isNotEmpty()) {
                                     HomeSongShelf(
                                         title = "Late Night Lo-Fi & Chill",
-                                        subtitle = "Slowed, reverb & midnight study vibes",
+                                        subtitle = "",
                                         songs = cachedLofiSanctuary,
                                         onPlay = { s -> onPlay(s, cachedLofiSanctuary) },
                                         onLongPress = { s -> onSongOptions(s) }
@@ -2910,7 +2913,7 @@ class MainActivity : ComponentActivity() {
                                 if (cachedGlobalCharts.isNotEmpty()) {
                                     HomeSongShelf(
                                         title = "Global Viral Hits",
-                                        subtitle = "Worldwide chart-toppers",
+                                        subtitle = "",
                                         songs = cachedGlobalCharts,
                                         onPlay = { s -> onPlay(s, cachedGlobalCharts) },
                                         onLongPress = { s -> onSongOptions(s) }
@@ -3363,7 +3366,7 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.weight(1.05f).fillMaxHeight(),
                                     tag = "PULSE",
                                     title = "Pop Odyssey",
-                                    subtitle = "High-gloss global synth",
+                                    subtitle = "",
                                     gradient = listOf(Color(0xFFFF2A6D), Color(0xFF8E24AA)),
                                     vectorType = 1,
                                     onClick = { query = "Pop Hits" }
@@ -3396,9 +3399,8 @@ class MainActivity : ComponentActivity() {
                         }
 
                         item {
-                            Text("Trending Frequencies", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
+                            Text("Trending Songs", fontSize = 18.sp, color = TextPure, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(4.dp))
-                            Text("Tap any track to launch an endless radio", fontSize = 12.sp, color = TextMuted)
                             Spacer(Modifier.height(14.dp))
                         }
 
@@ -3747,13 +3749,6 @@ class MainActivity : ComponentActivity() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text(
-                                "MY SANCTUARY",
-                                fontSize = 10.sp,
-                                letterSpacing = 2.2.sp,
-                                color = Color(0xFFFFD54F),
-                                fontWeight = FontWeight.Black
-                            )
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 "My World",
@@ -3816,8 +3811,8 @@ class MainActivity : ComponentActivity() {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         // Featured Full-Width Hero Bento Card: Liked Songs
                         BentoVaultHeroCard(
-                            title = "Liked Frequencies",
-                            subtitle = if (likedSongs.isEmpty()) "Tap the heart on any track" else "${likedSongs.size} curated favorites",
+                            title = "Liked Songs",
+                            subtitle = if (likedSongs.isEmpty()) "" else "${likedSongs.size} curated favorites",
                             previewSongs = likedSongs.take(3),
                             icon = Icons.Rounded.Favorite,
                             accentColor = Color(0xFFFF4081),
@@ -3844,7 +3839,7 @@ class MainActivity : ComponentActivity() {
                             )
                             BentoVaultHalfCard(
                                 modifier = Modifier.weight(1f),
-                                title = "Recent Echoes",
+                                title = "Recent",
                                 subtitle = "${recentSongs.size} played tracks",
                                 icon = Icons.Rounded.History,
                                 accentColor = Color(0xFF00E5FF),
@@ -3867,7 +3862,6 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Column {
                             Text("Your Collections", fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold)
-                            Text("Custom playlists & imported sets", fontSize = 12.sp, color = TextMuted)
                         }
                         TextButton(onClick = onCreatePlaylist) {
                             Icon(Icons.Rounded.Add, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(18.dp))
@@ -3939,18 +3933,12 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Spacer(Modifier.height(14.dp))
                                 Text(
-                                    if (filterQuery.isNotBlank()) "No matching collections" else "Sculpt Your First Collection",
+                                    if (filterQuery.isNotBlank()) "No matching collections" else "Build Your First Collection",
                                     fontSize = 17.sp,
                                     color = TextPure,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(Modifier.height(6.dp))
-                                Text(
-                                    "Build a custom playlist from scratch or import any Spotify playlist link in seconds.",
-                                    fontSize = 12.5.sp,
-                                    color = TextMuted,
-                                    textAlign = TextAlign.Center
-                                )
                                 Spacer(Modifier.height(18.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Button(
@@ -4427,12 +4415,6 @@ class MainActivity : ComponentActivity() {
                                             .background(if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold)
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        text = if (supabaseSync.isLoggedIn) "Cloud Sanctuary Active" else "Local Device Profile",
-                                        color = if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold,
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
                                 }
                             }
                         }
@@ -4544,7 +4526,7 @@ class MainActivity : ComponentActivity() {
                             icon = Icons.Rounded.Radio,
                             iconTint = Color(0xFF00E5FF),
                             title = "Endless Smart Radio",
-                            subtitle = "Auto-queue similar songs when queue ends",
+                            subtitle = "Auto-queue similar songs",
                             checked = autoRadioEnabled,
                             onCheckedChange = {
                                 autoRadioEnabled = it
@@ -4556,7 +4538,7 @@ class MainActivity : ComponentActivity() {
                             icon = Icons.Rounded.HighQuality,
                             iconTint = Color(0xFF9B51E0),
                             title = "High-Resolution Artwork",
-                            subtitle = "Load 500x500 UHD covers & dynamic palettes",
+                            subtitle = "",
                             checked = highResArtwork,
                             onCheckedChange = {
                                 highResArtwork = it
@@ -5732,7 +5714,7 @@ class MainActivity : ComponentActivity() {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = TextPure)
                 }
-                Text("Sculpt New Playlist", fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold)
+                Text("Create New Playlist", fontSize = 20.sp, color = TextPure, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(28.dp))
 
@@ -5795,7 +5777,7 @@ class MainActivity : ComponentActivity() {
                 cursorBrush = SolidColor(Color(0xFFFFD54F)),
                 modifier = Modifier.fillMaxWidth().background(DeepSurface, RoundedCornerShape(16.dp)).padding(18.dp),
                 decorationBox = { inner ->
-                    if (name.isEmpty()) Text("Collection Title", color = TextMuted, fontSize = 20.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) else inner()
+                    if (name.isEmpty()) Text("Title", color = TextMuted, fontSize = 20.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) else inner()
                 }
             )
             Spacer(Modifier.height(28.dp))
@@ -5805,7 +5787,7 @@ class MainActivity : ComponentActivity() {
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD54F)),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text("FORGE COLLECTION", color = VoidBlack, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                Text("DONE", color = VoidBlack, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
             }
         }
     }
@@ -6913,7 +6895,7 @@ class MainActivity : ComponentActivity() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "Up Next Radio",
+                                "RADIO",
                                 fontSize = 24.sp,
                                 color = TextPure,
                                 fontWeight = FontWeight.Bold,
@@ -6929,7 +6911,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        Text("NOW RESONATING", fontSize = 11.sp, letterSpacing = 1.5.sp, color = artworkColor, fontWeight = FontWeight.Black)
+                        Text("NOW PLAYING", fontSize = 11.sp, letterSpacing = 1.5.sp, color = artworkColor, fontWeight = FontWeight.Black)
                         Spacer(Modifier.height(8.dp))
                         Row(
                             Modifier
@@ -6964,7 +6946,7 @@ class MainActivity : ComponentActivity() {
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("UPCOMING SEQUENCE", fontSize = 11.sp, letterSpacing = 1.5.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+                            Text("UPCOMING", fontSize = 11.sp, letterSpacing = 1.5.sp, color = TextMuted, fontWeight = FontWeight.Bold)
                             Text("Swipe right to remove", fontSize = 11.sp, color = TextSubtle)
                         }
                         Spacer(Modifier.height(10.dp))

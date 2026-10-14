@@ -46,6 +46,7 @@ class YouTubeMusicRadioEngine(private val httpClient: OkHttpClient) {
         }
         return JsonObject().apply { add("client", client) }
     }
+
     suspend fun resolveVideoId(title: String, artist: String, moodHint: String = ""): String? = withContext(Dispatchers.IO) {
         try {
             val cleanTitle = title.replace(Regex("""\s*[(\[{].*?[)\]}]"""), "").trim()
@@ -219,7 +220,6 @@ class YouTubeMusicRadioEngine(private val httpClient: OkHttpClient) {
 // -------------------------------------------------------------
 class JioSaavnRepository(private val context: Context? = null) {
 
-    // Initialize client first so dependent components receive it
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -228,7 +228,6 @@ class JioSaavnRepository(private val context: Context? = null) {
     private val ytRadioEngine = YouTubeMusicRadioEngine(client)
     private val db: MeloDatabase? = context?.let { MeloDatabase.getInstance(it) }
 
-    // In-memory cache for resolved lyrics to prevent redundant network queries
     private val lyricsMemoryCache = mutableMapOf<String, List<LyricLine>>()
 
     var currentContinuationToken: String? = null
@@ -336,19 +335,22 @@ class JioSaavnRepository(private val context: Context? = null) {
         }
 
         // 4. Local Room acoustic profile matching
-        val seedEntity = db?.songDao()?.getSongById(seedSong.id)
-        val seedBpm = seedEntity?.bpm ?: estimateBpm(seedSong.title, seedSong.album, seedSong.durationText)
-        val seedEnergy = seedEntity?.energyScore ?: estimateEnergy(seedSong.title)
-        val seedYearInt = seedSong.year.toIntOrNull() ?: estimateYear(seedSong.title, seedSong.artist, seedSong.album)
-
         if (db != null && pool.size < 15) {
+            val seedEntity = db.songDao().getSongById(songId = seedSong.id)
+            val seedBpm = seedEntity?.bpm ?: estimateBpm(seedSong.title, seedSong.album, durationStr = seedSong.durationText)
+            val seedEnergy = seedEntity?.energyScore ?: estimateEnergy(seedSong.title)
+            val seedYearInt: Int = seedEntity?.year?.toIntOrNull()
+                ?: (seedSong.year as String?)?.toIntOrNull()
+                ?: estimateYear(seedSong.title, seedSong.artist, seedSong.album)
+            val seedLangStr: String = (seedEntity?.language ?: (seedSong.language as String?).orEmpty()).ifBlank { "hindi" }
+
             val localAcoustic = db.songDao().getSongsByAcousticProfile(
                 minBpm = (seedBpm - 20).coerceAtLeast(60),
-                maxBpm = seedBpm + 20,
+                maxBpm = (seedBpm + 20).coerceAtMost(180),
                 targetEnergy = seedEnergy,
-                language = seedSong.language.ifBlank { "hindi" },
+                language = seedLangStr,
                 seedYear = seedYearInt,
-                limit = 10
+                limit = 15
             )
             for (neighbor in localAcoustic) {
                 val song = neighbor.toSong()
@@ -497,11 +499,20 @@ class JioSaavnRepository(private val context: Context? = null) {
     suspend fun getStreamUrl(song: Song): String? = withContext(Dispatchers.IO) {
         if (!song.localPath.isNullOrBlank()) return@withContext song.localPath
 
-        val preferredBitrate = context?.let { NetworkQualityHelper.getPreferredBitrate(it) }
-            ?: NetworkQualityHelper.AudioBitratePreference.STANDARD_160
+        val userPrefQuality = context?.getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
+            ?.getString("pref_streaming_quality", null)
+
+        val preferredBitrate = when {
+            userPrefQuality?.startsWith("320") == true -> NetworkQualityHelper.AudioBitratePreference.HIGH_320
+            userPrefQuality?.startsWith("160") == true -> NetworkQualityHelper.AudioBitratePreference.STANDARD_160
+            else -> context?.let { NetworkQualityHelper.getPreferredBitrate(it) }
+                ?: NetworkQualityHelper.AudioBitratePreference.HIGH_320
+        }
+
+        val isDataSaver96 = userPrefQuality?.startsWith("96") == true
 
         val cached = db?.songDao()?.getSongById(song.id)
-        if (cached != null) {
+        if (cached != null && !isDataSaver96) {
             if (preferredBitrate == NetworkQualityHelper.AudioBitratePreference.HIGH_320 && !cached.streamUrl320.isNullOrBlank()) {
                 return@withContext cached.streamUrl320
             }
@@ -514,6 +525,12 @@ class JioSaavnRepository(private val context: Context? = null) {
         if (decryptedUrl != null) {
             val url320 = decryptedUrl.replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
             val url160 = decryptedUrl.replace("_96.mp4", "_160.mp4").replace("_320.mp4", "_160.mp4")
+            val url96 = decryptedUrl.replace("_320.mp4", "_96.mp4").replace("_160.mp4", "_96.mp4")
+
+            val safeYear = (song.year as String?).orEmpty().ifBlank {
+                estimateYear(song.title, song.artist, song.album).toString()
+            }
+            val safeLang = (song.language as String?).orEmpty().ifBlank { "hindi" }
 
             db?.songDao()?.insertOrUpdateSong(
                 SongEntity(
@@ -523,30 +540,36 @@ class JioSaavnRepository(private val context: Context? = null) {
                     album = song.album,
                     thumbnailUrl = song.thumbnailUrl,
                     durationText = song.durationText,
-                    encryptedMediaUrl = song.encryptedMediaUrl,
+                    encryptedMediaUrl = song.encryptedMediaUrl.orEmpty(),
                     localPath = song.localPath,
                     streamUrl320 = url320,
                     streamUrl160 = url160,
                     bpm = estimateBpm(song.title, song.album, song.durationText),
                     energyScore = estimateEnergy(song.title),
-                    year = song.year,
-                    language = song.language
+                    year = safeYear,
+                    language = safeLang
                 )
             )
 
-            return@withContext if (preferredBitrate == NetworkQualityHelper.AudioBitratePreference.HIGH_320) url320 else url160
+            return@withContext when {
+                isDataSaver96 -> url96
+                preferredBitrate == NetworkQualityHelper.AudioBitratePreference.HIGH_320 -> url320
+                else -> url160
+            }
         }
         null
     }
 
+    @Suppress("GetInstance")
     fun getRemoteDecryptedUrl(song: Song): String? {
-        if (song.encryptedMediaUrl.isBlank()) return null
+        val enc = song.encryptedMediaUrl.orEmpty().trim()
+        if (enc.isBlank()) return null
         return try {
             val key = "38346591".toByteArray(Charsets.UTF_8)
             val secretKey = SecretKeySpec(key, "DES")
             val cipher = Cipher.getInstance("DES/ECB/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey)
-            val decoded = android.util.Base64.decode(song.encryptedMediaUrl, android.util.Base64.DEFAULT)
+            val decoded = android.util.Base64.decode(enc, android.util.Base64.DEFAULT)
             val decryptedBytes = cipher.doFinal(decoded)
             String(decryptedBytes, Charsets.UTF_8).replace("http://", "https://")
         } catch (e: Exception) {
@@ -559,6 +582,11 @@ class JioSaavnRepository(private val context: Context? = null) {
         if (db == null) return
         val existing = db.songDao().getSongById(song.id)
         if (existing == null) {
+            val safeYear = (song.year as String?).orEmpty().ifBlank {
+                estimateYear(song.title, song.artist, song.album).toString()
+            }
+            val safeLang = (song.language as String?).orEmpty().ifBlank { "hindi" }
+
             db.songDao().insertOrUpdateSong(
                 SongEntity(
                     id = song.id,
@@ -567,11 +595,11 @@ class JioSaavnRepository(private val context: Context? = null) {
                     album = song.album,
                     thumbnailUrl = song.thumbnailUrl,
                     durationText = song.durationText,
-                    encryptedMediaUrl = song.encryptedMediaUrl,
+                    encryptedMediaUrl = song.encryptedMediaUrl.orEmpty(),
                     bpm = estimateBpm(song.title, song.album, song.durationText),
                     energyScore = estimateEnergy(song.title),
-                    year = song.year,
-                    language = song.language
+                    year = safeYear,
+                    language = safeLang
                 )
             )
         }
@@ -624,9 +652,13 @@ class JioSaavnRepository(private val context: Context? = null) {
         val album = cleanHtmlEntities(rawAlbum)
 
         val rawImage = obj.get("image")?.asString ?: moreInfo?.get("image")?.asString ?: ""
+        val useHighRes = context?.getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
+            ?.getBoolean("pref_high_res_art", true) ?: true
+
+        val targetRes = if (useHighRes) "500x500" else "150x150"
         val highResImage = rawImage
-            .replace("50x50", "500x500")
-            .replace("150x150", "500x500")
+            .replace("50x50", targetRes)
+            .replace("150x150", targetRes)
             .replace("http://", "https://")
 
         val duration = moreInfo?.get("duration")?.asString ?: obj.get("duration")?.asString ?: "210"
@@ -637,15 +669,22 @@ class JioSaavnRepository(private val context: Context? = null) {
         val year = obj.get("year")?.asString ?: moreInfo?.get("year")?.asString ?: ""
         val language = obj.get("language")?.asString ?: moreInfo?.get("language")?.asString ?: "hindi"
 
-        return Song(id, title, artist, album, highResImage, duration, encryptedMediaUrl, null, year, language)
+        return Song(
+            id = id,
+            title = title,
+            artist = artist,
+            album = album,
+            thumbnailUrl = highResImage,
+            durationText = duration,
+            encryptedMediaUrl = encryptedMediaUrl,
+            localPath = null,
+            year = year,
+            language = language
+        )
     }
 
     // =========================================================================
-    // UPGRADED MULTI-TIER LYRICS ENGINE (LRCLIB Exact + Fuzzy + JioSaavn Native)
-    // =========================================================================
-
-    // =========================================================================
-    // PRECISION SYNCED LYRICS ENGINE (In JioSaavnRepository.kt)
+    // PRECISION SYNCED LYRICS ENGINE
     // =========================================================================
 
     suspend fun getSyncedLyrics(title: String, artist: String): List<LyricLine> = withContext(Dispatchers.IO) {
@@ -738,7 +777,6 @@ class JioSaavnRepository(private val context: Context? = null) {
 
             val jsonString = response.body?.string() ?: return emptyList()
             val json = JsonParser.parseString(jsonString).asJsonObject
-            // Only accept if duration is within 8 seconds of actual track
             if (durationSec > 30 && json.has("duration") && !json.get("duration").isJsonNull) {
                 val apiDur = json.get("duration").asInt
                 if (abs(apiDur - durationSec) > 8) return emptyList()
@@ -787,7 +825,6 @@ class JioSaavnRepository(private val context: Context? = null) {
                 }
             }
 
-            // Strictly require synced lyrics to be within 8 seconds of the audio stream duration
             if (bestSyncedItem != null && bestSyncedDelta <= 8) {
                 return parseLrclibObject(bestSyncedItem)
             }
@@ -828,10 +865,8 @@ class JioSaavnRepository(private val context: Context? = null) {
                     lines.add(LyricLine(totalSeconds, lyricText))
                 }
             }
-            // Sort chronologically so indexOfLast always finds the exact active line
             return lines.sortedBy { it.time }
         } else if (!plain.isNullOrBlank()) {
-            // Unsynced lyrics: mark with time = -1f so UI displays them cleanly without fake out-of-sync jumping
             plain.lines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
