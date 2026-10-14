@@ -39,9 +39,8 @@ class SupabaseSyncManager(
     private val gson: Gson
 ) {
     companion object {
-        // Replace with your Supabase Project URL and Anon Key from Supabase Dashboard -> Settings -> API
-        const val SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co"
-        const val SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_PUBLIC_KEY"
+        const val SUPABASE_URL = "https://ynebqxnvawfebsrrrmmr.supabase.co"
+        const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InluZWJxeG52YXdmZWJzcnJybW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5NjM4ODIsImV4cCI6MjEwNzUzOTg4Mn0.o2bPzvJ1VSFk2NloXrF9W4BNVv4sJpteMOnD11l1G8w"
     }
 
     private val authPrefs = context.getSharedPreferences("melo_supabase_auth", Context.MODE_PRIVATE)
@@ -126,6 +125,7 @@ class SupabaseSyncManager(
                     vault = initialVault.copy(displayName = displayName.trim())
                 )
             }
+
         } catch (e: Exception) {
             return@withContext AuthResult.Error(e.localizedMessage ?: "Network error during sign up")
         }
@@ -336,6 +336,70 @@ class SupabaseSyncManager(
             }
         } catch (_: Exception) {
             false
+        }
+    }
+    fun getGoogleOAuthUrl(): String {
+        val redirectUri = java.net.URLEncoder.encode("melomusic://auth-callback", "UTF-8")
+        return "$SUPABASE_URL/auth/v1/authorize?provider=google&redirect_to=$redirectUri"
+    }
+
+    suspend fun completeOAuthSignIn(
+        tokenFromOAuth: String,
+        refreshFromOAuth: String?,
+        localFallback: CloudVaultSnapshot
+    ): AuthResult = withContext(Dispatchers.IO) {
+        if (!isConfigured) {
+            return@withContext AuthResult.Error("Add your SUPABASE_URL and SUPABASE_ANON_KEY in SupabaseSyncManager.kt")
+        }
+        try {
+            val userReq = Request.Builder()
+                .url("$SUPABASE_URL/auth/v1/user")
+                .header("apikey", SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer $tokenFromOAuth")
+                .get()
+                .build()
+
+            httpClient.newCall(userReq).execute().use { resp ->
+                val raw = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    return@withContext AuthResult.Error("Google sign-in verification failed (${resp.code})")
+                }
+                val json = JsonParser.parseString(raw).asJsonObject
+                val uid = json.get("id")?.asString ?: return@withContext AuthResult.Error("Missing user ID")
+                val email = json.get("email")?.asString ?: ""
+                val meta = json.getAsJsonObject("user_metadata")
+                val fullName = meta?.get("full_name")?.asString
+                    ?: meta?.get("name")?.asString
+                    ?: meta?.get("display_name")?.asString
+                    ?: email.substringBefore("@")
+
+                accessToken = tokenFromOAuth
+                if (!refreshFromOAuth.isNullOrBlank()) {
+                    refreshToken = refreshFromOAuth
+                }
+                currentUserId = uid
+                currentUserEmail = email
+
+                val remoteVault = fetchCloudVault()
+                val finalVault = if (remoteVault != null) {
+                    remoteVault.copy(
+                        displayName = remoteVault.displayName.ifBlank { fullName }
+                    )
+                } else {
+                    val seeded = localFallback.copy(displayName = fullName)
+                    pushCloudVault(seeded)
+                    seeded
+                }
+
+                return@withContext AuthResult.Success(
+                    userId = uid,
+                    email = email,
+                    displayName = finalVault.displayName,
+                    vault = finalVault
+                )
+            }
+        } catch (e: Exception) {
+            return@withContext AuthResult.Error(e.localizedMessage ?: "Google sign-in failed")
         }
     }
 

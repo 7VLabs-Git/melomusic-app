@@ -1,6 +1,7 @@
 // File: app/src/main/java/com/melomusic/app/MainActivity.kt
 package com.melomusic.app
 
+import com.melomusic.app.R
 import com.melomusic.app.data.AuthResult
 import com.melomusic.app.data.CloudVaultSnapshot
 import com.melomusic.app.data.SupabaseSyncManager
@@ -87,6 +88,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -167,6 +170,7 @@ enum class PlayerTier { MINI, EXPANDED, CINEMATIC }
 sealed class NavRoute {
     object Main : NavRoute()
     object AuthPortal : NavRoute()
+    object ProfilePortal : NavRoute()
     object CreatePlaylist : NavRoute()
     data class PlaylistDetail(val name: String, val cover: String, val songs: List<Song>) : NavRoute()
     object LikedSongs : NavRoute()
@@ -296,7 +300,9 @@ class MainActivity : ComponentActivity() {
     private var playMode by mutableIntStateOf(MODE_REPEAT_ALL)
     private var userPausedManually = false
 
+
     private var userProfileName by mutableStateOf<String?>(null)
+    private var currentRoute by mutableStateOf<NavRoute>(NavRoute.Main)
     private var updateVersion by mutableStateOf<String?>(null)
     private var updateNotes by mutableStateOf("")
     private var updateUrl by mutableStateOf("")
@@ -374,14 +380,56 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("OPEN_UPDATE_SHEET", false) == true) {
             showUpdateSheetState = true
         }
+        handleGoogleOAuthRedirect(intent)
 
         setContent { MeloRoot() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         if (intent.getBooleanExtra("OPEN_UPDATE_SHEET", false)) {
             showUpdateSheetState = true
+        }
+        handleGoogleOAuthRedirect(intent)
+    }
+
+    private fun handleGoogleOAuthRedirect(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "melomusic" && data.host == "auth-callback") {
+            val fragment = data.fragment.orEmpty()
+            val params = fragment.split("&").associate {
+                val parts = it.split("=", limit = 2)
+                parts.getOrElse(0) { "" } to Uri.decode(parts.getOrElse(1) { "" })
+            }
+            val accessToken = params["access_token"] ?: data.getQueryParameter("access_token")
+            val refreshToken = params["refresh_token"] ?: data.getQueryParameter("refresh_token")
+            if (!accessToken.isNullOrBlank()) {
+                intent.data = null
+                lifecycleScope.launch {
+                    val localSnapshot = CloudVaultSnapshot(
+                        displayName = userProfileName.orEmpty(),
+                        likedSongs = likedSongsList.toList(),
+                        playlists = userPlaylists.toList(),
+                        recentSongs = recentlyPlayedList.toList(),
+                        savedQueue = currentQueue.take(40).toList()
+                    )
+                    val result = supabaseSync.completeOAuthSignIn(accessToken, refreshToken, localSnapshot)
+                    withContext(Dispatchers.Main) {
+                        if (result is AuthResult.Success) {
+                            result.vault?.let { applyCloudVaultToLocal(it) }
+                            if (userProfileName.isNullOrBlank() && result.displayName.isNotBlank()) {
+                                userProfileName = result.displayName
+                                prefs.edit().putString("user_profile_name", userProfileName).apply()
+                            }
+                            currentRoute = NavRoute.Main
+                            Toast.makeText(this@MainActivity, "Signed in with Google!", Toast.LENGTH_SHORT).show()
+                        } else if (result is AuthResult.Error) {
+                            Toast.makeText(this@MainActivity, result.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1131,7 +1179,6 @@ class MainActivity : ComponentActivity() {
 
         var currentTab by remember { mutableStateOf(MeloTab.HOME) }
         var playerTier by remember { mutableStateOf(PlayerTier.MINI) }
-        var currentRoute by remember { mutableStateOf<NavRoute>(NavRoute.Main) }
 
         var showAccountSheet by remember { mutableStateOf(false) }
         var showImportSheet by remember { mutableStateOf(false) }
@@ -1333,6 +1380,14 @@ class MainActivity : ComponentActivity() {
                                 currentRoute = NavRoute.Main
                             }
                         )
+                        is NavRoute.ProfilePortal -> MeloProfileMasterpieceScene(
+                            onBack = { currentRoute = NavRoute.Main },
+                            onSignInRequest = { currentRoute = NavRoute.AuthPortal },
+                            onCheckUpdates = {
+                                showUpdateSheetState = true
+                                checkGithubForUpdates(silentBackgroundCheck = false)
+                            }
+                        )
                     }
                 }
             }
@@ -1342,7 +1397,8 @@ class MainActivity : ComponentActivity() {
                 if (isKeyboardOpen) 10.dp else if (currentRoute == NavRoute.Main) 86.dp else 16.dp
 
             AnimatedVisibility(
-                visible = playerState.song != null && playerTier == PlayerTier.MINI,
+                visible = playerState.song != null && playerTier == PlayerTier.MINI &&
+                        currentRoute != NavRoute.AuthPortal && currentRoute != NavRoute.ProfilePortal,
                 enter = slideInVertically(
                     initialOffsetY = { it / 2 },
                     animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f)
@@ -1624,85 +1680,72 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         } else {
-                            ListItem(
-                                headlineContent = {
-                                    Text(
-                                        text = if (userProfileName != null) "$userProfileName's Sanctuary" else "Sign In / Create Sanctuary ID",
-                                        color = TextPure,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                },
-                                supportingContent = {
-                                    Text(
-                                        text = if (supabaseSync.isLoggedIn) {
-                                            "Cloud Synced • ${supabaseSync.currentUserEmail.orEmpty()}"
-                                        } else {
-                                            "Back up your playlists, liked frequencies & history to the cloud"
-                                        },
-                                        color = if (supabaseSync.isLoggedIn) Color(0xFF00E676) else TextMuted,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                leadingContent = {
-                                    Box(
-                                        Modifier
-                                            .size(44.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                Brush.linearGradient(
-                                                    listOf(Color(0xFFFFD54F), Color(0xFFFF5252))
-                                                )
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            if (supabaseSync.isLoggedIn) Icons.Rounded.VerifiedUser else Icons.Rounded.Person,
-                                            tint = VoidBlack,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
-                                },
-                                trailingContent = {
-                                    if (supabaseSync.isLoggedIn || userProfileName != null) {
-                                        TextButton(onClick = {
-                                            performFullLogout()
-                                            showAccountSheet = false
-                                        }) {
-                                            Text(
-                                                "Log Out",
-                                                color = MeloAccent,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    } else {
-                                        Icon(
-                                            Icons.Rounded.ChevronRight,
-                                            contentDescription = null,
-                                            tint = Color(0xFFFFD54F)
-                                        )
-                                    }
-                                },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            Row(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(Color.White.copy(alpha = 0.05f))
-                                    .border(1.dp, GlassSurface, RoundedCornerShape(18.dp))
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color(0xFF14141A))
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color.White.copy(alpha = 0.08f),
+                                        shape = RoundedCornerShape(16.dp)
+                                    )
                                     .clickable {
                                         showAccountSheet = false
-                                        if (!supabaseSync.isLoggedIn) {
-                                            currentRoute = NavRoute.AuthPortal
+                                        if (supabaseSync.isLoggedIn || userProfileName != null) {
+                                            currentRoute = NavRoute.ProfilePortal
                                         } else {
-                                            scheduleCloudVaultSync()
-                                            Toast.makeText(
-                                                context,
-                                                "Syncing vault to cloud...",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                            currentRoute = NavRoute.AuthPortal
                                         }
                                     }
-                            )
+                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFFFCD01).copy(alpha = 0.14f))
+                                        .border(1.dp, Color(0xFFFFCD01).copy(alpha = 0.35f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (supabaseSync.isLoggedIn) Icons.Rounded.VerifiedUser else Icons.Rounded.PersonOutline,
+                                        tint = Color(0xFFFFCD01),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                Spacer(Modifier.width(14.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    val firstNameOnly = userProfileName?.trim()?.split("\\s+".toRegex())?.firstOrNull()
+                                    Text(
+                                        text = if (!firstNameOnly.isNullOrBlank()) firstNameOnly else "Account",
+                                        color = TextPure,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        letterSpacing = (-0.2).sp
+                                    )
+                                    if (supabaseSync.isLoggedIn && !supabaseSync.currentUserEmail.isNullOrBlank()) {
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            text = supabaseSync.currentUserEmail.orEmpty(),
+                                            color = TextMuted,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+
+                                Icon(
+                                    imageVector = Icons.Rounded.ArrowForwardIos,
+                                    contentDescription = null,
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
                         }
 
                         ListItem(
@@ -2464,7 +2507,7 @@ class MainActivity : ComponentActivity() {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                painter = painterResource(id = R.drawable.ic_melo_logo),
+                                painter = painterResource(id = com.melomusic.app.R.drawable.ic_melo_logo),
                                 contentDescription = "Melo Logo",
                                 tint = Color.Unspecified,
                                 modifier = Modifier.size(73.dp)
@@ -2487,8 +2530,9 @@ class MainActivity : ComponentActivity() {
                         }
                         Spacer(Modifier.height(20.dp))
                         if (isLoggedIn && userName.isNotBlank()) {
+                            val firstName = userName.trim().split("\\s+".toRegex()).firstOrNull().orEmpty()
                             Text("$greeting,", fontSize = 24.sp, color = TextMuted, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
-                            Text("$userName.", fontSize = 38.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                            Text("$firstName.", fontSize = 38.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
                         } else {
                             Text("$greeting.", fontSize = 36.sp, color = TextPure, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
                         }
@@ -4197,13 +4241,646 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    // ==========================================
+    // FULL-SCREEN PROFILE & SETTINGS PORTAL
+    // ==========================================
+    @Composable
+    private fun MeloProfileMasterpieceScene(
+        onBack: () -> Unit,
+        onSignInRequest: () -> Unit,
+        onCheckUpdates: () -> Unit
+    ) {
+        val context = LocalContext.current
+        var showLogoutDialog by remember { mutableStateOf(false) }
+        var showEditNameDialog by remember { mutableStateOf(false) }
+        var showClearDownloadsDialog by remember { mutableStateOf(false) }
+        var tempName by remember(userProfileName) { mutableStateOf(userProfileName.orEmpty()) }
+        var isSyncingNow by remember { mutableStateOf(false) }
 
-    // ==========================================
-    // GOLD-STANDARD MASTERPIECE: MELO SANCTUARY AUTH PORTAL
-    // ==========================================
-    // ==========================================
-    // DARK & WARM GOLD MELO AUTH UI (Ported from AuthActivity.kt + Wired to Supabase)
-    // ==========================================
+        var streamingQuality by remember {
+            mutableStateOf(prefs.getString("pref_streaming_quality", "320 kbps (Extreme)") ?: "320 kbps (Extreme)")
+        }
+        var autoRadioEnabled by remember {
+            mutableStateOf(prefs.getBoolean("pref_auto_radio", true))
+        }
+        var highResArtwork by remember {
+            mutableStateOf(prefs.getBoolean("pref_high_res_art", true))
+        }
+
+        var cacheSizeMb by remember {
+            val bytes = (context.cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() })
+            mutableStateOf("%.1f MB".format(bytes.toFloat() / 1048576f))
+        }
+        val downloadsSizeMb = remember(downloadedSongsList.size) {
+            val dlDir = File(filesDir, "downloads")
+            val bytes = if (dlDir.exists()) dlDir.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
+            "%.1f MB".format(bytes.toFloat() / 1048576f)
+        }
+
+        val bgVoid = Color(0xFF070709)
+        val cardSurface = Color(0xFF121217)
+        val cardBorder = Color(0xFF23232C)
+        val meloGold = Color(0xFFFFCD01)
+        val pureWhite = Color(0xFFF7F7FA)
+        val mutedText = Color(0xFF8E8E98)
+
+        val displayName = userProfileName?.takeIf { it.isNotBlank() }
+            ?: supabaseSync.currentUserEmail?.substringBefore("@")
+            ?: "Melo Listener"
+        val userEmail = supabaseSync.currentUserEmail ?: "Local Sanctuary Mode"
+        val initials = displayName.trim().split("\\s+".toRegex())
+            .mapNotNull { it.firstOrNull()?.uppercaseChar() }
+            .take(2)
+            .joinToString("")
+            .ifEmpty { "M" }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(bgVoid)
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(260.dp)
+                    .blur(85.dp)
+            ) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        0.0f to meloGold.copy(alpha = 0.14f),
+                        0.75f to Color.Transparent,
+                        center = Offset(size.width / 2f, 0f),
+                        radius = size.width / 1.3f
+                    ),
+                    radius = size.width / 1.3f,
+                    center = Offset(size.width / 2f, 0f)
+                )
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 16.dp)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.06f))
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Back",
+                                tint = pureWhite,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Text(
+                            text = "Account",
+                            color = pureWhite,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(Modifier.size(38.dp))
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
+
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(cardSurface)
+                            .border(1.dp, cardBorder, RoundedCornerShape(22.dp))
+                            .padding(20.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(meloGold, Color(0xFFFF8F00))
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = initials,
+                                    color = VoidBlack,
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+
+                            Spacer(Modifier.width(16.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = displayName,
+                                        color = pureWhite,
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Rounded.Edit,
+                                        contentDescription = "Edit Name",
+                                        tint = meloGold,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable {
+                                                tempName = displayName
+                                                showEditNameDialog = true
+                                            }
+                                    )
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = userEmail,
+                                    color = mutedText,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = if (supabaseSync.isLoggedIn) "Cloud Sanctuary Active" else "Local Device Profile",
+                                        color = if (supabaseSync.isLoggedIn) Color(0xFF00E676) else meloGold,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(18.dp))
+                        HorizontalDivider(color = cardBorder)
+                        Spacer(Modifier.height(14.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            SanctuaryStatPill(count = likedSongsList.size.toString(), label = "Liked", accent = Color(0xFFFF4081))
+                            SanctuaryStatPill(count = userPlaylists.size.toString(), label = "Playlists", accent = meloGold)
+                            SanctuaryStatPill(count = downloadedSongsList.size.toString(), label = "Offline", accent = Color(0xFF00E676))
+                            SanctuaryStatPill(count = recentlyPlayedList.size.toString(), label = "History", accent = Color(0xFF00E5FF))
+                        }
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+
+                item {
+                    Text(
+                        text = "CLOUD VAULT",
+                        color = mutedText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp,
+                        modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardSurface)
+                            .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
+                    ) {
+                        if (supabaseSync.isLoggedIn) {
+                            ProfileSettingRow(
+                                icon = Icons.Rounded.CloudSync,
+                                iconTint = Color(0xFF00E676),
+                                title = if (isSyncingNow) "Syncing Vault..." else "Sync Cloud Vault Now",
+                                subtitle = "Push & pull playlists, likes, and listening history",
+                                onClick = {
+                                    if (!isSyncingNow) {
+                                        isSyncingNow = true
+                                        lifecycleScope.launch {
+                                            val snap = CloudVaultSnapshot(
+                                                displayName = userProfileName.orEmpty(),
+                                                likedSongs = likedSongsList.toList(),
+                                                playlists = userPlaylists.toList(),
+                                                recentSongs = recentlyPlayedList.toList(),
+                                                savedQueue = currentQueue.take(40).toList()
+                                            )
+                                            val ok = supabaseSync.pushCloudVault(snap)
+                                            isSyncingNow = false
+                                            Toast.makeText(
+                                                context,
+                                                if (ok) "Cloud Vault backed up!" else "Sync failed. Check connection.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
+                            )
+                        } else {
+                            ProfileSettingRow(
+                                icon = Icons.Rounded.Login,
+                                iconTint = meloGold,
+                                title = "Sign in to Cloud Vault",
+                                subtitle = "Connect Google or Email to back up your music",
+                                onClick = onSignInRequest
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+
+                item {
+                    Text(
+                        text = "AUDIO & PLAYBACK",
+                        color = mutedText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp,
+                        modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardSurface)
+                            .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
+                    ) {
+                        ProfileSettingRow(
+                            icon = Icons.Rounded.GraphicEq,
+                            iconTint = meloGold,
+                            title = "Streaming & Download Quality",
+                            subtitle = streamingQuality,
+                            onClick = {
+                                val options = listOf("320 kbps (Extreme)", "160 kbps (High)", "96 kbps (Data Saver)")
+                                val next = options[(options.indexOf(streamingQuality) + 1) % options.size]
+                                streamingQuality = next
+                                prefs.edit().putString("pref_streaming_quality", next).apply()
+                            }
+                        )
+                        HorizontalDivider(color = cardBorder, modifier = Modifier.padding(horizontal = 16.dp))
+                        ProfileToggleRow(
+                            icon = Icons.Rounded.Radio,
+                            iconTint = Color(0xFF00E5FF),
+                            title = "Endless Smart Radio",
+                            subtitle = "Auto-queue similar songs when queue ends",
+                            checked = autoRadioEnabled,
+                            onCheckedChange = {
+                                autoRadioEnabled = it
+                                prefs.edit().putBoolean("pref_auto_radio", it).apply()
+                            }
+                        )
+                        HorizontalDivider(color = cardBorder, modifier = Modifier.padding(horizontal = 16.dp))
+                        ProfileToggleRow(
+                            icon = Icons.Rounded.HighQuality,
+                            iconTint = Color(0xFF9B51E0),
+                            title = "High-Resolution Artwork",
+                            subtitle = "Load 500x500 UHD covers & dynamic palettes",
+                            checked = highResArtwork,
+                            onCheckedChange = {
+                                highResArtwork = it
+                                prefs.edit().putBoolean("pref_high_res_art", it).apply()
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+
+                item {
+                    Text(
+                        text = "STORAGE & DATA",
+                        color = mutedText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp,
+                        modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardSurface)
+                            .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
+                    ) {
+                        ProfileSettingRow(
+                            icon = Icons.Rounded.CleaningServices,
+                            iconTint = Color(0xFFFFB74D),
+                            title = "Clear Artwork & Stream Cache",
+                            subtitle = "Currently using $cacheSizeMb",
+                            onClick = {
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    runCatching { context.cacheDir.deleteRecursively() }
+                                    withContext(Dispatchers.Main) {
+                                        cacheSizeMb = "0.0 MB"
+                                        Toast.makeText(context, "Cache cleared", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        )
+                        HorizontalDivider(color = cardBorder, modifier = Modifier.padding(horizontal = 16.dp))
+                        ProfileSettingRow(
+                            icon = Icons.Rounded.OfflinePin,
+                            iconTint = Color(0xFF00E676),
+                            title = "Offline Downloads",
+                            subtitle = "${downloadedSongsList.size} tracks ($downloadsSizeMb)",
+                            onClick = {
+                                if (downloadedSongsList.isNotEmpty()) {
+                                    showClearDownloadsDialog = true
+                                } else {
+                                    Toast.makeText(context, "No offline downloads stored", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(22.dp))
+                }
+
+                item {
+                    Text(
+                        text = "ABOUT MELO",
+                        color = mutedText,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp,
+                        modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(cardSurface)
+                            .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
+                    ) {
+                        ProfileSettingRow(
+                            icon = Icons.Rounded.SystemUpdateAlt,
+                            iconTint = Color(0xFF00E5FF),
+                            title = "Software Update",
+                            subtitle = "Installed build: $currentAppVersionName",
+                            onClick = onCheckUpdates
+                        )
+                    }
+                    Spacer(Modifier.height(28.dp))
+                }
+
+                if (supabaseSync.isLoggedIn || userProfileName != null) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MeloAccent.copy(alpha = 0.14f))
+                                .border(1.dp, MeloAccent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                                .clickable { showLogoutDialog = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Logout,
+                                    contentDescription = "Log Out",
+                                    tint = MeloAccent,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "Log Out",
+                                    color = MeloAccent,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
+
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 42.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "7V LABS",
+                            color = mutedText.copy(alpha = 0.40f),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 3.5.sp
+                        )
+                    }
+                }
+            }
+
+            if (showEditNameDialog) {
+                AlertDialog(
+                    onDismissRequest = { showEditNameDialog = false },
+                    containerColor = DeepSurface,
+                    title = { Text("Edit Display Name", color = pureWhite, fontWeight = FontWeight.Bold) },
+                    text = {
+                        BasicTextField(
+                            value = tempName,
+                            onValueChange = { tempName = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = pureWhite, fontSize = 16.sp),
+                            cursorBrush = SolidColor(meloGold),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(VoidBlack, RoundedCornerShape(12.dp))
+                                .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
+                                .padding(14.dp)
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val clean = tempName.trim()
+                            if (clean.isNotBlank()) {
+                                userProfileName = clean
+                                prefs.edit().putString("user_profile_name", clean).apply()
+                                scheduleCloudVaultSync()
+                            }
+                            showEditNameDialog = false
+                        }) {
+                            Text("Save", color = meloGold, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEditNameDialog = false }) {
+                            Text("Cancel", color = mutedText)
+                        }
+                    }
+                )
+            }
+
+            if (showClearDownloadsDialog) {
+                AlertDialog(
+                    onDismissRequest = { showClearDownloadsDialog = false },
+                    containerColor = DeepSurface,
+                    title = { Text("Delete All Offline Tracks?", color = pureWhite, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text(
+                            "This will remove all ${downloadedSongsList.size} downloaded songs from your device storage.",
+                            color = mutedText
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            downloadedSongsList.toList().forEach { deleteDownloadedSong(it) }
+                            showClearDownloadsDialog = false
+                            Toast.makeText(context, "Offline downloads removed", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Text("Delete All", color = MeloAccent, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showClearDownloadsDialog = false }) {
+                            Text("Cancel", color = pureWhite)
+                        }
+                    }
+                )
+            }
+
+            if (showLogoutDialog) {
+                AlertDialog(
+                    onDismissRequest = { showLogoutDialog = false },
+                    containerColor = DeepSurface,
+                    title = {
+                        Text("Log Out of Melo?", color = pureWhite, fontWeight = FontWeight.Bold)
+                    },
+                    text = {
+                        Text(
+                            "Your playlists and liked songs are safely backed up in your Cloud Vault. Are you sure you want to log out?",
+                            color = mutedText,
+                            fontSize = 14.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showLogoutDialog = false
+                                performFullLogout()
+                                onBack()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MeloAccent),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Log Out", color = pureWhite, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showLogoutDialog = false }) {
+                            Text("Cancel", color = pureWhite)
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun ProfileSettingRow(
+        icon: ImageVector,
+        iconTint: Color,
+        title: String,
+        subtitle: String,
+        onClick: () -> Unit
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onClick() }
+                .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(iconTint.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(19.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = TextPure, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, color = TextMuted, fontSize = 12.sp)
+            }
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = TextSubtle,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+
+    @Composable
+    private fun ProfileToggleRow(
+        icon: ImageVector,
+        iconTint: Color,
+        title: String,
+        subtitle: String,
+        checked: Boolean,
+        onCheckedChange: (Boolean) -> Unit
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onCheckedChange(!checked) }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(iconTint.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(19.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = TextPure, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, color = TextMuted, fontSize = 12.sp)
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = VoidBlack,
+                    checkedTrackColor = Color(0xFFFFCD01),
+                    uncheckedThumbColor = TextMuted,
+                    uncheckedTrackColor = Color(0xFF23232C)
+                )
+            )
+        }
+    }
+
     // ==========================================
     // MINIMAL, INDUSTRY-GRADE MELO AUTH SCENE
     // ==========================================
@@ -4213,6 +4890,7 @@ class MainActivity : ComponentActivity() {
         onAuthSuccess: (CloudVaultSnapshot) -> Unit
     ) {
         val context = LocalContext.current
+        val density = LocalDensity.current
         val focusManager = LocalFocusManager.current
 
         var isSignUp by remember { mutableStateOf(false) }
@@ -4226,6 +4904,11 @@ class MainActivity : ComponentActivity() {
         var focusedField by remember { mutableStateOf("") }
         var errorMessage by remember { mutableStateOf<String?>(null) }
         var isSubmitting by remember { mutableStateOf(false) }
+
+        // Exact root coordinates for smooth logo flight between "Sign in to [Logo]" and Top-Right
+        var rootOrigin by remember { mutableStateOf(Offset.Zero) }
+        var inlineLogoSlotPos by remember { mutableStateOf(Offset.Zero) }
+        var topRightLogoSlotPos by remember { mutableStateOf(Offset.Zero) }
 
         val bgVoid = Color(0xFF070709)
         val fieldSurface = Color(0xFF111115)
@@ -4286,12 +4969,34 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        val targetLogoPos = if (isSignUp) topRightLogoSlotPos else inlineLogoSlotPos
+        val animatedLogoPos by animateOffsetAsState(
+            targetValue = targetLogoPos,
+            animationSpec = spring(
+                dampingRatio = 0.82f,
+                stiffness = 300f
+            ),
+            label = "melo_logo_pos"
+        )
+        val animatedLogoWidth by animateDpAsState(
+            targetValue = if (isSignUp) 68.dp else 74.dp,
+            animationSpec = spring(dampingRatio = 0.82f, stiffness = 300f),
+            label = "melo_logo_w"
+        )
+        val animatedLogoHeight by animateDpAsState(
+            targetValue = if (isSignUp) 36.dp else 38.dp,
+            animationSpec = spring(dampingRatio = 0.82f, stiffness = 300f),
+            label = "melo_logo_h"
+        )
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(bgVoid)
+                .onGloballyPositioned { rootOrigin = it.positionInRoot() }
                 .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }
         ) {
+            // Subtle, ultra-clean ambient top spotlight
             // Subtle, ultra-clean ambient top spotlight
             Canvas(
                 modifier = Modifier
@@ -4303,11 +5008,11 @@ class MainActivity : ComponentActivity() {
                     brush = Brush.radialGradient(
                         0.0f to meloGold.copy(alpha = 0.14f),
                         0.7f to Color.Transparent,
-                        center = Offset(size.width * 0.5f, 0f),
-                        radius = size.width * 0.7f
+                        center = Offset(size.width / 2f, 0f),
+                        radius = size.width / 1.4f
                     ),
-                    radius = size.width * 0.7f,
-                    center = Offset(size.width * 0.5f, 0f)
+                    radius = size.width / 1.4f,
+                    center = Offset(size.width / 2f, 0f)
                 )
             }
 
@@ -4319,13 +5024,18 @@ class MainActivity : ComponentActivity() {
                 contentPadding = PaddingValues(horizontal = 28.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 1. Minimal Top Bar + Properly Sized Melo Logo
+                // 1. Top Bar (Back on Top-Left, Invisible Anchor Slot on Top-Right for Create Account)
                 item {
-                    Box(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         IconButton(
                             onClick = onBack,
                             modifier = Modifier
-                                .align(Alignment.CenterStart)
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(Color.White.copy(alpha = 0.06f))
@@ -4338,29 +5048,70 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_melo_logo),
-                            contentDescription = "Melo Music",
-                            tint = Color.Unspecified,
+                        // Top-Right target anchor slot (where logo glides when isSignUp == true)
+                        Box(
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .width(86.dp)
-                                .height(48.dp)
+                                .size(width = 68.dp, height = 36.dp)
+                                .onGloballyPositioned { coords ->
+                                    topRightLogoSlotPos = coords.positionInRoot() - rootOrigin
+                                }
                         )
                     }
-                    Spacer(Modifier.height(42.dp))
+                    Spacer(Modifier.height(38.dp))
                 }
 
-                // 2. Clean Heading (No Cluttered Subtitles)
+                // 2. Smooth Animated Heading + Inline Logo Slot
                 item {
-                    Text(
-                        text = if (isSignUp) "Create your account" else "Sign in to Melo",
-                        color = pureWhite,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = (-0.5).sp
-                    )
-                    Spacer(Modifier.height(28.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        androidx.compose.animation.AnimatedContent(
+                            targetState = isSignUp,
+                            transitionSpec = {
+                                (fadeIn(tween(260)) + slideInVertically(tween(260)) { it / 3 })
+                                    .togetherWith(fadeOut(tween(180)) + slideOutVertically(tween(180)) { -it / 3 })
+                            },
+                            label = "heading_switch"
+                        ) { signUpMode ->
+                            if (signUpMode) {
+                                Text(
+                                    text = "Create your account",
+                                    color = pureWhite,
+                                    fontSize = 25.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.5).sp
+                                )
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = "Sign in to",
+                                        color = pureWhite,
+                                        fontSize = 25.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = (-0.5).sp
+                                    )
+                                    Spacer(Modifier.width(9.dp))
+                                    // Inline target anchor slot right after "Sign in to"
+                                    Box(
+                                        modifier = Modifier
+                                            .size(width = 74.dp, height = 38.dp)
+                                            .offset(y = (-1).dp)
+                                            .onGloballyPositioned { coords ->
+                                                inlineLogoSlotPos = coords.positionInRoot() - rootOrigin
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // Generous breathing room between Heading and Continue with Google
+                    Spacer(Modifier.height(44.dp))
                 }
 
                 // 3. Official Google Sign-In Button + Minimal Divider
@@ -4373,11 +5124,17 @@ class MainActivity : ComponentActivity() {
                             .background(Color(0xFF16161C))
                             .border(1.dp, fieldBorder, RoundedCornerShape(12.dp))
                             .clickable {
-                                Toast.makeText(
-                                    context,
-                                    "Configure Google OAuth Web Client ID in SupabaseSyncManager to enable 1-tap Google login.",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                runCatching {
+                                    val oauthUrl = supabaseSync.getGoogleOAuthUrl()
+                                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(oauthUrl))
+                                    context.startActivity(browserIntent)
+                                }.onFailure {
+                                    Toast.makeText(
+                                        context,
+                                        "Unable to open browser for Google Sign-In.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                             },
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
@@ -4392,7 +5149,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(24.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -4408,16 +5165,25 @@ class MainActivity : ComponentActivity() {
                         HorizontalDivider(modifier = Modifier.weight(1f), color = fieldBorder)
                     }
 
-                    Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(24.dp))
                 }
 
-                // 4. Minimal Input Fields
+                // 4. Minimal Input Fields with Smooth Spring Expansion
                 item {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(
+                                animationSpec = spring(
+                                    dampingRatio = 0.85f,
+                                    stiffness = 320f
+                                )
+                            )
+                    ) {
                         AnimatedVisibility(
                             visible = isSignUp,
-                            enter = expandVertically() + fadeIn(),
-                            exit = shrinkVertically() + fadeOut()
+                            enter = expandVertically(tween(280, easing = FastOutSlowInEasing)) + fadeIn(tween(240)),
+                            exit = shrinkVertically(tween(240, easing = FastOutSlowInEasing)) + fadeOut(tween(180))
                         ) {
                             Column {
                                 MinimalAuthField(
@@ -4472,8 +5238,8 @@ class MainActivity : ComponentActivity() {
 
                         AnimatedVisibility(
                             visible = isSignUp,
-                            enter = expandVertically() + fadeIn(),
-                            exit = shrinkVertically() + fadeOut()
+                            enter = expandVertically(tween(280, easing = FastOutSlowInEasing)) + fadeIn(tween(240)),
+                            exit = shrinkVertically(tween(240, easing = FastOutSlowInEasing)) + fadeOut(tween(180))
                         ) {
                             Column {
                                 Spacer(Modifier.height(14.dp))
@@ -4496,7 +5262,11 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        AnimatedVisibility(visible = !isSignUp) {
+                        AnimatedVisibility(
+                            visible = !isSignUp,
+                            enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                            exit = shrinkVertically(tween(180)) + fadeOut(tween(150))
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -4567,9 +5337,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 5. Minimal Bottom Mode Switcher (Shifted to Bottom)
+                // 5. Minimal Bottom Mode Switcher
                 item {
-                    Spacer(Modifier.height(28.dp))
+                    Spacer(Modifier.height(26.dp))
                     Row(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
@@ -4593,9 +5363,39 @@ class MainActivity : ComponentActivity() {
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(72.dp))
                 }
             }
+
+            // Floating Animated Melo Logo that physically glides between "Sign in to [Melo]" and Top-Right
+            if (inlineLogoSlotPos != Offset.Zero || topRightLogoSlotPos != Offset.Zero) {
+                Icon(
+                    painter = painterResource(id = com.melomusic.app.R.drawable.ic_melo_logo),
+                    contentDescription = "Melo Music",
+                    tint = Color.Unspecified,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                x = animatedLogoPos.x.roundToInt(),
+                                y = animatedLogoPos.y.roundToInt()
+                            )
+                        }
+                        .size(width = animatedLogoWidth, height = animatedLogoHeight)
+                )
+            }
+
+            // Permanent "7V LABS" signature on BOTH Sign In & Create Account pages, positioned slightly higher
+            Text(
+                text = "7V LABS",
+                color = mutedText.copy(alpha = 0.45f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 3.5.sp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 38.dp)
+            )
         }
     }
 
