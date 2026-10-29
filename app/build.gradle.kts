@@ -1,9 +1,8 @@
-// File: app/build.gradle.kts
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("com.google.devtools.ksp") version "2.0.21-1.0.27"
+    id("com.google.devtools.ksp") version "2.3.6"
 }
 
 android {
@@ -14,8 +13,8 @@ android {
         applicationId = "com.melomusic.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.10"
+        versionCode = 7
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -66,8 +65,13 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
 
     // Room Database
-    val roomVersion = "2.6.1"
+    val roomVersion = "2.7.0"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
+
+    // Testing Dependencies (Fixes ExampleInstrumentedTest & ExampleUnitTest)
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
 }

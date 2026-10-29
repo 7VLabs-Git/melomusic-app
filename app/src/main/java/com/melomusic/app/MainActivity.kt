@@ -1,13 +1,11 @@
 // File: app/src/main/java/com/melomusic/app/MainActivity.kt
 package com.melomusic.app
 
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
-import androidx.compose.ui.layout.positionInRoot
 import com.melomusic.app.R
+import com.melomusic.app.playback.MeloAudioCache
+import com.melomusic.app.playback.MeloAudioEffects
+import com.melomusic.app.ui.SonicStudioModalSheet
 import com.melomusic.app.data.AuthResult
 import com.melomusic.app.data.CloudVaultSnapshot
 import com.melomusic.app.data.SupabaseSyncManager
@@ -321,7 +319,7 @@ class MainActivity : ComponentActivity() {
     private var showUpdateSheetState by mutableStateOf(false)
     private var downloadId by mutableLongStateOf(-1L)
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    private val audioEffects by lazy { MeloAudioEffects(this, lifecycleScope) }
     private var backgroundPlaybackJob: Job? = null
     private var activeMoodOrMixJob: Job? = null
 
@@ -343,10 +341,6 @@ class MainActivity : ComponentActivity() {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        wakeLock =
-            powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeloMusic::PlaybackWakeLock")
-
         prefs = getSharedPreferences("melo_vault", Context.MODE_PRIVATE)
         userProfileName = prefs.getString("user_profile_name", null)
         loadPersistedStateAsync()
@@ -358,6 +352,13 @@ class MainActivity : ComponentActivity() {
             IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
             ContextCompat.RECEIVER_EXPORTED
         )
+
+        MusicService.onAudioSessionChanged = { sessionId ->
+            audioEffects.bindToAudioSession(sessionId)
+        }
+        if (MusicService.activeAudioSessionId > 0) {
+            audioEffects.bindToAudioSession(MusicService.activeAudioSessionId)
+        }
 
         MusicService.onSkipNextRequested = {
             lifecycleScope.launch(Dispatchers.Main.immediate) { playNext() }
@@ -372,6 +373,17 @@ class MainActivity : ComponentActivity() {
                     if (activeId == null || lastAutoAdvancedSongId != activeId) {
                         lastAutoAdvancedSongId = activeId
                         playNext()
+                    }
+                }
+            }
+        }
+        MusicService.onPlaybackErrorRecovery = {
+            lifecycleScope.launch(Dispatchers.Main.immediate) {
+                val currentSong = player.state.value.song ?: currentQueue.getOrNull(currentQueueIndex)
+                if (currentSong != null && !userPausedManually) {
+                    player.play(currentSong) { target ->
+                        resolvePlayableUrl(target) ?: saavnRepository.getRemoteDecryptedUrl(target)
+                        ?: saavnRepository.getStreamUrl(target)
                     }
                 }
             }
@@ -478,11 +490,13 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         backgroundPlaybackJob?.cancel()
         activeMoodOrMixJob?.cancel()
-        if (wakeLock?.isHeld == true) wakeLock?.release()
         unregisterReceiver(updateReceiver)
         MusicService.onSkipNextRequested = null
         MusicService.onSkipPreviousRequested = null
         MusicService.onTrackEndedAutoAdvance = null
+        MusicService.onPlaybackErrorRecovery = null
+        MusicService.onAudioSessionChanged = null
+        audioEffects.releaseEffects()
         player.release()
         super.onDestroy()
     }
@@ -499,25 +513,6 @@ class MainActivity : ComponentActivity() {
                     }
                     if (playbackState.durationMs > 0L) {
                         currentTrackDurationMs = playbackState.durationMs.toFloat()
-                    }
-
-                    // Keep WakeLock alive while playing, buffering, OR transitioning at track end
-                    val shouldHoldWakeLock = playbackState.isPlaying ||
-                            playbackState.isBuffering ||
-                            (playbackState.isEnded && !userPausedManually)
-
-                    if (shouldHoldWakeLock) {
-                        if (wakeLock?.isHeld == false) {
-                            try {
-                                wakeLock?.acquire(60 * 60 * 1000L)
-                            } catch (_: Exception) {
-                            }
-                        }
-                    } else if (wakeLock?.isHeld == true) {
-                        try {
-                            wakeLock?.release()
-                        } catch (_: Exception) {
-                        }
                     }
 
                     val activeId = playbackState.song?.id
@@ -1001,6 +996,18 @@ class MainActivity : ComponentActivity() {
 
         player.play(song) { target ->
             resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+        }
+
+        // Pre-warm the next song's stream URL on IO thread so track transition is instant
+        val nextCandidate = currentQueue.getOrNull(currentQueueIndex + 1)
+        if (nextCandidate != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching {
+                    if (resolvePlayableUrl(nextCandidate) == null) {
+                        saavnRepository.getStreamUrl(nextCandidate)
+                    }
+                }
+            }
         }
 
         val autoRadioEnabled = prefs.getBoolean("pref_auto_radio", true)
@@ -3059,37 +3066,52 @@ class MainActivity : ComponentActivity() {
             if (!isHomeFeedLoaded || cachedTopPicks.isEmpty()) {
                 isLoading = true
             }
-            coroutineScope {
-                val topDeferred = async { repo.searchSongs(activeQuery) }
-                val dhhDeferred =
-                    if (cachedDhhHits.isEmpty()) async { repo.searchSongs("Seedhe Maut Divine KRSNA Hits") } else null
-                val punjabiDeferred =
-                    if (cachedPunjabiWave.isEmpty()) async { repo.searchSongs("Karan Aujla Diljit Dosanjh Shubh") } else null
-                val jumpDeferred =
-                    if (cachedJumpBackIn.isEmpty()) async { repo.searchSongs("Arijit Singh Atif Aslam KK") } else null
-                val lofiDeferred =
-                    if (cachedLofiSanctuary.isEmpty()) async { repo.searchSongs("Bollywood Lofi Chill Beats") } else null
-                val indieDeferred =
-                    if (cachedIndieAcoustic.isEmpty()) async { repo.searchSongs("Anuv Jain Prateek Kuhad Indie") } else null
-                val globalDeferred =
-                    if (cachedGlobalCharts.isEmpty()) async { repo.searchSongs("The Weeknd Post Malone Popular") } else null
-                val retroDeferred =
-                    if (cachedRetroClassics.isEmpty()) async { repo.searchSongs("Kishore Kumar 90s Bollywood Classics") } else null
+            kotlinx.coroutines.supervisorScope {
+                val topDeferred = async {
+                    runCatching { repo.searchSongs(activeQuery) }.getOrDefault(emptyList())
+                }
+                val dhhDeferred = async {
+                    if (cachedDhhHits.isEmpty()) runCatching { repo.searchSongs("Seedhe Maut Divine KRSNA Hits") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val punjabiDeferred = async {
+                    if (cachedPunjabiWave.isEmpty()) runCatching { repo.searchSongs("Karan Aujla Diljit Dosanjh Shubh") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val jumpDeferred = async {
+                    if (cachedJumpBackIn.isEmpty()) runCatching { repo.searchSongs("Arijit Singh Atif Aslam KK") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val lofiDeferred = async {
+                    if (cachedLofiSanctuary.isEmpty()) runCatching { repo.searchSongs("Bollywood Lofi Chill Beats") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val indieDeferred = async {
+                    if (cachedIndieAcoustic.isEmpty()) runCatching { repo.searchSongs("Anuv Jain Prateek Kuhad Indie") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val globalDeferred = async {
+                    if (cachedGlobalCharts.isEmpty()) runCatching { repo.searchSongs("The Weeknd Post Malone Popular") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
+                val retroDeferred = async {
+                    if (cachedRetroClassics.isEmpty()) runCatching { repo.searchSongs("Kishore Kumar 90s Bollywood Classics") }.getOrDefault(emptyList())
+                    else emptyList()
+                }
 
                 val fetchedTop = topDeferred.await()
                 if (fetchedTop.isNotEmpty()) cachedTopPicks = fetchedTop
-                dhhDeferred?.await()?.let { cachedDhhHits = it }
-                punjabiDeferred?.await()?.let { cachedPunjabiWave = it }
-                jumpDeferred?.await()?.let { cachedJumpBackIn = it }
-                lofiDeferred?.await()?.let { cachedLofiSanctuary = it }
-                indieDeferred?.await()?.let { cachedIndieAcoustic = it }
-                globalDeferred?.await()?.let { cachedGlobalCharts = it }
-                retroDeferred?.await()?.let { cachedRetroClassics = it }
+                dhhDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedDhhHits = it }
+                punjabiDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedPunjabiWave = it }
+                jumpDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedJumpBackIn = it }
+                lofiDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedLofiSanctuary = it }
+                indieDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedIndieAcoustic = it }
+                globalDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedGlobalCharts = it }
+                retroDeferred.await().takeIf { it.isNotEmpty() }?.let { cachedRetroClassics = it }
             }
             isHomeFeedLoaded = true
             isLoading = false
         }
-
         Box(Modifier.fillMaxSize()) {
             GeminiAuroraHeader(isActive = isAuroraActive)
 
@@ -5496,8 +5518,10 @@ class MainActivity : ComponentActivity() {
         var showLogoutDialog by remember { mutableStateOf(false) }
         var showEditNameDialog by remember { mutableStateOf(false) }
         var showClearDownloadsDialog by remember { mutableStateOf(false) }
+        var showSonicStudioSheet by remember { mutableStateOf(false) }
         var tempName by remember(userProfileName) { mutableStateOf(userProfileName.orEmpty()) }
         var isSyncingNow by remember { mutableStateOf(false) }
+        val fxState by audioEffects.state.collectAsState()
 
         var streamingQuality by remember {
             mutableStateOf(
@@ -5798,6 +5822,17 @@ class MainActivity : ComponentActivity() {
                             .border(1.dp, cardBorder, RoundedCornerShape(18.dp))
                     ) {
                         ProfileSettingRow(
+                            icon = Icons.Rounded.Equalizer,
+                            iconTint = meloGold,
+                            title = "Sonic DSP Studio & Sleep Timer",
+                            subtitle = if (fxState.isEnabled) "Active • ${fxState.activePresetName}" else "5-Band EQ, Sub-Bass & Sleep Timer",
+                            onClick = { showSonicStudioSheet = true }
+                        )
+                        HorizontalDivider(
+                            color = cardBorder,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        ProfileSettingRow(
                             icon = Icons.Rounded.GraphicEq,
                             iconTint = meloGold,
                             title = "Audio Quality",
@@ -6082,6 +6117,19 @@ class MainActivity : ComponentActivity() {
                     dismissButton = {
                         TextButton(onClick = { showLogoutDialog = false }) {
                             Text("Cancel", color = pureWhite)
+                        }
+                    }
+                )
+            }
+
+            if (showSonicStudioSheet) {
+                SonicStudioModalSheet(
+                    audioEffects = audioEffects,
+                    onDismiss = { showSonicStudioSheet = false },
+                    onTriggerSleepPause = {
+                        userPausedManually = true
+                        if (player.state.value.isPlaying) {
+                            player.togglePlayPause()
                         }
                     }
                 )
@@ -8075,6 +8123,7 @@ class MainActivity : ComponentActivity() {
         var showQueue by remember { mutableStateOf(false) }
         var showPlaylistPicker by remember { mutableStateOf(false) }
         var showDetailsDialog by remember { mutableStateOf(false) }
+        var showSonicStudio by remember { mutableStateOf(false) }
 
         val isLyricsMode = activeTab == "Lyrics"
 
@@ -8745,6 +8794,21 @@ class MainActivity : ComponentActivity() {
                         )
                         Spacer(Modifier.height(18.dp))
                         ListItem(
+                            headlineContent = { Text("Sonic DSP Studio & Sleep Timer", color = TextPure) },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.GraphicEq,
+                                    tint = Color(0xFFFFCD01),
+                                    contentDescription = null
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clickable {
+                                showMenu = false
+                                showSonicStudio = true
+                            }
+                        )
+                        ListItem(
                             headlineContent = { Text("Cinematic Horizon", color = TextPure) },
                             leadingContent = {
                                 Icon(
@@ -8809,6 +8873,17 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+
+            if (showSonicStudio) {
+                SonicStudioModalSheet(
+                    audioEffects = audioEffects,
+                    onDismiss = { showSonicStudio = false },
+                    onTriggerSleepPause = {
+                        userPausedManually = true
+                        if (isPlaying) onTogglePlay()
+                    }
+                )
             }
 
             if (showDetailsDialog) {

@@ -8,10 +8,12 @@ import android.os.PowerManager
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.melomusic.app.MainActivity
@@ -26,6 +28,11 @@ class MusicService : MediaSessionService() {
         var onSkipNextRequested: (() -> Unit)? = null
         var onSkipPreviousRequested: (() -> Unit)? = null
         var onTrackEndedAutoAdvance: (() -> Unit)? = null
+        var onPlaybackErrorRecovery: ((PlaybackException) -> Unit)? = null
+
+        @Volatile
+        var activeAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
+        var onAudioSessionChanged: ((Int) -> Unit)? = null
     }
 
     private fun acquireTransitionWakeLock() {
@@ -37,7 +44,16 @@ class MusicService : MediaSessionService() {
                     "MeloMusic::ServiceTransitionWakeLock"
                 )?.apply { setReferenceCounted(false) }
             }
+            // Hold CPU awake for up to 30s while next track URL resolves over network
             serviceWakeLock?.acquire(30_000L)
+        } catch (_: Exception) {}
+    }
+
+    private fun releaseTransitionWakeLock() {
+        try {
+            if (serviceWakeLock?.isHeld == true) {
+                serviceWakeLock?.release()
+            }
         } catch (_: Exception) {}
     }
 
@@ -51,28 +67,56 @@ class MusicService : MediaSessionService() {
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                15_000,
-                50_000,
-                1_500,
-                3_000
+                15_000, // Min buffer
+                50_000, // Max buffer
+                1_500,  // Buffer for playback start
+                3_000   // Buffer after rebuffer
             )
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+        // Wire in the 512MB LRU disk cache so streamed songs are cached automatically
+        val cachedMediaSourceFactory = DefaultMediaSourceFactory(
+            MeloAudioCache.createDataSourceFactory(this)
+        )
+
         val exoPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(cachedMediaSourceFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .setLoadControl(loadControl)
             .build()
 
-        // Native ExoPlayer listener inside the Foreground Service:
-        // Guarantees auto-advance fires immediately even when the screen is locked and Activity is stopped!
+        activeAudioSessionId = exoPlayer.audioSessionId
+
         exoPlayer.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    acquireTransitionWakeLock()
-                    onTrackEndedAutoAdvance?.invoke()
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                activeAudioSessionId = audioSessionId
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                    onAudioSessionChanged?.invoke(audioSessionId)
                 }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_ENDED -> {
+                        acquireTransitionWakeLock()
+                        onTrackEndedAutoAdvance?.invoke()
+                    }
+                    Player.STATE_READY -> {
+                        // Once ExoPlayer is buffered and ready, C.WAKE_MODE_NETWORK takes over
+                        if (exoPlayer.playWhenReady) {
+                            releaseTransitionWakeLock()
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                acquireTransitionWakeLock()
+                onPlaybackErrorRecovery?.invoke(error)
             }
         })
 
@@ -122,7 +166,9 @@ class MusicService : MediaSessionService() {
         val sessionActivityPendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -143,11 +189,7 @@ class MusicService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        try {
-            if (serviceWakeLock?.isHeld == true) {
-                serviceWakeLock?.release()
-            }
-        } catch (_: Exception) {}
+        releaseTransitionWakeLock()
         mediaSession?.run {
             player.release()
             release()
