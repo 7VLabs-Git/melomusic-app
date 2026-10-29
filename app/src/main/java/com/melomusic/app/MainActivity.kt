@@ -2,10 +2,14 @@
 package com.melomusic.app
 
 import androidx.compose.ui.layout.positionInParent
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheWriter
 import com.melomusic.app.R
 import com.melomusic.app.playback.MeloAudioCache
 import com.melomusic.app.playback.MeloAudioEffects
 import com.melomusic.app.ui.SonicStudioModalSheet
+import java.util.concurrent.ConcurrentHashMap
 import com.melomusic.app.data.AuthResult
 import com.melomusic.app.data.CloudVaultSnapshot
 import com.melomusic.app.data.SupabaseSyncManager
@@ -274,8 +278,68 @@ class MainActivity : ComponentActivity() {
     private val gson = Gson()
     private lateinit var prefs: SharedPreferences
 
-    // In-memory LRU cache for extracted artwork palette colors
-    private val artworkPaletteCache = LruCache<String, Pair<Color, Color>>(60)
+    // In-memory LRU cache for extracted artwork palette colors (increased to 120 entries)
+    private val artworkPaletteCache = LruCache<String, Pair<Color, Color>>(120)
+
+    // Pre-resolved stream URL cache + active CacheWriter jobs so screen-off transitions are 0ms
+    private val preResolvedStreamUrls = ConcurrentHashMap<String, String>()
+    private val activeAutoCacheJobs = ConcurrentHashMap<String, Job>()
+    private val autoCacheDataSourceFactory by lazy {
+        MeloAudioCache.createDataSourceFactory(this) as CacheDataSource.Factory
+    }
+
+    private fun prewarmAndAutoCacheUpcomingTracks() {
+        val snapshot = currentQueue.toList()
+        val startIdx = currentQueueIndex
+        if (snapshot.isEmpty()) return
+
+        // Pre-resolve URLs, pre-extract palettes, and pre-cache audio bytes for the next 5 upcoming tracks
+        val upcomingFive = (1..5).mapNotNull { offset ->
+            snapshot.getOrNull((startIdx + offset) % snapshot.size)
+        }.distinctBy { it.id }
+
+        upcomingFive.forEach { upcomingSong ->
+            // 1. Pre-extract artwork palette into LruCache so track switch has 0ms bitmap overhead
+            if (upcomingSong.thumbnailUrl.isNotBlank() && artworkPaletteCache.get(upcomingSong.thumbnailUrl) == null) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    extractTwoDominantColorsAndBitmap(this@MainActivity, upcomingSong.thumbnailUrl)
+                }
+            }
+
+            // 2. Pre-resolve stream URL and pre-cache first 3MB into MeloAudioCache for offline/screen-off resilience
+            if (activeAutoCacheJobs.containsKey(upcomingSong.id)) return@forEach
+            val job = lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val localUri = resolvePlayableUrl(upcomingSong)
+                    if (localUri != null) {
+                        preResolvedStreamUrls[upcomingSong.id] = localUri
+                        return@launch
+                    }
+                    val streamUrl = preResolvedStreamUrls[upcomingSong.id]
+                        ?: saavnRepository.getStreamUrl(upcomingSong)
+                        ?: saavnRepository.getRemoteDecryptedUrl(upcomingSong)
+
+                    if (!streamUrl.isNullOrBlank()) {
+                        preResolvedStreamUrls[upcomingSong.id] = streamUrl
+                        val dataSpec = DataSpec.Builder()
+                            .setUri(Uri.parse(streamUrl))
+                            .setLength(3L * 1024L * 1024L) // Pre-cache 3MB (~1.5 mins at 320kbps) per upcoming track
+                            .build()
+                        CacheWriter(
+                            autoCacheDataSourceFactory.createDataSource(),
+                            dataSpec,
+                            null,
+                            null
+                        ).cache()
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    activeAutoCacheJobs.remove(upcomingSong.id)
+                }
+            }
+            activeAutoCacheJobs[upcomingSong.id] = job
+        }
+    }
 
     private val askNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -887,7 +951,10 @@ class MainActivity : ComponentActivity() {
         persistQueueState(seedSong)
 
         player.play(seedSong) { target ->
-            resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+            resolvePlayableUrl(target)
+                ?: preResolvedStreamUrls[target.id]
+                ?: saavnRepository.getStreamUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
+                ?: saavnRepository.getRemoteDecryptedUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
         }
 
         radioRecommendationJob?.cancel()
@@ -902,6 +969,7 @@ class MainActivity : ComponentActivity() {
                 currentQueue.addAll(filtered)
                 currentQueueIndex = 0
                 persistQueueState(seedSong)
+                prewarmAndAutoCacheUpcomingTracks()
             }
         }
     }
@@ -995,34 +1063,29 @@ class MainActivity : ComponentActivity() {
         persistQueueState(song)
 
         player.play(song) { target ->
-            resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+            resolvePlayableUrl(target)
+                ?: preResolvedStreamUrls[target.id]
+                ?: saavnRepository.getStreamUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
+                ?: saavnRepository.getRemoteDecryptedUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
         }
 
-        // Pre-warm the next song's stream URL on IO thread so track transition is instant
-        val nextCandidate = currentQueue.getOrNull(currentQueueIndex + 1)
-        if (nextCandidate != null) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                runCatching {
-                    if (resolvePlayableUrl(nextCandidate) == null) {
-                        saavnRepository.getStreamUrl(nextCandidate)
-                    }
-                }
-            }
-        }
+        // Pre-resolve and auto-cache the next 5 tracks in background so screen-off & offline transitions are 0ms
+        prewarmAndAutoCacheUpcomingTracks()
 
         val autoRadioEnabled = prefs.getBoolean("pref_auto_radio", true)
-        if (autoRadioEnabled && currentQueue.size - currentQueueIndex <= 3 && !isRefillingQueue) {
+        if (autoRadioEnabled && currentQueue.size - currentQueueIndex <= 5 && !isRefillingQueue) {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val hasNetwork = cm?.activeNetwork != null
             if (hasNetwork) {
                 isRefillingQueue = true
-                lifecycleScope.launch {
-                    val nextBatch = saavnRepository.getNextEndlessBatch()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val nextBatch = runCatching { saavnRepository.getNextEndlessBatch() }.getOrDefault(emptyList())
                     withContext(Dispatchers.Main) {
                         if (nextBatch.isNotEmpty()) {
                             val existingIds = currentQueue.map { it.id }.toSet()
                             currentQueue.addAll(nextBatch.filter { it.id !in existingIds })
                             persistQueueState(song)
+                            prewarmAndAutoCacheUpcomingTracks()
                         }
                         isRefillingQueue = false
                     }
@@ -1055,7 +1118,9 @@ class MainActivity : ComponentActivity() {
             val currentSong = currentQueue[currentQueueIndex]
             userPausedManually = false
             player.play(currentSong) { target ->
-                resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+                resolvePlayableUrl(target)
+                    ?: preResolvedStreamUrls[target.id]
+                    ?: saavnRepository.getStreamUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
             }
             return
         }
@@ -1102,7 +1167,9 @@ class MainActivity : ComponentActivity() {
             currentTrackDurationMs = parseDurationMs(previousSong.durationText)
             userPausedManually = false
             player.play(previousSong) { target ->
-                resolvePlayableUrl(target) ?: saavnRepository.getStreamUrl(target)
+                resolvePlayableUrl(target)
+                    ?: preResolvedStreamUrls[target.id]
+                    ?: saavnRepository.getStreamUrl(target)?.also { preResolvedStreamUrls[target.id] = it }
             }
             return
         }
@@ -1192,7 +1259,8 @@ class MainActivity : ComponentActivity() {
         }
 
         val notification = builder
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(getColor(R.color.melo_ground)) // Applies brand accent behind the small icon
             .setContentTitle("Melo Update $versionTag Available")
             .setContentText(
                 releaseNotes.lines().firstOrNull()?.take(80)
@@ -2697,7 +2765,7 @@ class MainActivity : ComponentActivity() {
                 val loader = context.imageLoader
                 val request = ImageRequest.Builder(context)
                     .data(imageUrl)
-                    .size(96, 96)
+                    .size(48, 48) // 48x48 micro-sample cuts decode overhead by 4x
                     .bitmapConfig(Bitmap.Config.RGB_565)
                     .allowHardware(false)
                     .build()
@@ -2709,8 +2777,8 @@ class MainActivity : ComponentActivity() {
                     var highestScore1 = -1f
                     var highestScore2 = -1f
                     val hsv = FloatArray(3)
-                    val stepX = (bitmap.width / 16).coerceAtLeast(1)
-                    val stepY = (bitmap.height / 16).coerceAtLeast(1)
+                    val stepX = (bitmap.width / 12).coerceAtLeast(1)
+                    val stepY = (bitmap.height / 12).coerceAtLeast(1)
 
                     for (x in 0 until bitmap.width step stepX) {
                         for (y in 0 until bitmap.height step stepY) {

@@ -4,35 +4,59 @@ package com.melomusic.app.playback
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.PowerManager
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.melomusic.app.MainActivity
+import com.melomusic.app.R
+import com.melomusic.app.data.JioSaavnRepository
+import com.melomusic.app.data.Song
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @UnstableApi
 class MusicService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var serviceWakeLock: PowerManager.WakeLock? = null
+    private lateinit var exoPlayer: ExoPlayer
+
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+    private val repository by lazy { JioSaavnRepository(this) }
+    private val preloader by lazy { MeloAudioPreloadManager(this, serviceScope) }
 
     companion object {
-        var onSkipNextRequested: (() -> Unit)? = null
-        var onSkipPreviousRequested: (() -> Unit)? = null
-        var onTrackEndedAutoAdvance: (() -> Unit)? = null
-        var onPlaybackErrorRecovery: ((PlaybackException) -> Unit)? = null
+        const val NOTIFICATION_CHANNEL_ID = "melo_playback_channel"
 
         @Volatile
         var activeAudioSessionId: Int = C.AUDIO_SESSION_ID_UNSET
         var onAudioSessionChanged: ((Int) -> Unit)? = null
+        var onCurrentSongChanged: ((Song?) -> Unit)? = null
+
+        // Callbacks bound by MainActivity
+        var onSkipNextRequested: (() -> Unit)? = null
+        var onSkipPreviousRequested: (() -> Unit)? = null
+        var onTrackEndedAutoAdvance: (() -> Unit)? = null
+        var onPlaybackErrorRecovery: (() -> Unit)? = null
     }
 
     private fun acquireTransitionWakeLock() {
@@ -44,8 +68,7 @@ class MusicService : MediaSessionService() {
                     "MeloMusic::ServiceTransitionWakeLock"
                 )?.apply { setReferenceCounted(false) }
             }
-            // Hold CPU awake for up to 30s while next track URL resolves over network
-            serviceWakeLock?.acquire(30_000L)
+            serviceWakeLock?.acquire(45_000L)
         } catch (_: Exception) {}
     }
 
@@ -60,28 +83,31 @@ class MusicService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        val notificationProvider = DefaultMediaNotificationProvider.Builder(this)
+            .setChannelId(NOTIFICATION_CHANNEL_ID)
+            .setChannelName(R.string.app_name)
+            .build()
+            .apply {
+                setSmallIcon(R.drawable.ic_notification)
+            }
+        setMediaNotificationProvider(notificationProvider)
+
         val audioAttributes = AudioAttributes.Builder()
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .setUsage(C.USAGE_MEDIA)
             .build()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                15_000, // Min buffer
-                50_000, // Max buffer
-                1_500,  // Buffer for playback start
-                3_000   // Buffer after rebuffer
-            )
+            .setBufferDurationsMs(20_000, 60_000, 1_500, 3_000)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
-        // Wire in the 512MB LRU disk cache so streamed songs are cached automatically
-        val cachedMediaSourceFactory = DefaultMediaSourceFactory(
+        val cachedSourceFactory = DefaultMediaSourceFactory(
             MeloAudioCache.createDataSourceFactory(this)
         )
 
-        val exoPlayer = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(cachedMediaSourceFactory)
+        exoPlayer = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(cachedSourceFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -98,72 +124,89 @@ class MusicService : MediaSessionService() {
                 }
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) releaseTransitionWakeLock()
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_ENDED -> {
-                        acquireTransitionWakeLock()
-                        onTrackEndedAutoAdvance?.invoke()
+                if (playbackState == Player.STATE_ENDED) {
+                    acquireTransitionWakeLock()
+                    val callback = onTrackEndedAutoAdvance
+                    if (callback != null) {
+                        callback.invoke()
+                    } else {
+                        skipToNextTrack()
                     }
-                    Player.STATE_READY -> {
-                        // Once ExoPlayer is buffered and ready, C.WAKE_MODE_NETWORK takes over
-                        if (exoPlayer.playWhenReady) {
-                            releaseTransitionWakeLock()
-                        }
-                    }
-                    else -> Unit
                 }
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val currentSongId = mediaItem?.mediaId
+                if (currentSongId != null) {
+                    val currentSong = PlaybackQueueManager.queue.value.find { it.id == currentSongId }
+                    if (currentSong != null) {
+                        val index = PlaybackQueueManager.queue.value.indexOf(currentSong)
+                        if (index != -1) {
+                            PlaybackQueueManager.setQueue(PlaybackQueueManager.queue.value, index)
+                        }
+                        onCurrentSongChanged?.invoke(currentSong)
+                    }
+                }
+                // Maintain the 3-track pipeline and trigger auto-mix if running low
+                syncSlidingWindow()
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 acquireTransitionWakeLock()
-                onPlaybackErrorRecovery?.invoke(error)
+                val recoveryCallback = onPlaybackErrorRecovery
+                if (recoveryCallback != null) {
+                    recoveryCallback.invoke()
+                    return
+                }
+                serviceScope.launch(Dispatchers.IO) {
+                    val current = PlaybackQueueManager.getCurrentSong()
+                    if (current != null) {
+                        // Refresh expired CDN link
+                        val refreshedUrl = repository.getRemoteDecryptedUrl(current)
+                            ?: repository.getStreamUrl(current)
+                        if (!refreshedUrl.isNullOrBlank()) {
+                            PlaybackQueueManager.cacheStreamUrl(current.id, refreshedUrl)
+                            withContext(Dispatchers.Main) {
+                                playCurrentSongInternal(current, refreshedUrl, exoPlayer.currentPosition)
+                            }
+                        }
+                    }
+                }
             }
         })
 
         val forwardingPlayer = object : ForwardingPlayer(exoPlayer) {
             override fun getAvailableCommands(): Player.Commands {
-                return super.getAvailableCommands()
-                    .buildUpon()
-                    .add(Player.COMMAND_SEEK_TO_NEXT)
-                    .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS)
-                    .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                return super.getAvailableCommands().buildUpon()
+                    .add(COMMAND_SEEK_TO_NEXT)
+                    .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .add(COMMAND_SEEK_TO_PREVIOUS)
+                    .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
                     .build()
             }
 
             override fun isCommandAvailable(command: Int): Boolean {
-                if (command == Player.COMMAND_SEEK_TO_NEXT ||
-                    command == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
-                    command == Player.COMMAND_SEEK_TO_PREVIOUS ||
-                    command == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
-                ) {
-                    return true
+                return when (command) {
+                    COMMAND_SEEK_TO_NEXT,
+                    COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                    COMMAND_SEEK_TO_PREVIOUS,
+                    COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
+                    else -> super.isCommandAvailable(command)
                 }
-                return super.isCommandAvailable(command)
             }
 
-            override fun seekToNext() {
-                acquireTransitionWakeLock()
-                onSkipNextRequested?.invoke()
-            }
-
-            override fun seekToNextMediaItem() {
-                acquireTransitionWakeLock()
-                onSkipNextRequested?.invoke()
-            }
-
-            override fun seekToPrevious() {
-                acquireTransitionWakeLock()
-                onSkipPreviousRequested?.invoke()
-            }
-
-            override fun seekToPreviousMediaItem() {
-                acquireTransitionWakeLock()
-                onSkipPreviousRequested?.invoke()
-            }
+            override fun seekToNext() = skipToNextTrack()
+            override fun seekToNextMediaItem() = skipToNextTrack()
+            override fun seekToPrevious() = skipToPreviousTrack()
+            override fun seekToPreviousMediaItem() = skipToPreviousTrack()
         }
 
-        val sessionActivityPendingIntent = PendingIntent.getActivity(
+        val sessionIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).apply {
@@ -173,13 +216,177 @@ class MusicService : MediaSessionService() {
         )
 
         mediaSession = MediaSession.Builder(this, forwardingPlayer)
-            .setSessionActivity(sessionActivityPendingIntent)
+            .setSessionActivity(sessionIntent)
             .build()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
-        return mediaSession
+    private fun resolveUri(song: Song): String? {
+        val safeId = song.id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val dirs = listOf(
+            File(filesDir, "downloads"),
+            filesDir,
+            getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC),
+            getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+        ).filterNotNull()
+
+        for (dir in dirs) {
+            if (!dir.exists()) continue
+            for (id in listOf(song.id, safeId)) {
+                for (ext in listOf("mp4", "mp3", "m4a", "aac")) {
+                    val f = File(dir, "$id.$ext")
+                    if (f.exists() && f.length() > 5000) {
+                        return Uri.fromFile(f).toString()
+                    }
+                }
+            }
+        }
+        return PlaybackQueueManager.getCachedStreamUrl(song.id)
     }
+
+    private suspend fun getOrFetchStreamUrl(song: Song): String? {
+        resolveUri(song)?.let { return it }
+        val fetched = withContext(Dispatchers.IO) {
+            repository.getStreamUrl(song) ?: repository.getRemoteDecryptedUrl(song)
+        }
+        if (!fetched.isNullOrBlank()) {
+            PlaybackQueueManager.cacheStreamUrl(song.id, fetched)
+        }
+        return fetched
+    }
+
+    private fun buildMediaItem(song: Song, uriStr: String): MediaItem {
+        return MediaItem.Builder()
+            .setMediaId(song.id)
+            .setUri(Uri.parse(uriStr))
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(song.title)
+                    .setArtist(song.artist)
+                    .setAlbumTitle(song.album.ifBlank { "Single" })
+                    .setArtworkUri(Uri.parse(song.thumbnailUrl))
+                    .build()
+            )
+            .build()
+    }
+
+    fun playTrack(song: Song, queueContext: List<Song>, startIndex: Int) {
+        acquireTransitionWakeLock()
+        PlaybackQueueManager.setQueue(queueContext, startIndex)
+
+        serviceScope.launch {
+            val url = getOrFetchStreamUrl(song)
+            if (!url.isNullOrBlank()) {
+                playCurrentSongInternal(song, url, 0L)
+                syncSlidingWindow()
+            } else {
+                releaseTransitionWakeLock()
+            }
+        }
+    }
+
+    private fun playCurrentSongInternal(song: Song, url: String, startPositionMs: Long) {
+        val currentItem = buildMediaItem(song, url)
+        exoPlayer.setMediaItem(currentItem, startPositionMs)
+        exoPlayer.prepare()
+        exoPlayer.playWhenReady = true
+        onCurrentSongChanged?.invoke(song)
+    }
+
+    /**
+     * Maintains an autonomous lookahead window of tracks in ExoPlayer's playlist.
+     * Guarantees true 0ms gapless transitions and seamless background auto-advance.
+     */
+    private fun syncSlidingWindow() {
+        serviceScope.launch {
+            val queue = PlaybackQueueManager.queue.value
+            val currentIdx = PlaybackQueueManager.currentIndex.value
+
+            // 1. Proactive Radio Recommendations: replenish when near the end
+            if (queue.size - currentIdx <= 3 && queue.isNotEmpty()) {
+                val seed = queue.getOrNull(currentIdx) ?: queue.last()
+                val recommendations = withContext(Dispatchers.IO) {
+                    repository.getRadioRecommendations(seed, "auto-endless")
+                }
+                PlaybackQueueManager.appendSongs(recommendations)
+            }
+
+            // 2. Resolve Track N+1 for Gapless buffering
+            val nextIdx = PlaybackQueueManager.getNextIndex()
+            if (nextIdx != null && nextIdx != currentIdx) {
+                val nextSong = PlaybackQueueManager.getSongAt(nextIdx)
+                if (nextSong != null) {
+                    val nextUrl = getOrFetchStreamUrl(nextSong)
+                    if (!nextUrl.isNullOrBlank()) {
+                        // Pre-cache upcoming audio bytes to disk
+                        preloader.preloadTrack(nextSong.id, nextUrl)
+
+                        // Attach to ExoPlayer timeline if not already queued
+                        if (exoPlayer.mediaItemCount < 2) {
+                            exoPlayer.addMediaItem(buildMediaItem(nextSong, nextUrl))
+                        }
+                    }
+                }
+            }
+
+            // 3. Resolve Track N+2 for lookahead offline caching
+            val lookaheadIdx = nextIdx?.let { it + 1 }
+            if (lookaheadIdx != null && lookaheadIdx in queue.indices) {
+                val lookaheadSong = queue[lookaheadIdx]
+                val lookaheadUrl = getOrFetchStreamUrl(lookaheadSong)
+                if (!lookaheadUrl.isNullOrBlank()) {
+                    preloader.preloadTrack(lookaheadSong.id, lookaheadUrl)
+                }
+            }
+        }
+    }
+
+    fun skipToNextTrack() {
+        acquireTransitionWakeLock()
+        val callback = onSkipNextRequested
+        if (callback != null) {
+            callback.invoke()
+            return
+        }
+        if (exoPlayer.hasNextMediaItem()) {
+            exoPlayer.seekToNextMediaItem()
+        } else {
+            val nextSong = PlaybackQueueManager.moveToNext()
+            if (nextSong != null) {
+                serviceScope.launch {
+                    val url = getOrFetchStreamUrl(nextSong)
+                    if (!url.isNullOrBlank()) {
+                        playCurrentSongInternal(nextSong, url, 0L)
+                        syncSlidingWindow()
+                    }
+                }
+            }
+        }
+    }
+
+    fun skipToPreviousTrack() {
+        if (exoPlayer.currentPosition > 3000L) {
+            exoPlayer.seekTo(0L)
+            return
+        }
+        acquireTransitionWakeLock()
+        val callback = onSkipPreviousRequested
+        if (callback != null) {
+            callback.invoke()
+            return
+        }
+        val prevSong = PlaybackQueueManager.moveToPrevious()
+        if (prevSong != null) {
+            serviceScope.launch {
+                val url = getOrFetchStreamUrl(prevSong)
+                if (!url.isNullOrBlank()) {
+                    playCurrentSongInternal(prevSong, url, 0L)
+                    syncSlidingWindow()
+                }
+            }
+        }
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
@@ -190,6 +397,8 @@ class MusicService : MediaSessionService() {
 
     override fun onDestroy() {
         releaseTransitionWakeLock()
+        preloader.cancelAll()
+        serviceScope.cancel()
         mediaSession?.run {
             player.release()
             release()
